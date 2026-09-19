@@ -9,9 +9,6 @@ export interface SubscriptionInfo {
   total: number
   expire: number
   updatedAt: string | null
-  aliveCount?: number
-  totalCount?: number
-  avgDelay?: number
 }
 
 export interface SubscriptionItem {
@@ -119,76 +116,10 @@ export const useSubscriptionStore = defineStore('subscription', () => {
     await loadConfig(true)
   }
 
-  // 获取单个订阅详情
-  const fetchSubscriptionInfo = async (name: string): Promise<SubscriptionInfo | null> => {
-    try {
-      const encoded = encodeURIComponent(name)
-      const resp = await apiFetch(`/providers/proxies/${encoded}`)
-      if (resp.ok) {
-        const data = await resp.json()
-        const updatedAt = data.updatedAt || null
-        const proxiesList = data.proxies || []
-        
-        let aliveCount = 0
-        let totalDelay = 0
-        let delayCount = 0
-        
-        proxiesList.forEach((p: any) => {
-          const hasHistory = p.history && p.history.length > 0
-          const lastDelay = hasHistory ? p.history[p.history.length - 1].delay : 0
-          const isAlive = p.alive === true || lastDelay > 0
-          if (isAlive) {
-            aliveCount++
-            if (lastDelay > 0) {
-              totalDelay += lastDelay
-              delayCount++
-            }
-          }
-        })
-
-        const totalCount = proxiesList.length
-        const avgDelay = delayCount > 0 ? totalDelay / delayCount : undefined
-
-        let info = data.subscriptionInfo || data
-        if (info && typeof info === 'object') {
-          return {
-            upload: info.Upload || 0,
-            download: info.Download || 0,
-            total: info.Total || 0,
-            expire: info.Expire || 0,
-            updatedAt,
-            aliveCount,
-            totalCount,
-            avgDelay
-          }
-        }
-      }
-    } catch (e) {
-      console.warn('获取订阅信息失败', name, e)
-    }
-    return null
-  }
-
-  // 完善订阅项的额外信息（健康度/平均延迟）
-  const enrichSubscriptions = async () => {
-    const subs = currentConfig.value.subscriptions
-    if (!subs) return
-    const promises = subs.map(async (sub) => {
-      if (savedSubNames.value.has(sub.name)) {
-        sub.info = await fetchSubscriptionInfo(sub.name)
-      } else {
-        sub.info = null
-      }
-    })
-    await Promise.all(promises)
-  }
-
   return {
     currentConfig,
     savedSubNames,
     loadConfig,
-    fetchSubscriptionInfo,
-    enrichSubscriptions,
     isConfigLoaded,
     refreshConfig,
   }

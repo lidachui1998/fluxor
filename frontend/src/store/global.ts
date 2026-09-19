@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
+import { isThemeName } from '../utils/i18n-keys'
 
 // Toast 操作按钮接口
 export interface ToastAction {
@@ -46,7 +47,10 @@ export const useGlobalStore = defineStore('global', () => {
 
   const activeTab = ref<string>(getInitialTab())
   const isSidebarCollapsed = ref<boolean>(localStorage.getItem('fluxor-sidebar-collapsed') === 'true')
-  const theme = ref<string>(localStorage.getItem('fluxor-theme') || 'pink')
+  // 校验历史脏值：localStorage 可能残留已废弃/被篡改的主题名，
+  // 直接采用会落到未定义的 data-theme 上（样式全失效）并渲染出裸 key。
+  const storedTheme = localStorage.getItem('fluxor-theme')
+  const theme = ref<string>(isThemeName(storedTheme) ? storedTheme : 'pink')
   
   const toasts = ref<ToastMessage[]>([])
   const confirmDialog = ref<ConfirmState | null>(null)

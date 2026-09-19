@@ -5,9 +5,11 @@ import { storeToRefs } from 'pinia'
 import { apiFetch } from '../utils/api'
 import { SyncOutline, LayersOutline } from '@vicons/ionicons5'
 import { useGlobalStore } from '../store/global'
+import { useConfigStore } from '../store/config'
 import { useRulesStore, type RuleItem } from '../store/rules'
 
 const globalStore = useGlobalStore()
+const configStore = useConfigStore()
 const rulesStore = useRulesStore()
 const { rules, providers, isLoadingRules, isLoadingProviders } = storeToRefs(rulesStore)
 
@@ -169,10 +171,19 @@ watch(loadMoreTrigger, (newEl, oldEl) => {
   }
 })
 
-onMounted(() => {
+onMounted(async () => {
   const hasData = rules.value.length > 0
-  rulesStore.fetchRules(hasData)
-  rulesStore.fetchProviders(hasData)
+  // 首次加载（无缓存快照）失败必须提示，否则页面会永远停在空列表上；
+  // 有快照时的后台静默刷新失败不打扰用户。
+  const [rulesOk, providersOk] = await Promise.all([
+    rulesStore.fetchRules(hasData),
+    rulesStore.fetchProviders(hasData),
+  ])
+  // 内核未运行时后端会返回 502（属正常状态，不是网络故障），此时不提示，
+  // 否则每次冷启动都会误报「网络错误」。
+  if (!hasData && (!rulesOk || !providersOk) && configStore.coreStatus.running) {
+    globalStore.showToast(t('common.network_error'), 'error')
+  }
 })
 
 onUnmounted(() => {

@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { apiFetch } from '../utils/api'
 import { useSubscriptionStore } from './subscription'
 
@@ -19,8 +19,48 @@ export const useProxyStore = defineStore('proxies', () => {
   const expandedState = ref<Record<string, boolean>>({})
   const providerInfos = ref<Record<string, any>>({})
 
-  // 获取所有代理组并解析历史测速延迟
-  const fetchProxies = async (silent = false) => {
+  // === 策略组链式解析（AGENTS §4.9：解析下沉至 Store 并缓存） ===
+  //
+  // 节点列表里可能包含策略组（Selector / URLTest）。它们的延迟与元数据并不属于
+  // 自身，而要沿 `now` 指针逐级下钻，直到承载流量的真实节点。
+  //
+  // 该遍历只依赖代理图结构（allProxiesRaw），与 delays 无关；因此在 Store 中以
+  // computed 全局缓存一次，模板侧退化为 O(1) 查表。任何 `now` 变更——包括
+  // ProxyGroupCard.handleSelectProxy 的乐观更新与失败回滚——都会自动使其失效
+  // 重算，无需调用方手工触发，也就不存在"忘记失效"导致解析陈旧的窗口。
+  //
+  // 深度上限 10 用于防御环状引用（A→B→A）。
+  const resolvedNodeName = computed<Record<string, string>>(() => {
+    const raw = allProxiesRaw.value
+    const map: Record<string, string> = {}
+    for (const start of Object.keys(raw)) {
+      let current = start
+      let node = raw[current]
+      let depth = 0
+      while (node && (node.type === 'Selector' || node.type === 'URLTest') && node.now && depth < 10) {
+        const next = node.now
+        if (next === current) break
+        current = next
+        node = raw[current]
+        if (!node) break
+        depth++
+      }
+      map[start] = current
+    }
+    return map
+  })
+
+  // 解析后的真实节点名；图中不存在该节点时回退为原名（与原行为一致）
+  const effectiveName = (name: string): string => resolvedNodeName.value[name] ?? name
+
+  // 有效延迟：解析后节点的延迟。读 delays 保持响应性，供模板 O(1) 取用
+  const getEffectiveDelay = (name: string): number | undefined => delays.value[effectiveName(name)]
+
+  // 有效节点对象：解析后节点本身（type / udp / xudp / recentColors 均取自它）
+  const getEffectiveNode = (name: string): any => allProxiesRaw.value[effectiveName(name)]
+
+  // 获取所有代理组并解析历史测速延迟（实际执行体，外部请走 fetchProxies）
+  const runFetchProxies = async (silent = false): Promise<boolean> => {
     if (!silent) isLoading.value = true
     try {
       // 动态获取当前模式
@@ -33,7 +73,12 @@ export const useProxyStore = defineStore('proxies', () => {
       if (mode === 'merge') {
         // 融合模式：从 /providers/proxies 获取数据
         const resp = await apiFetch('/providers/proxies')
-        if (resp.ok) {
+        if (!resp.ok) {
+          // 非 2xx 不得继续走到下面的赋值，否则会用空数据覆盖上一份快照
+          console.error('获取代理失败：HTTP', resp.status)
+          return false
+        }
+        {
           const data = await resp.json()
           const providers = data.providers || {}
           providerInfos.value = {}
@@ -63,10 +108,14 @@ export const useProxyStore = defineStore('proxies', () => {
           }
         }
       } else {
-        providerInfos.value = {}
         // 切换模式：保持使用 /proxies
         const resp = await apiFetch('/proxies')
-        if (resp.ok) {
+        if (!resp.ok) {
+          console.error('获取代理失败：HTTP', resp.status)
+          return false
+        }
+        providerInfos.value = {}
+        {
           const data = await resp.json()
           allProxies = data.proxies || {}
           for (const name of Object.keys(allProxies)) {
@@ -137,12 +186,55 @@ export const useProxyStore = defineStore('proxies', () => {
         }
       })
     } catch (e) {
+      // 保留上一份成功快照：网络抖动不应把已渲染的代理列表清空（§4.1 快速加载）。
+      // 返回值交给调用方决定是否提示，避免 Store 私自吞掉失败。
       console.error('获取代理失败', e)
-      proxyGroups.value = []
-      delays.value = {}
+      return false
     } finally {
       if (!silent) isLoading.value = false
     }
+    return true
+  }
+
+  // === 单飞 + 尾随合并（coalescing） ===
+  //
+  // 批量测速会在每完成一组后触发一次刷新（见 Proxies.vue 的循环），组与组之间
+  // 可能相互重叠。若不去重，融合模式下会并发多个 /providers/proxies 全量请求：
+  // 单次响应包含所有订阅的全部节点与 history，并发叠加会同时压迫浏览器连接
+  // 队列与后端 Unix Socket，且多个响应会互相覆盖解析结果。
+  //
+  // 策略：
+  //  1. 单飞——任一时刻至多一个请求在飞；
+  //  2. 尾随合并——飞行期间到来的调用不重复发起，只登记一次「待刷新」，
+  //     当前请求落地后补跑一次（若补跑期间又有调用，则继续补跑）。
+  //
+  // 关键语义：重复调用返回的是**同一个** in-flight promise，而该 promise 会等到
+  // 尾随补跑结束才 resolve。因此「await 之后数据一定不早于本次调用」这一保证
+  // 依然成立（如 handleSelectProxy 切换后必须看到新选择）。
+  let inFlight: Promise<boolean> | null = null
+  let pendingRefresh = false
+
+  const fetchProxies = (silent = false): Promise<boolean> => {
+    if (inFlight) {
+      // 已有请求在飞：不重复发起，仅登记一次尾随刷新
+      pendingRefresh = true
+      return inFlight
+    }
+    inFlight = (async () => {
+      try {
+        let result = await runFetchProxies(silent)
+        // 飞行期间若有新的刷新请求，补跑；静默执行避免 loading 反复闪烁
+        while (pendingRefresh) {
+          pendingRefresh = false
+          result = await runFetchProxies(true)
+        }
+        return result
+      } finally {
+        inFlight = null
+        pendingRefresh = false
+      }
+    })()
+    return inFlight
   }
 
   // 测速单个节点（自动解析策略组）
@@ -150,18 +242,8 @@ export const useProxyStore = defineStore('proxies', () => {
     // 动态获取当前模式
     const subscriptionStore = useSubscriptionStore()
     const mode = subscriptionStore.currentConfig.mode
-    // 递归解析实际节点
-    let realName = proxyName
-    let node = allProxiesRaw.value[realName]
-    let depth = 0
-    while (node && (node.type === 'Selector' || node.type === 'URLTest') && node.now && depth < 10) {
-      const next = node.now
-      if (next === realName) break
-      realName = next
-      node = allProxiesRaw.value[realName]
-      if (!node) break
-      depth++
-    }
+    // 复用 Store 的链式解析结果，避免此处再维护一份相同遍历
+    const realName = effectiveName(proxyName)
   
     // 如果实际节点正在测速，跳过重复请求
     if (delays.value[realName] === 0) return
@@ -304,6 +386,9 @@ export const useProxyStore = defineStore('proxies', () => {
     expandedState,
     fetchProxies,
     testDelay,
+    // 策略组链式解析（解析结果由 Store 统一缓存，组件只读）
+    getEffectiveDelay,
+    getEffectiveNode,
     sortOrder,
     setSortOrder,
     delayThresholds,

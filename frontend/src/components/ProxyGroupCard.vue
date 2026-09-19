@@ -3,7 +3,7 @@ import { ref, computed, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { storeToRefs } from 'pinia'
 import { apiFetch } from '../utils/api'
-import { ChevronForwardOutline, SyncOutline } from '@vicons/ionicons5'
+import { ChevronForwardOutline, SyncOutline, LayersOutline } from '@vicons/ionicons5'
 import { useProxyStore, type ProxyGroup } from '../store/proxies'
 import { useGlobalStore } from '../store/global'
 import { useConnectionsStore } from '../store/connections'
@@ -15,7 +15,9 @@ const props = defineProps<{
 const { t } = useI18n()
 const proxyStore = useProxyStore()
 const globalStore = useGlobalStore()
-const { delays, allProxiesRaw, expandedState, sortOrder, delayThresholds, qualityScores, filterRegex, autoCloseConnections } = storeToRefs(proxyStore)
+const { delays, expandedState, sortOrder, delayThresholds, qualityScores, filterRegex, autoCloseConnections } = storeToRefs(proxyStore)
+// 策略组链式解析已下沉至 Store（§4.9），组件只读其缓存结果
+const { getEffectiveDelay, getEffectiveNode } = proxyStore
 
 const isTesting = ref(false)
 
@@ -37,38 +39,6 @@ watch(
 const shouldUseBar = computed(() => {
   return props.group.all.length > 10
 })
-
-// ----- 工具函数：获取节点的有效延迟（递归解析策略组） -----
-const getEffectiveDelay = (name: string): number | undefined => {
-  let current = name
-  let node = allProxiesRaw.value[current]
-  let depth = 0
-  while (node && (node.type === 'Selector' || node.type === 'URLTest') && node.now && depth < 10) {
-    const next = node.now
-    if (next === current) break
-    current = next
-    node = allProxiesRaw.value[current]
-    if (!node) break
-    depth++
-  }
-  return delays.value[current]
-}
-
-// ----- 工具函数：获取节点的有效节点对象（递归解析策略组） -----
-const getEffectiveNode = (name: string): any => {
-  let current = name
-  let node = allProxiesRaw.value[current]
-  let depth = 0
-  while (node && (node.type === 'Selector' || node.type === 'URLTest') && node.now && depth < 10) {
-    const next = node.now
-    if (next === current) break
-    current = next
-    node = allProxiesRaw.value[current]
-    if (!node) break
-    depth++
-  }
-  return node
-}
 
 const getGroupBarSegments = computed(() => {
   const nodes = props.group.all || []
@@ -166,6 +136,18 @@ const sortedNodes = computed(() => {
 
   return nodes
 })
+
+// 渲染行视图模型：一次遍历把每个节点的"有效节点 + 有效延迟 + 质量分"算好，
+// 模板只读扁平字段。此前模板内直接调用 getEffectiveNode/getEffectiveDelay
+// 各 9 次与 2 次（每节点每帧），现降为 O(1) 属性读取。
+const nodeRows = computed(() =>
+  sortedNodes.value.map(name => ({
+    name,
+    node: getEffectiveNode(name),
+    delay: getEffectiveDelay(name),
+    quality: qualityScores.value[name],
+  }))
+)
 
 const gridRef = ref<HTMLElement | null>(null)
 // 监听展开状态，当展开且节点数 > 10 时，滚动到选中节点
@@ -336,11 +318,7 @@ const getDelayText = (delay?: number) => {
               class="p-1.5 text-slate-400 hover:text-accent rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-all shrink-0"
               :title="t('proxies.quality_score')"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 2L2 7l10 5 10-5-10-5z"/>
-                <path d="M2 17l10 5 10-5"/>
-                <path d="M2 12l10 5 10-5"/>
-              </svg>
+              <LayersOutline class="w-4 h-4" />
             </button>
             <button @click.stop="handleTestGroup" :disabled="isTesting" class="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-all shrink-0" :title="t('proxies.test')">
               <SyncOutline class="w-4 h-4" :class="{ 'animate-spin': isTesting }" />
@@ -375,49 +353,49 @@ const getDelayText = (delay?: number) => {
     <!-- 主体（节点网格）：展开时显示 -->
     <div v-if="expandedState[group.name]" ref="gridRef" class="grid grid-cols-2 gap-2.5 px-4 sm:px-5 pb-4 sm:pb-5 pt-4 border-t border-slate-100 dark:border-slate-800/80">
       <div
-        v-for="name in sortedNodes"
-        :key="name"
-        @click="handleSelectProxy(name)"
+        v-for="row in nodeRows"
+        :key="row.name"
+        @click="handleSelectProxy(row.name)"
         class="live-card live-card--lift-2 flex flex-col justify-between p-2.5 text-xs rounded-xl border transition-all duration-300 cursor-pointer min-h-[75px] relative"
-        :class="group.now === name
+        :class="group.now === row.name
           ? 'bg-accent/10 dark:bg-accent/15 border-accent text-accent shadow-sm ring-1 ring-accent/30 hover:-translate-y-[2px] hover:shadow-md'
           : 'border-slate-200/60 dark:border-slate-800 hover:-translate-y-[2px] hover:shadow-md hover:border-slate-300/80 dark:hover:border-slate-700 bg-slate-50/50 dark:bg-slate-900/30 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/50'"
       >
         <div class="w-full text-left">
-          <span class="block truncate text-xs font-bold text-slate-800 dark:text-slate-100 leading-snug" :class="{ '!text-accent': group.now === name }" :title="name">
-            {{ name }}
+          <span class="block truncate text-xs font-bold text-slate-800 dark:text-slate-100 leading-snug" :class="{ '!text-accent': group.now === row.name }" :title="row.name">
+            {{ row.name }}
           </span>
         </div>
 
-        <!-- 使用 getEffectiveNode 获取实际节点数据 -->
-        <div v-if="getEffectiveNode(name)" class="flex justify-between items-center gap-1.5 mt-2.5 w-full select-none">
+        <!-- 实际节点数据（链式解析结果由 Store 预计算） -->
+        <div v-if="row.node" class="flex justify-between items-center gap-1.5 mt-2.5 w-full select-none">
           <div class="flex items-center gap-1 min-w-0">
             <span class="bg-slate-200/80 dark:bg-slate-800/80 text-slate-500 dark:text-slate-400 px-1 py-0.5 rounded font-mono uppercase text-[9px] font-bold leading-none truncate">
-              {{ getEffectiveNode(name).type || 'DIRECT' }}
+              {{ row.node.type || 'DIRECT' }}
             </span>
-            <span v-if="getEffectiveNode(name).xudp" class="bg-emerald-500/10 text-emerald-500 dark:text-emerald-400 px-1 py-0.5 rounded font-mono font-extrabold text-[9px] leading-none shrink-0" title="XUDP">X</span>
-            <span v-else-if="getEffectiveNode(name).udp" class="bg-blue-500/10 text-blue-500 dark:text-blue-400 px-1 py-0.5 rounded font-mono font-extrabold text-[9px] leading-none shrink-0" title="UDP">U</span>
+            <span v-if="row.node.xudp" class="bg-emerald-500/10 text-emerald-500 dark:text-emerald-400 px-1 py-0.5 rounded font-mono font-extrabold text-[9px] leading-none shrink-0" title="XUDP">X</span>
+            <span v-else-if="row.node.udp" class="bg-blue-500/10 text-blue-500 dark:text-blue-400 px-1 py-0.5 rounded font-mono font-extrabold text-[9px] leading-none shrink-0" title="UDP">U</span>
           </div>
           <div class="flex items-center gap-1 shrink-0">
-            <span v-if="sortOrder === 'quality' && qualityScores[name] !== undefined" 
+            <span v-if="sortOrder === 'quality' && row.quality !== undefined" 
                   class="text-[10px] font-mono shrink-0 select-none px-1.5 py-0.5 rounded-md leading-none text-center bg-accent/10 text-accent border border-accent/20">
-              {{ qualityScores[name] }}
+              {{ row.quality }}
             </span>
             <span
               class="text-[10px] font-mono shrink-0 select-none px-1.5 py-0.5 rounded-md leading-none text-center min-w-[32px] transition-all hover:scale-105 active:scale-95 border cursor-pointer"
-              :class="getDelayClass(getEffectiveDelay(name))"
-              @click.stop="handleTestSingle(name)"
+              :class="getDelayClass(row.delay)"
+              @click.stop="handleTestSingle(row.name)"
             >
-              {{ getDelayText(getEffectiveDelay(name)) }}
+              {{ getDelayText(row.delay) }}
             </span>
           </div>
         </div>
 
-        <!-- 色条：使用 getEffectiveNode(name).recentColors -->
-        <div v-if="getEffectiveNode(name)" class="flex gap-[2px] w-full mt-2 h-1 overflow-hidden">
-          <template v-if="getEffectiveNode(name).recentColors && getEffectiveNode(name).recentColors.length > 0">
+        <!-- 历史色条 -->
+        <div v-if="row.node" class="flex gap-[2px] w-full mt-2 h-1 overflow-hidden">
+          <template v-if="row.node.recentColors && row.node.recentColors.length > 0">
             <span
-              v-for="(hist, hIdx) in getEffectiveNode(name).recentColors"
+              v-for="(hist, hIdx) in row.node.recentColors"
               :key="hIdx"
               :class="[hist.colorClass, 'flex-1 h-full rounded-sm']"
               :title="hist.title"

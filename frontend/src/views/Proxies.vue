@@ -9,6 +9,8 @@ import { useConfigStore } from '../store/config'
 import { useSubscriptionStore } from '../store/subscription'
 import ProxyGroupCard from '../components/ProxyGroupCard.vue'
 import { apiFetch } from '../utils/api'
+import { modeI18nKey } from '../utils/i18n-keys'
+import { useViewActive } from '../composables/useViewActive'
 
 const { t } = useI18n()
 const proxyStore = useProxyStore()
@@ -17,12 +19,13 @@ const configStore = useConfigStore()
 const subscriptionStore = useSubscriptionStore()
 
 const { proxyGroups, delays, isLoading, sortOrder, delayThresholds, historyCount, filterRegex } = storeToRefs(proxyStore)
-const { setSortOrder, updateSettings, fetchQualityScores, setFilterRegex } = proxyStore
+const { setSortOrder, updateSettings, setFilterRegex } = proxyStore
 const { coreStatus, configs } = storeToRefs(configStore)
 const { currentConfig } = storeToRefs(subscriptionStore)
 
 // ===== 设置弹窗 =====
 const showSettingsDialog = ref(false)
+const isActive = useViewActive()
 const settingsForm = ref({
   sort: 'default' as 'default' | 'name' | 'delay' | 'quality',
   thresholdLow: 200,
@@ -32,14 +35,14 @@ const settingsForm = ref({
   autoCloseConnections: true, 
 })
 
-// 打开弹窗时禁止 body 滚动
-watch(showSettingsDialog, (val) => {
-  if (val) {
-    document.body.classList.add('overflow-hidden')
-  } else {
-    document.body.classList.remove('overflow-hidden')
-  }
-})
+// 打开弹窗时禁止 body 滚动。
+// 必须同时考虑视图激活态：KeepAlive 停用本视图时 onUnmounted 不会触发，
+// 若只看 showSettingsDialog，弹窗关闭前切页会把 overflow-hidden 永久留在 body 上。
+const applyBodyScrollLock = () => {
+  document.body.classList.toggle('overflow-hidden', showSettingsDialog.value && isActive.value)
+}
+watch([showSettingsDialog, isActive], applyBodyScrollLock)
+onUnmounted(() => document.body.classList.remove('overflow-hidden'))
 
 const openSettingsDialog = () => {
   settingsForm.value = {
@@ -246,7 +249,7 @@ onUnmounted(() => {
               class="flex-1 sm:flex-none px-4 py-1.5 text-xs font-semibold rounded-md transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
               :class="configs.mode === modeOption ? 'bg-accent text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'"
             >
-              {{ t(`config.mode_${modeOption.toLowerCase()}`) }}
+              {{ t(modeI18nKey(modeOption)) }}
             </button>
           </div>
         </div>
@@ -268,7 +271,7 @@ onUnmounted(() => {
               class="px-4 py-1.5 text-xs font-semibold rounded-md transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
               :class="configs.mode === modeOption ? 'bg-accent text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'"
             >
-              {{ t(`config.mode_${modeOption.toLowerCase()}`) }}
+              {{ t(modeI18nKey(modeOption)) }}
             </button>
           </div>
         </div>
@@ -375,7 +378,7 @@ onUnmounted(() => {
     <!-- 设置弹窗 -->
     <Teleport to="body">
       <div
-        v-if="showSettingsDialog"
+        v-if="isActive && showSettingsDialog"
         class="fixed inset-0 z-[9999] glass-mask flex items-center justify-center p-4"
         @click.self="showSettingsDialog = false"
       >

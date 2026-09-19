@@ -2,9 +2,10 @@
 import { ref, onMounted, onUnmounted, nextTick, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { apiFetch } from '../utils/api'
-import { OpenOutline, SyncOutline, EyeOutline, EyeOffOutline, GridOutline, GlobeOutline } from '@vicons/ionicons5'
+import { modeI18nKey } from '../utils/i18n-keys'
+import { OpenOutline, SyncOutline, EyeOutline, EyeOffOutline, GridOutline, GlobeOutline, FlashOutline } from '@vicons/ionicons5'
 import { storeToRefs } from 'pinia'
-import { useOverviewStore } from '../store/overview'
+import { useOverviewStore, CORE_VERSION_LOADING, CORE_VERSION_UNKNOWN, NODE_NONE_SELECTED, NODE_CORE_STOPPED } from '../store/overview'
 import { useConnectionsStore } from '../store/connections'
 import { useGlobalStore } from '../store/global'
 import { useConfigStore } from '../store/config'
@@ -27,17 +28,22 @@ const connectionsStore = useConnectionsStore()
 const { connectionsCount, uploadTotal, downloadTotal } = storeToRefs(connectionsStore)
 
 const coreVersionDisplay = computed(() => {
-  if (stats.value.coreVersion === '加载中...') return t('common.loading')
-  if (stats.value.coreVersion === '未知') return t('common.unknown')
+  if (stats.value.coreVersion === CORE_VERSION_LOADING) return t('common.loading')
+  if (stats.value.coreVersion === CORE_VERSION_UNKNOWN) return t('common.unknown')
   return stats.value.coreVersion
 })
 
-const currentNodeDisplay = computed(() => {
-  if (stats.value.currentNode === '加载中...') return t('common.loading')
-  if (stats.value.currentNode === '内核未启动') return t('config.core_stopped')
-  if (stats.value.currentNode === '暂无选择') return t('proxies.empty')
-  return stats.value.currentNode
-})
+// 哨兵 → 文案的统一映射：currentNode / currentGroup 共用同一套占位状态
+const placeholderText = (value: string): string | null => {
+  if (value === CORE_VERSION_LOADING) return t('common.loading')
+  if (value === NODE_CORE_STOPPED) return t('config.core_stopped')
+  if (value === NODE_NONE_SELECTED) return t('proxies.empty')
+  return null
+}
+
+const currentNodeDisplay = computed(() => placeholderText(stats.value.currentNode) ?? stats.value.currentNode)
+
+const currentGroupDisplay = computed(() => placeholderText(stats.value.currentGroup) ?? stats.value.currentGroup)
 
 const base = window.BASE_URL || ''
 
@@ -126,9 +132,9 @@ const formatBytes = (bytes: number): string => {
 
 // 复制文本到剪贴板并提示
 const copyText = (text: string | null | undefined, label: string) => {
-  if (!text || text === '--' || text === '---' || text === '加载中...' || text === '未知') return
+  if (!text || text === '--' || text === '---' || text === CORE_VERSION_LOADING || text === CORE_VERSION_UNKNOWN) return
   navigator.clipboard.writeText(text).then(() => {
-    globalStore.showToast(`${label} ${t('common.copied')}: ${text}`, 'success')
+    globalStore.showToast(`${label} ${t('common.copied')}`, 'success')
   }).catch(() => {
     globalStore.showToast(t('common.operation_failed'), 'error')
   })
@@ -375,7 +381,8 @@ const drawChart = () => {
 }
 
 // 交互事件处理（与 drawChart 复用同一套坐标映射，量程不再随鼠标移动变化）
-const updateHoverState = (x: number, y: number) => {
+// 仅需横坐标：tooltip 的纵向位置由数据值推导，与指针 y 无关。
+const updateHoverState = (x: number) => {
   if (!canvasRef.value || uploadHistory.value.length === 0) return
   const canvas = canvasRef.value
   const w = canvas.width / dpr
@@ -412,7 +419,7 @@ const updateHoverState = (x: number, y: number) => {
 }
 
 const handleMouseMove = (e: MouseEvent) => {
-  updateHoverState(e.offsetX, e.offsetY)
+  updateHoverState(e.offsetX)
 }
 
 const handleTouchMove = (e: TouchEvent) => {
@@ -420,8 +427,7 @@ const handleTouchMove = (e: TouchEvent) => {
   const rect = canvasRef.value.getBoundingClientRect()
   const touch = e.touches[0]
   const x = touch.clientX - rect.left
-  const y = touch.clientY - rect.top
-  updateHoverState(x, y)
+  updateHoverState(x)
 }
 
 const handleMouseLeave = () => {
@@ -976,7 +982,7 @@ onUnmounted(() => {
                 <span class="text-xs font-bold text-slate-500 dark:text-slate-400 shrink-0">{{ t('overview.proxy_mode') }}</span>
                 <div class="flex-1 min-w-0 ml-4 flex justify-end">
                   <span class="text-xs font-semibold text-slate-800 dark:text-slate-100 overflow-x-auto whitespace-nowrap text-right">
-                    {{ t(`config.mode_${configs.mode.toLowerCase()}`) }}
+                    {{ t(modeI18nKey(configs.mode)) }}
                   </span>
                 </div>
               </div>
@@ -987,7 +993,7 @@ onUnmounted(() => {
                 <div class="flex-1 min-w-0 ml-4 flex justify-end">
                   <span
                     class="text-xs font-semibold text-slate-800 dark:text-slate-100 overflow-x-auto whitespace-nowrap text-right"
-                    :title="stats.currentGroup">{{ stats.currentGroup }}</span>
+                    :title="currentGroupDisplay">{{ currentGroupDisplay }}</span>
                 </div>
               </div>
               <!-- 当前节点 -->
@@ -1087,9 +1093,9 @@ onUnmounted(() => {
               <div class="flex justify-between items-center">
                 <span class="text-xs font-bold text-slate-500 dark:text-slate-400 flex-shrink-0">IPv4</span>
                 <div
-                  @click="copyText(ipInfo.localIPv4, '本地 IPv4')"
+                  @click="copyText(ipInfo.localIPv4, t('overview.copy_label_local_ipv4'))"
                   class="px-2.5 py-0.5 rounded-lg bg-slate-100 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800/50 flex-1 min-w-0 ml-4 max-w-max flex justify-end shadow-sm cursor-pointer hover:bg-slate-200 dark:hover:bg-slate-700/50 active:scale-95 transition-all"
-                  :title="ipInfo.localIPv4 && ipInfo.localIPv4 !== '--' ? `点击复制: ${ipInfo.localIPv4}` : ''">
+                  :title="ipInfo.localIPv4 && ipInfo.localIPv4 !== '--' ? t('overview.click_copy_ipv4') : ''">
                   <span
                     class="font-bold text-xs text-slate-800 dark:text-slate-100 select-all overflow-x-auto whitespace-nowrap text-right">
                     {{ showLocalGroup ? (ipInfo.localIPv4 || '--') : (ipInfo.localIPv4 ? '••••••••' : '--') }}
@@ -1101,9 +1107,9 @@ onUnmounted(() => {
               <div class="flex justify-between items-center">
                 <span class="text-xs font-bold text-slate-500 dark:text-slate-400 flex-shrink-0">IPv6</span>
                 <div
-                  @click="copyText(ipInfo.localIPv6, '本地 IPv6')"
+                  @click="copyText(ipInfo.localIPv6, t('overview.copy_label_local_ipv6'))"
                   class="px-2.5 py-0.5 rounded-lg bg-slate-100 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800/50 flex-1 min-w-0 ml-4 max-w-max flex justify-end shadow-sm cursor-pointer hover:bg-slate-200 dark:hover:bg-slate-700/50 active:scale-95 transition-all"
-                  :title="ipInfo.localIPv6 && ipInfo.localIPv6 !== '--' ? `点击复制: ${ipInfo.localIPv6}` : ''">
+                  :title="ipInfo.localIPv6 && ipInfo.localIPv6 !== '--' ? t('overview.click_copy_ipv6') : ''">
                   <span
                     class="font-bold text-xs text-slate-800 dark:text-slate-100 select-all overflow-x-auto whitespace-nowrap text-right">
                     {{ showLocalGroup ? (ipInfo.localIPv6 || '--') : (ipInfo.localIPv6 ? '••••••••' : '--') }}
@@ -1116,9 +1122,9 @@ onUnmounted(() => {
                 <span class="text-xs font-bold text-slate-500 dark:text-slate-400 flex-shrink-0">{{
                   t('overview.geo_info') }}</span>
                 <div
-                  @click="copyText((ipInfo.localCountry || '') + ' / ' + (ipInfo.localRegion || '') + ' / ' + (ipInfo.localIsp || ''), '本地归属地')"
+                  @click="copyText((ipInfo.localCountry || '') + ' / ' + (ipInfo.localRegion || '') + ' / ' + (ipInfo.localIsp || ''), t('overview.copy_label_local_geo'))"
                   class="px-2.5 py-0.5 rounded-lg bg-slate-100 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800/50 flex-1 min-w-0 ml-4 max-w-max flex justify-end shadow-sm cursor-pointer hover:bg-slate-200 dark:hover:bg-slate-700/50 active:scale-95 transition-all"
-                  :title="ipInfo.localCountry ? '点击复制归属地' : ''">
+                  :title="ipInfo.localCountry ? t('overview.click_copy_geo') : ''">
                   <span
                     class="font-bold text-xs text-slate-800 dark:text-slate-100 select-all overflow-x-auto whitespace-nowrap text-right">
                     {{ showLocalGroup ? ((ipInfo.localCountry || '---') + ' / ' + (ipInfo.localRegion || '---') + ' / '
@@ -1160,9 +1166,9 @@ onUnmounted(() => {
               <div class="flex justify-between items-center">
                 <span class="text-xs font-bold text-slate-500 dark:text-slate-400 flex-shrink-0">IPv4</span>
                 <div
-                  @click="copyText(ipInfo.proxyIPv4, '代理 IPv4')"
+                  @click="copyText(ipInfo.proxyIPv4, t('overview.copy_label_proxy_ipv4'))"
                   class="px-2.5 py-0.5 rounded-lg bg-slate-100 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800/50 flex-1 min-w-0 ml-4 max-w-max flex justify-end shadow-sm cursor-pointer hover:bg-slate-200 dark:hover:bg-slate-700/50 active:scale-95 transition-all"
-                  :title="ipInfo.proxyIPv4 && ipInfo.proxyIPv4 !== '--' ? `点击复制: ${ipInfo.proxyIPv4}` : ''">
+                  :title="ipInfo.proxyIPv4 && ipInfo.proxyIPv4 !== '--' ? t('overview.click_copy_ipv4') : ''">
                   <span
                     class="font-bold text-xs text-slate-800 dark:text-slate-100 select-all overflow-x-auto whitespace-nowrap text-right">
                     {{ showProxyGroup ? (ipInfo.proxyIPv4 || '--') : (ipInfo.proxyIPv4 ? '••••••••' : '--') }}
@@ -1174,9 +1180,9 @@ onUnmounted(() => {
               <div class="flex justify-between items-center">
                 <span class="text-xs font-bold text-slate-500 dark:text-slate-400 flex-shrink-0">IPv6</span>
                 <div
-                  @click="copyText(ipInfo.proxyIPv6, '代理 IPv6')"
+                  @click="copyText(ipInfo.proxyIPv6, t('overview.copy_label_proxy_ipv6'))"
                   class="px-2.5 py-0.5 rounded-lg bg-slate-100 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800/50 flex-1 min-w-0 ml-4 max-w-max flex justify-end shadow-sm cursor-pointer hover:bg-slate-200 dark:hover:bg-slate-700/50 active:scale-95 transition-all"
-                  :title="ipInfo.proxyIPv6 && ipInfo.proxyIPv6 !== '--' ? `点击复制: ${ipInfo.proxyIPv6}` : ''">
+                  :title="ipInfo.proxyIPv6 && ipInfo.proxyIPv6 !== '--' ? t('overview.click_copy_ipv6') : ''">
                   <span
                     class="font-bold text-xs text-slate-800 dark:text-slate-100 select-all overflow-x-auto whitespace-nowrap text-right">
                     {{ showProxyGroup ? (ipInfo.proxyIPv6 || '--') : (ipInfo.proxyIPv6 ? '••••••••' : '--') }}
@@ -1189,9 +1195,9 @@ onUnmounted(() => {
                 <span class="text-xs font-bold text-slate-500 dark:text-slate-400 flex-shrink-0">{{
                   t('overview.geo_info') }}</span>
                 <div
-                  @click="copyText((ipInfo.proxyCountry || '') + ' / ' + (ipInfo.proxyRegion || '') + ' / ' + (ipInfo.proxyIsp || ''), '代理归属地')"
+                  @click="copyText((ipInfo.proxyCountry || '') + ' / ' + (ipInfo.proxyRegion || '') + ' / ' + (ipInfo.proxyIsp || ''), t('overview.copy_label_proxy_geo'))"
                   class="px-2.5 py-0.5 rounded-lg bg-slate-100 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800/50 flex-1 min-w-0 ml-4 max-w-max flex justify-end shadow-sm cursor-pointer hover:bg-slate-200 dark:hover:bg-slate-700/50 active:scale-95 transition-all"
-                  :title="ipInfo.proxyCountry ? '点击复制代理归属地' : ''">
+                  :title="ipInfo.proxyCountry ? t('overview.click_copy_proxy_geo') : ''">
                   <span
                     class="font-bold text-xs text-slate-800 dark:text-slate-100 select-all overflow-x-auto whitespace-nowrap text-right">
                     {{ showProxyGroup ? ((ipInfo.proxyCountry || '---') + ' / ' + (ipInfo.proxyRegion || '---') + ' / '
@@ -1231,11 +1237,7 @@ onUnmounted(() => {
                   <button @click="testCustomDelay" :disabled="customLoading || !customUrl.trim()"
                     class="w-7 h-7 rounded-lg bg-slate-50 hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-700/80 flex items-center justify-center transition-all border border-slate-200/50 dark:border-slate-700/40 disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
                     :title="t('overview.test_custom_title')">
-                    <svg v-if="!customLoading" class="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" fill="none"
-                      stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                        d="M13 10V3L4 14h7v7l9-11h-7z" />
-                    </svg>
+                    <FlashOutline v-if="!customLoading" class="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" />
                     <div v-else
                       class="w-3 h-3 border-2 border-slate-300 dark:border-slate-600 !border-t-accent rounded-full animate-spin">
                     </div>
@@ -1259,12 +1261,8 @@ onUnmounted(() => {
                     <button @click="testSingleDelay(idx)" :disabled="result.loading"
                       class="w-7 h-7 rounded-lg bg-slate-50 hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-700/80 flex items-center justify-center transition-all border border-slate-200/50 dark:border-slate-700/40 disabled:opacity-40 shrink-0"
                       :title="t('overview.test_single_title', { name: result.name })">
-                      <svg v-if="!result.loading"
-                        class="w-3.5 h-3.5 text-slate-500 dark:text-slate-400 transition-transform duration-300 group-hover:scale-110"
-                        fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                          d="M13 10V3L4 14h7v7l9-11h-7z" />
-                      </svg>
+                      <FlashOutline v-if="!result.loading"
+                        class="w-3.5 h-3.5 text-slate-500 dark:text-slate-400 transition-transform duration-300 group-hover:scale-110" />
                       <div v-else
                         class="w-3 h-3 border-2 border-slate-300 dark:border-slate-600 !border-t-accent rounded-full animate-spin">
                       </div>

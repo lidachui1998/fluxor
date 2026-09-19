@@ -19,6 +19,7 @@
   --color-accent: var(--accent);
   --color-accent-hover: var(--accent-hover);
   --color-success: var(--success);
+  --color-success-hover: var(--success-hover);
   --color-danger: var(--danger);
   --color-warning: var(--warning);
 
@@ -95,6 +96,7 @@
   --danger: #ef4444;
   --danger-hover: #dc2626;
   --success: #10b981;
+  --success-hover: #059669;
   --warning: #f59e0b;
   --sidebar-bg: #1e293b;
   --card-bg: #1e293b;
@@ -136,6 +138,7 @@
   --danger: #dc2626;
   --danger-hover: #b91c1c;
   --success: #059669;
+  --success-hover: #047857;
   --warning: #d97706;
   --sidebar-bg: #f8fafc;
   --card-bg: #ffffff;
@@ -180,6 +183,7 @@
   --danger: #fb7185;
   --danger-hover: #f43f5e;
   --success: #34d399;
+  --success-hover: #10b981;
   --warning: #fbbf24;
   --sidebar-bg: #180f2e;
   --card-bg: #1c1236;
@@ -223,6 +227,7 @@
   --danger: #e11d48;
   --danger-hover: #be123c;
   --success: #059669;
+  --success-hover: #047857;
   --warning: #d97706;
   --sidebar-bg: #fff1f2;
   --card-bg: #ffffff;
@@ -264,6 +269,7 @@
   --danger: #ff3b30;
   --danger-hover: #e03131;
   --success: #34c759;
+  --success-hover: #2f9e44;
   --warning: #ff9500;
   --sidebar-bg: #f5fdf7;
   --card-bg: #ffffff;
@@ -305,6 +311,7 @@
   --danger: #ff3b30;
   --danger-hover: #c92a2a;
   --success: #34c759;
+  --success-hover: #2f9e44;
   --warning: #ff9500;
   --sidebar-bg: #f5faff;
   --card-bg: #ffffff;
@@ -606,8 +613,12 @@ textarea[readonly] {
   cursor: default;
 }
 
-/* 针对非输入性区域，屏蔽长按与点击高亮 */
-*:not(input):not(textarea):not(.select-text) {
+/* 针对非输入性区域，屏蔽长按与点击高亮。
+   注意：`.select-all`（Tailwind 的 user-select: all）与 `.select-text` 同为
+   “允许选择”的语义类，必须一并豁免，否则移动端长按无法选中/复制。
+   这里**不能**把 `.select-all` 并入上面那条 `user-select: text !important`，
+   否则会把“单击全选”降级成普通文本选择，改变原有交互语义。 */
+*:not(input):not(textarea):not(.select-text):not(.select-all) {
   -webkit-touch-callout: none;
   -webkit-tap-highlight-color: transparent;
 }
@@ -1063,5 +1074,15 @@ aside {
 
 .live-card:hover::after {
   transform: translateY(var(--live-lift));
+}
+
+/* 日志行：屏幕外的行跳过布局与绘制（content-visibility: auto）。
+   日志缓冲区上限 2000 条，全量渲染会让滚动与新增日志各自触发 2000 节点的
+   重排；开启后浏览器只处理视口内的行，语义与 DOM 结构完全不变。
+   contain-intrinsic-size 必须给出行高估值，否则未渲染行高度为 0 会导致
+   滚动条抖动与 scrollTop 计算错误（影响「触底自动滚动」判定）。 */
+.log-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 1.35rem;
 }
 }

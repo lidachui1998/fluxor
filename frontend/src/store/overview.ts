@@ -6,27 +6,33 @@ import { useProxyStore } from './proxies'
 export interface DashboardStats {
   uploadSpeed: number
   downloadSpeed: number
-  uploadTotal: number
-  downloadTotal: number
   memory: number
-  connectionsCount: number
   coreVersion: string
   currentNode: string
   currentGroup: string
   running: boolean
 }
 
+// === 状态哨兵 ===
+//
+// coreVersion / currentNode / currentGroup 是"状态"而非"文案"：它们既可能承载
+// 真实值（内核版本号、节点名），也可能承载"尚未取到/未知/无选择"这类占位状态。
+// 占位状态一律使用下列哨兵常量（以 \u0000 开头，不可能与真实版本号或节点名冲突），
+// 由视图层映射为 i18n 文案——禁止在 Store 中写入任何自然语言字符串，
+// 否则切换语言时中文会直接漏到界面上。
+export const CORE_VERSION_LOADING = '\u0000loading'
+export const CORE_VERSION_UNKNOWN = '\u0000unknown'
+export const NODE_NONE_SELECTED = '\u0000none'
+export const NODE_CORE_STOPPED = '\u0000stopped'
+
 export const useOverviewStore = defineStore('overview', () => {
   const stats = ref<DashboardStats>({
     uploadSpeed: 0,
     downloadSpeed: 0,
-    uploadTotal: 0,
-    downloadTotal: 0,
     memory: 0,
-    connectionsCount: 0,
-    coreVersion: '加载中...',
-    currentNode: '加载中...',
-    currentGroup: '加载中...',
+    coreVersion: CORE_VERSION_LOADING,
+    currentNode: CORE_VERSION_LOADING,
+    currentGroup: CORE_VERSION_LOADING,
     running: false
   })
 
@@ -212,8 +218,8 @@ export const useOverviewStore = defineStore('overview', () => {
       }
       stats.value.currentNode = current
     } else {
-      stats.value.currentGroup = '暂无选择'
-      stats.value.currentNode = '暂无选择'
+      stats.value.currentGroup = NODE_NONE_SELECTED
+      stats.value.currentNode = NODE_NONE_SELECTED
     }
   }
 
@@ -241,9 +247,9 @@ export const useOverviewStore = defineStore('overview', () => {
   // 内核版本：由内核原生 API /version 提供。
   //
   // 不随 SSE 事件下发——SSE 只承载运行状态。此处在内核为「运行中」时补取一次，
-  // 取到即不再重复请求（'加载中...' / '未知' / 空 视为尚未取到）。
+  // 取到即不再重复请求（loading / unknown / 空 视为尚未取到）。
   const ensureCoreVersion = async () => {
-    if (stats.value.coreVersion !== '加载中...' && stats.value.coreVersion !== '未知' && stats.value.coreVersion !== '') {
+    if (stats.value.coreVersion !== CORE_VERSION_LOADING && stats.value.coreVersion !== CORE_VERSION_UNKNOWN && stats.value.coreVersion !== '') {
       return
     }
     try {
@@ -252,10 +258,10 @@ export const useOverviewStore = defineStore('overview', () => {
         const v = await resp.json()
         stats.value.coreVersion = (v.version || '').replace(/^v/, '')
       } else {
-        stats.value.coreVersion = '未知'
+        stats.value.coreVersion = CORE_VERSION_UNKNOWN
       }
     } catch {
-      stats.value.coreVersion = '未知'
+      stats.value.coreVersion = CORE_VERSION_UNKNOWN
     }
   }
 
@@ -263,12 +269,12 @@ export const useOverviewStore = defineStore('overview', () => {
   const applyRunningState = (running: boolean) => {
     stats.value.running = running
     if (!running) {
-      stats.value.currentNode = '内核未启动'
-      stats.value.currentGroup = '内核未启动'
+      stats.value.currentNode = NODE_CORE_STOPPED
+      stats.value.currentGroup = NODE_CORE_STOPPED
       stats.value.uploadSpeed = 0
       stats.value.downloadSpeed = 0
       stats.value.memory = 0
-      stats.value.coreVersion = '加载中...'
+      stats.value.coreVersion = CORE_VERSION_LOADING
       return
     }
     // 内核运行中：若尚未取得版本则补取一次

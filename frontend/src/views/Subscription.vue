@@ -5,11 +5,12 @@ import { apiFetch } from '../utils/api'
 import { MailOutline, EyeOutline, EyeOffOutline, SyncOutline, CreateOutline, TrashOutline, AddOutline, CloseOutline, InformationCircleOutline } from '@vicons/ionicons5'
 import { useGlobalStore } from '../store/global'
 import { storeToRefs } from 'pinia'
-import { useSubscriptionStore, type SubscriptionInfo, type SubscriptionItem } from '../store/subscription'
+import { useSubscriptionStore, type SubscriptionItem } from '../store/subscription'
 import { useRulesStore } from '../store/rules'
 import { useProxyStore } from '../store/proxies'
 import { useConfigStore } from '../store/config'
 import { validateSubscriptionName, filterSubscriptionNameInput, MAX_SUBSCRIPTION_NAME_LENGTH } from '../utils/subscription-name'
+import { useViewActive } from '../composables/useViewActive'
 
 const globalStore = useGlobalStore()
 const configStore = useConfigStore()
@@ -28,6 +29,8 @@ const isApplying = ref(false)
 const pendingPhysicalDeletes = ref<string[]>([])
 const showBackendUrl = ref(false)
 const showHelpModal = ref(false)
+// 视图激活态：KeepAlive 停用时必须收起 Teleport 浮层，否则会跨页残留
+const isActive = useViewActive()
 
 // 弹窗编辑项
 const editingIndex = ref(-1)
@@ -71,16 +74,6 @@ const reloadConfig = async () => {
     console.error('加载订阅配置失败', e)
   }
 }
-const fetchSubscriptionInfo = subscriptionStore.fetchSubscriptionInfo
-
-const getHealthClass = (info?: SubscriptionInfo | null) => {
-  if (!info || info.aliveCount === 0) return 'text-red-500'
-  if (info.avgDelay === undefined || info.avgDelay === 0) return 'text-slate-400'
-  if (info.avgDelay <= 200) return 'text-success'
-  if (info.avgDelay <= 500) return 'text-amber-500'
-  return 'text-red-400'
-}
-
 // 记录正在轮询的定时器，避免多次触发或卸载泄露
 const activePolls = new Map<number, any>()
 
@@ -103,7 +96,6 @@ const getSubscriptionDisplayInfo = (sub: SubscriptionItem) => {
         total: info.subscriptionInfo.Total || 0,
         expire: info.subscriptionInfo.Expire || 0,
         updatedAt: info.updatedAt || null,
-        // 如果还需要健康度，可以在这里从 info.proxies 计算
       }
     }
     return null
@@ -184,7 +176,6 @@ const handleUpdateSub = async (index: number) => {
           expire: result.info.expire || 0,
           updatedAt: result.info.updatedAt || null,
         }
-      } else {
       }
       isUpdating.value[index] = false
       rulesStore.fetchRules(true)
@@ -199,36 +190,6 @@ const handleUpdateSub = async (index: number) => {
     isUpdating.value[index] = false
   }
 }
-const isCheckingHealth = ref<Record<number, boolean>>({})
-
-// 触发单个订阅的健康检查（测速）
-const handleHealthCheckSub = async (index: number) => {
-  if (!coreStatus.value.running) {
-    globalStore.showToast(t('config.core_stopped') + '，' + t('common.operation_failed'), 'warning')
-    return
-  }
-  const sub = currentConfig.value.subscriptions[index]
-  if (!sub) return
-  if (isCheckingHealth.value[index]) return
-  isCheckingHealth.value[index] = true
-  globalStore.showToast(t('subscription.health_check') + '...', 'info')
-  try {
-    const encoded = encodeURIComponent(sub.name)
-    const resp = await apiFetch(`/providers/proxies/${encoded}/healthcheck`)
-    if (resp.ok) {
-      globalStore.showToast(t('subscription.health_check_complete', { name: sub.name }), 'success')
-      const info = await fetchSubscriptionInfo(sub.name)
-      currentConfig.value.subscriptions[index].info = info
-    } else {
-      globalStore.showToast(`${t('common.operation_failed')}: ${resp.status}`, 'error')
-    }
-  } catch (e) {
-    globalStore.showToast(`${t('common.error')}: ${(e as Error).message}`, 'error')
-  } finally {
-    isCheckingHealth.value[index] = false
-  }
-}
-
 // 打开模态框
 const openSubModal = (index: number = -1) => {
   editingIndex.value = index
@@ -500,7 +461,7 @@ onUnmounted(() => {
       </h3>
       <button @click="saveAndApply" :disabled="isApplying" class="px-4 py-1.5 bg-accent hover:bg-accent-hover text-white text-xs font-semibold rounded-lg shadow-sm transition-all flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
         <SyncOutline v-if="isApplying" class="w-3.5 h-3.5 animate-spin" />
-        {{ isApplying ? '保存并应用中...' : t('subscription.save_and_apply') }}
+        {{ isApplying ? t('subscription.applying_short') : t('subscription.save_and_apply') }}
       </button>
     </div>
 
@@ -609,11 +570,11 @@ onUnmounted(() => {
             'border-accent ring-2 ring-accent/30': currentConfig.mode === 'switch' && currentConfig.active_subscription === item.name
           }"
         >
-          <!-- 正在更新/健康检查的卡片遮罩层 -->
-          <div v-if="isUpdating[idx] || isCheckingHealth[idx]" class="absolute inset-0 glass-light rounded-xl z-10 flex items-center justify-center gap-2 animate-[fadeIn_0.15s_ease-out]">
+          <!-- 正在更新的卡片遮罩层 -->
+          <div v-if="isUpdating[idx]" class="absolute inset-0 glass-light rounded-xl z-10 flex items-center justify-center gap-2 animate-[fadeIn_0.15s_ease-out]">
             <div class="w-4 h-4 border-2 border-slate-300 dark:border-slate-700 !border-t-accent rounded-full animate-spin"></div>
             <span class="text-[11px] font-bold text-slate-500 dark:text-slate-400">
-              {{ isUpdating[idx] ? t('rules.updating') : t('subscription.health_check') + '...' }}
+              {{ t('rules.updating') }}
             </span>
           </div>
           <div class="flex justify-between items-start gap-4">
@@ -628,7 +589,7 @@ onUnmounted(() => {
               </div>
             </div>
             <div class="flex gap-1.5" @click.stop>
-              <button v-if="savedSubNames.has(item.name)" @click="handleUpdateSub(idx)" :disabled="isUpdating[idx] || isCheckingHealth[idx]" class="p-2 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 rounded-lg transition-all" :title="t('rules.update')">
+              <button v-if="savedSubNames.has(item.name)" @click="handleUpdateSub(idx)" :disabled="isUpdating[idx]" class="p-2 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 rounded-lg transition-all" :title="t('rules.update')">
                 <SyncOutline class="w-4 h-4 inline-block" :class="{ 'animate-spin': isUpdating[idx] }" />
               </button>
               <button @click="openSubModal(idx)" class="p-2 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 rounded-lg transition-all" :title="t('common.edit')">
@@ -662,7 +623,7 @@ onUnmounted(() => {
               {{ t('subscription.save_to_show_info') }}
             </template>
             <template v-else>
-              {{ !coreStatus.running ? `${t('config.core_stopped')}，${t('subscription.traffic_unavailable')}` : t('subscription.traffic_unavailable') }}
+              {{ !coreStatus.running ? `${t('config.core_stopped')}${t('common.list_sep')}${t('subscription.traffic_unavailable')}` : t('subscription.traffic_unavailable') }}
             </template>
           </div>
         </div>
@@ -671,7 +632,7 @@ onUnmounted(() => {
 
     <!-- 保存并应用全屏模糊加载浮层 -->
     <Teleport to="body">
-      <div v-if="isApplying" class="fixed inset-0 glass-mask z-[9999] flex flex-col items-center justify-center gap-3 animate-[fadeIn_0.2s_ease-out]">
+      <div v-if="isActive && isApplying" class="fixed inset-0 glass-mask z-[9999] flex flex-col items-center justify-center gap-3 animate-[fadeIn_0.2s_ease-out]">
         <div class="glass-medium border px-6 py-4 rounded-2xl shadow-xl flex items-center gap-3">
           <div class="w-5 h-5 border-2 border-slate-200 dark:border-slate-800 !border-t-accent rounded-full animate-spin"></div>
           <span class="text-xs font-bold text-slate-600 dark:text-slate-300">{{ t('subscription.applying') }}</span>
@@ -681,7 +642,7 @@ onUnmounted(() => {
 
     <!-- 使用说明弹窗 -->
     <Teleport to="body">
-      <div v-if="showHelpModal" class="fixed inset-0 glass-mask z-[9999] flex items-center justify-center p-4" @click.self="showHelpModal = false">
+      <div v-if="isActive && showHelpModal" class="fixed inset-0 glass-mask z-[9999] flex items-center justify-center p-4" @click.self="showHelpModal = false">
         <div class="glass-heavy w-full max-w-lg rounded-[20px] shadow-2xl border p-6 flex flex-col gap-4 animate-[zoomIn_0.2s_ease-out]">
           <div class="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-3">
             <h2 class="text-lg font-bold">{{ t('subscription.help_title') }}</h2>
@@ -698,7 +659,7 @@ onUnmounted(() => {
 
     <!-- Modal -->
     <Teleport to="body">
-      <div v-if="showModal" class="fixed inset-0 glass-mask z-[9999] flex items-center justify-center p-4">
+      <div v-if="isActive && showModal" class="fixed inset-0 glass-mask z-[9999] flex items-center justify-center p-4">
         <div class="glass-heavy w-full max-w-lg rounded-[20px] shadow-2xl border p-6 flex flex-col gap-4 animate-[zoomIn_0.2s_ease-out]">
           <div class="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-3">
             <h2 class="text-lg font-bold">{{ modalTitle }}</h2>

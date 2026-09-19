@@ -2,12 +2,13 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { apiFetch } from '../utils/api'
-import { CloudDownloadOutline, OptionsOutline, HardwareChipOutline, ShieldCheckmarkOutline, BuildOutline, SearchOutline, SyncOutline, ColorPaletteOutline, SettingsOutline, InformationCircleOutline, DocumentTextOutline } from '@vicons/ionicons5'
+import { OptionsOutline, HardwareChipOutline, ShieldCheckmarkOutline, BuildOutline, SearchOutline, SyncOutline, ColorPaletteOutline, SettingsOutline, InformationCircleOutline, DocumentTextOutline, ChevronDownOutline } from '@vicons/ionicons5'
 import { useGlobalStore } from '../store/global'
 import { storeToRefs } from 'pinia'
 import { useConfigStore, type ConfigData } from '../store/config'
-import { useOverviewStore } from '../store/overview'
+import { useOverviewStore, CORE_VERSION_LOADING, CORE_VERSION_UNKNOWN } from '../store/overview'
 import FormSwitch from '../components/FormSwitch.vue'
+import { useViewActive } from '../composables/useViewActive'
 
 const { t, locale } = useI18n()
 const globalStore = useGlobalStore()
@@ -18,8 +19,8 @@ const { stats } = storeToRefs(overviewStore)
 const fetchConfigs = configStore.fetchConfigs
 
 const coreVersion = computed(() => {
-  if (stats.value.coreVersion === '加载中...') return t('common.loading')
-  if (stats.value.coreVersion === '未知') return ''
+  if (stats.value.coreVersion === CORE_VERSION_LOADING) return t('common.loading')
+  if (stats.value.coreVersion === CORE_VERSION_UNKNOWN) return ''
   return 'v' + stats.value.coreVersion
 })
 
@@ -47,7 +48,6 @@ const isReloading = ref(false)
 const isFlushingFakeIP = ref(false)
 const isFlushingDNS = ref(false)
 const isUpdatingGeo = ref(false)
-const statusTimer = ref<any>(null)
 
 const interfaces = ref<string[]>([])
 const fetchInterfaces = async () => {
@@ -67,6 +67,9 @@ const showTunAdvancedDialog = ref(false)
 
 // tproxy例外列表弹窗
 const showTproxyExceptionsDialog = ref(false)
+
+// 视图激活态：KeepAlive 停用时必须收起 Teleport 弹窗，否则会跨页残留
+const isActive = useViewActive()
 
 const tproxyDstExceptionsText = ref('')
 const tproxySrcExceptionsText = ref('')
@@ -461,8 +464,8 @@ const handleUpgradeCore = async (channel?: string) => {
     if (channel) url += `?channel=${channel}`
     const resp = await apiFetch(url, { method: 'POST' })
     if (resp.ok) {
-      // **** 关键修复：强制重置版本号为“加载中...”，使下次请求重新获取 ****
-      overviewStore.stats.coreVersion = '加载中...'
+      // **** 关键修复：强制重置版本号为 loading 哨兵，使下次请求重新获取 ****
+      overviewStore.stats.coreVersion = CORE_VERSION_LOADING
       globalStore.showToast(t('config.upgrade_success'), 'success')
       // 延迟刷新，等待内核完成更新
       setTimeout(async () => {
@@ -471,10 +474,10 @@ const handleUpgradeCore = async (channel?: string) => {
         while (attempts < maxAttempts) {
           try {
             await overviewStore.fetchVersionAndStatus()
-            // 检查是否成功获取到有效版本（非“加载中...”或“未知”）
+            // 检查是否成功获取到有效版本（非 loading 哨兵或 unknown 哨兵）
             if (overviewStore.stats.coreVersion && 
-                overviewStore.stats.coreVersion !== '加载中...' && 
-                overviewStore.stats.coreVersion !== '未知') {
+                overviewStore.stats.coreVersion !== CORE_VERSION_LOADING && 
+                overviewStore.stats.coreVersion !== CORE_VERSION_UNKNOWN) {
               break
             }
           } catch (_) {}
@@ -671,7 +674,7 @@ onUnmounted(() => {
     <!-- 核心状态加载中的优雅 Loading 占位 -->
     <div v-if="coreStatus.loading" class="flex-1 flex flex-col items-center justify-center gap-3 select-none">
       <div class="w-7 h-7 border-2 border-slate-200 dark:border-slate-800 !border-t-accent rounded-full animate-spin"></div>
-      <span class="text-xs font-bold text-slate-400 dark:text-slate-500 tracking-wider">正在加载系统参数...</span>
+      <span class="text-xs font-bold text-slate-400 dark:text-slate-500 tracking-wider">{{ t('config.loading_system_params') }}</span>
     </div>
 
     <!-- 加载完成后的内滚动内容区 (已升级为统一大内容卡片) -->
@@ -839,7 +842,7 @@ onUnmounted(() => {
               </button>
             </div>
             <div v-if="!configStore.tproxyStateLoaded" class="w-7 h-4 rounded-full bg-slate-200 dark:bg-slate-700 animate-pulse"></div>
-            <FormSwitch v-model="configStore.tproxyEnabled" @update:model-value="toggleTProxy" />
+            <FormSwitch v-else v-model="configStore.tproxyEnabled" @update:model-value="toggleTProxy" />
           </div>
 
           <!-- 代理本机流量（由弹窗移出）。
@@ -882,7 +885,7 @@ onUnmounted(() => {
                 <span class="font-bold text-slate-700 dark:text-slate-200">
                   {{ coreStatus.loading ? t('config.core_checking') : (coreStatus.running ? t('config.core_running') : t('config.core_stopped')) }}
                 </span>
-                <span v-if="coreStatus.running && stats.coreVersion !== '未知' && stats.coreVersion !== '加载中...'"
+                <span v-if="coreStatus.running && stats.coreVersion !== CORE_VERSION_UNKNOWN && stats.coreVersion !== CORE_VERSION_LOADING"
                   class="px-1.5 py-0.5 font-mono text-[10px] bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 rounded">
                   {{ coreVersion }}
                 </span>
@@ -922,9 +925,7 @@ onUnmounted(() => {
                   :disabled="isUpgrading || !coreStatus.running"
                   class="py-2 px-2 bg-accent hover:bg-accent-hover text-white rounded-r-xl shadow-md shadow-accent/15 hover:shadow-accent/25 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center border-l border-white/20"
                 >
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
-                  </svg>
+                  <ChevronDownOutline class="h-4 w-4" />
                 </button>
                 <!-- 下拉菜单 -->
                 <div
@@ -1066,7 +1067,7 @@ onUnmounted(() => {
 
   <!-- ====== 新增 TProxy 例外列表弹窗 ====== -->
   <Teleport to="body">
-    <div v-if="showTproxyExceptionsDialog" class="fixed inset-0 glass-mask z-[9999] flex items-center justify-center p-4" @click.self="showTproxyExceptionsDialog = false">
+    <div v-if="isActive && showTproxyExceptionsDialog" class="fixed inset-0 glass-mask z-[9999] flex items-center justify-center p-4" @click.self="showTproxyExceptionsDialog = false">
       <!-- 限制弹窗最大高度为视口 90%，flex 列布局 -->
       <div class="glass-heavy w-full max-w-lg max-h-[90vh] rounded-[20px] shadow-2xl border p-6 flex flex-col gap-4 animate-[zoomIn_0.15s_ease-out]">
         <!-- 标题，固定不滚动 -->
@@ -1121,7 +1122,7 @@ onUnmounted(() => {
 
   <!-- ====== TUN 高级设置弹窗（实时修改，仅关闭） ====== -->
   <Teleport to="body">
-    <div v-if="showTunAdvancedDialog" class="fixed inset-0 glass-mask z-[9999] flex items-center justify-center p-4" @click.self="showTunAdvancedDialog = false">
+    <div v-if="isActive && showTunAdvancedDialog" class="fixed inset-0 glass-mask z-[9999] flex items-center justify-center p-4" @click.self="showTunAdvancedDialog = false">
       <div class="glass-heavy w-full max-w-lg max-h-[90vh] rounded-[20px] shadow-2xl border p-6 flex flex-col gap-4 animate-[zoomIn_0.15s_ease-out]">
         <div class="flex-shrink-0">
           <h4 class="text-lg font-bold">{{ t('config.tun_advanced_title') }}</h4>

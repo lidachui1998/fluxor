@@ -3,7 +3,8 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useGlobalStore } from './store/global'
 import { useConfigStore } from './store/config'
-import { useOverviewStore } from './store/overview'
+import { useOverviewStore, CORE_VERSION_LOADING, CORE_VERSION_UNKNOWN } from './store/overview'
+import { themeI18nKey } from './utils/i18n-keys'
 import { useProxyStore } from './store/proxies'
 import { useSubscriptionStore } from './store/subscription'
 import { apiFetch } from './utils/api'
@@ -15,7 +16,6 @@ import {
   HeartOutline,
   ContrastOutline,
   ChevronBackOutline,
-  ChevronForwardOutline,
   LogoGithub,
   GridOutline,
   GlobeOutline,
@@ -29,7 +29,8 @@ import {
   AlertCircleOutline,
   CloseOutline,
   ApertureOutline,
-  InformationCircleOutline
+  InformationCircleOutline,
+  CheckmarkOutline
 } from '@vicons/ionicons5'
 
 // 视图组件导入
@@ -76,7 +77,7 @@ const subscriptionStore = useSubscriptionStore()
 const proxyStore = useProxyStore() 
 
 const { initTheme, switchThemeCycle } = useTheme()
-const { locale, currentLangDisplay, toggleLanguage, updateTitle } = useLanguage()
+const { currentLangDisplay, toggleLanguage, updateTitle } = useLanguage()
 
 watch(
   () => overviewStore.stats.running,
@@ -146,7 +147,7 @@ const isAllowedElement = (target: HTMLElement | null): boolean => {
     if (tag === 'input' || tag === 'textarea' || tag === 'select' || tag === 'option') {
       return true
     }
-    if (curr.classList && curr.classList.contains('select-text')) {
+    if (curr.classList && (curr.classList.contains('select-text') || curr.classList.contains('select-all'))) {
       return true
     }
     curr = curr.parentElement
@@ -279,7 +280,13 @@ onMounted(async () => {
     configStore.fetchTproxyState(),
   ])
 
-  await proxyStore.fetchProxies()   // 根据 mode 自动请求 /proxies 或 /providers/proxies
+  // 根据 mode 自动请求 /proxies 或 /providers/proxies。
+  // 失败时 Store 会保留上一份快照（不清空），此处仅在「内核确已运行」时提示，
+  // 避免内核未启动（后端返回 502，属正常状态）时误报网络错误。
+  const proxiesOk = await proxyStore.fetchProxies()
+  if (!proxiesOk && configStore.coreStatus.running) {
+    globalStore.showToast(t('common.network_error'), 'error')
+  }
 
   // 获取当前用户信息并显示欢迎
   apiFetch('/whoami')
@@ -317,7 +324,7 @@ onMounted(async () => {
 
   // 监听内核版本变化，或直接在 fetchVersionAndStatus 成功后调用
   watch(() => overviewStore.stats.coreVersion, (newVer) => {
-    if (newVer && newVer !== '加载中...' && newVer !== '未知') {
+    if (newVer && newVer !== CORE_VERSION_LOADING && newVer !== CORE_VERSION_UNKNOWN) {
       apiFetch(`/core/check-update`)
         .then(res => res.ok ? res.json() : null)
         .then(data => {
@@ -359,7 +366,7 @@ onUnmounted(() => {
         <!-- Logo + Title 组合区域 -->
         <div class="flex items-center select-none cursor-pointer group/logo"
              @click="toggleSidebar"
-             :title="globalStore.isSidebarCollapsed ? '点击展开侧边栏' : '点击折叠侧边栏'">
+             :title="globalStore.isSidebarCollapsed ? t('nav.expand_sidebar') : t('nav.collapse_sidebar')">
           <!-- 应用 Logo 图标 -->
           <div class="w-8 h-8 flex items-center justify-center shrink-0 transition-transform duration-500 text-accent"
                :class="globalStore.isSidebarCollapsed ? 'rotate-180' : 'rotate-0'">
@@ -518,7 +525,7 @@ onUnmounted(() => {
               :class="[
                 globalStore.isSidebarCollapsed ? 'w-9 h-9 flex-none hover:scale-105 py-0 px-0' : 'flex-1 py-2 px-2.5 hover:scale-[1.02]'
               ]"
-              :title="locale === 'zh' ? '切换语言' : 'Switch Language'">
+              :title="t('nav.switch_language')">
               <LanguageOutline class="w-4 h-4 shrink-0 sidebar-bottom-icon group-hover:scale-110 group-hover:rotate-12" />
               <span class="transition-all duration-300 ease-in-out whitespace-nowrap overflow-hidden"
                 :class="globalStore.isSidebarCollapsed ? 'opacity-0 max-w-0 ml-0' : 'opacity-100 max-w-20 ml-1.5'">
@@ -533,7 +540,7 @@ onUnmounted(() => {
                 globalStore.isSidebarCollapsed ? 'w-9 h-9 flex-none hover:scale-105 py-0 px-0' : 'flex-1 py-2 px-2.5 hover:scale-[1.02]'
               ]"
               aria-label="Toggle Theme"
-              :title="t('config.theme') + ': ' + t('config.theme_' + globalStore.theme)">
+              :title="t('config.theme') + ': ' + t(themeI18nKey(globalStore.theme))">
               <SunnyOutline v-if="globalStore.theme === 'light'" class="w-4 h-4 shrink-0 sidebar-bottom-icon text-amber-500 group-hover:scale-110 group-hover:rotate-45" />
               <MoonOutline v-else-if="globalStore.theme === 'dark'" class="w-4 h-4 shrink-0 sidebar-bottom-icon text-indigo-400 group-hover:scale-110 group-hover:-rotate-12" />
               <ColorPaletteOutline v-else-if="globalStore.theme === 'purple'" class="w-4 h-4 shrink-0 sidebar-bottom-icon text-purple-500 dark:text-purple-400 group-hover:scale-110 group-hover:-rotate-12" />
@@ -541,7 +548,7 @@ onUnmounted(() => {
               <ContrastOutline v-else class="w-4 h-4 shrink-0 sidebar-bottom-icon text-slate-500 dark:text-slate-400 group-hover:scale-110 group-hover:-rotate-12" />
               <span class="transition-all duration-300 ease-in-out whitespace-nowrap overflow-hidden"
                 :class="globalStore.isSidebarCollapsed ? 'opacity-0 max-w-0 ml-0' : 'opacity-100 max-w-20 ml-1.5'">
-                {{ t('config.theme_' + globalStore.theme) }}
+                {{ t(themeI18nKey(globalStore.theme)) }}
               </span>
             </button>
           </div>
@@ -740,11 +747,8 @@ onUnmounted(() => {
                 :class="globalStore.confirmDialog.checkboxChecked 
                   ? 'bg-accent border-accent text-white' 
                   : 'bg-slate-50 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700 text-transparent'">
-                <svg class="w-2.5 h-2.5 transform transition-all duration-200" 
-                  :class="globalStore.confirmDialog.checkboxChecked ? 'scale-100 opacity-100' : 'scale-50 opacity-0'"
-                  fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="4">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
-                </svg>
+                <CheckmarkOutline class="w-2.5 h-2.5 transform transition-all duration-200"
+                  :class="globalStore.confirmDialog.checkboxChecked ? 'scale-100 opacity-100' : 'scale-50 opacity-0'" />
               </div>
               <!-- 联动文本 -->
               <span class="text-xs font-semibold text-slate-600 dark:text-slate-400 select-none">

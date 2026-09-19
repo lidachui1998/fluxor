@@ -109,7 +109,8 @@ let mockTproxyDstExceptions = ['# 公共 DNS 服务器', '223.5.5.5', '1.12.12.1
 let mockTproxySrcExceptions = ['# Docker 默认网段', '172.17.0.0/16']
 
 // 模拟 HTTP API
-export function handleMockFetch(path: string, options: RequestInit = {}): Response {  const method = (options.method || 'GET').toUpperCase()
+export function handleMockFetch(path: string, options: RequestInit = {}): Response {
+  const method = (options.method || 'GET').toUpperCase()
   const cleanPath = path.split('?')[0].replace(/\/$/, '')
 
   // 快捷响应封装
@@ -318,7 +319,9 @@ export class MockWebSocket {
 // 与真实实现保持同样的语义：连接后先推一次当前快照，之后仅在状态变化时推送。
 // 这里通过轮询本地 coreRunning 变量来模拟「后端主动推送」。
 export function createMockSse(
-  path: string,
+  // 与真实 sseConnect 保持同一签名；mock 仅模拟 /core/events 单一事件源，
+  // 故路径本身不参与逻辑，用下划线前缀显式标记为有意未使用。
+  _path: string,
   onEvent: (data: any) => void,
   handlers: { onOpen?: () => void; onError?: (ev: Event) => void } = {}
 ) {

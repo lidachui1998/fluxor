@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, reactive, onBeforeUnmount } from 'vue'
+import { ref, onMounted, onUnmounted, computed, reactive } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { apiFetch } from '../utils/api'
+import { useViewActive } from '../composables/useViewActive'
 import {
   ArrowDownOutline,
   ArrowUpOutline,
@@ -14,7 +15,6 @@ import {
   PeopleOutline,
   DocumentTextOutline,
   GitBranchOutline,
-  TimeOutline,
   RocketOutline,
   CloudOutline
 } from '@vicons/ionicons5'
@@ -218,6 +218,7 @@ const visibleColumns = computed(() => {
 
 // ========== 设置弹窗 ==========
 const showSettings = ref(false)
+const isActive = useViewActive()
 const tempVisibility = ref<Record<string, boolean>>({})
 
 const openSettings = () => {
@@ -278,17 +279,6 @@ const formatBytes = (bytes: number) => {
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
   const i = Math.floor(Math.log(Math.abs(bytes) || 1) / Math.log(k))
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
-}
-
-const formatDuration = (startTime: string) => {
-  if (!startTime) return '-'
-  const diff = Date.now() - new Date(startTime).getTime()
-  const sec = Math.floor(diff / 1000)
-  if (sec < 60) return `${sec}s`
-  const min = Math.floor(sec / 60)
-  if (min < 60) return `${min}m`
-  const hour = Math.floor(min / 60)
-  return `${hour}h ${min % 60}m`
 }
 
 // 获取连接详情中的各字段
@@ -744,7 +734,7 @@ onUnmounted(() => {
 
   <!-- ====== 列设置弹窗 ====== -->
   <Teleport to="body">
-    <div v-if="showSettings" class="fixed inset-0 glass-mask z-[9999] flex items-center justify-center p-4" @click.self="closeSettings">
+    <div v-if="isActive && showSettings" class="fixed inset-0 glass-mask z-[9999] flex items-center justify-center p-4" @click.self="closeSettings">
       <div class="glass-heavy border w-full max-w-lg max-h-[80vh] rounded-2xl shadow-2xl p-6 flex flex-col gap-4 animate-[zoomIn_0.15s_ease-out] overflow-hidden">
         <div class="flex items-center justify-between border-b border-slate-100 dark:border-slate-800/60 pb-3">
           <h3 class="text-base font-semibold flex items-center gap-2">
@@ -798,7 +788,7 @@ onUnmounted(() => {
 
   <!-- ====== 连接详情弹窗 ====== -->
   <Teleport to="body">
-    <div v-if="showDetailDialog && selectedConnection" class="fixed inset-0 glass-mask z-[9999] flex items-center justify-center p-4" @click.self="closeDetail">
+    <div v-if="isActive && showDetailDialog && selectedConnection" class="fixed inset-0 glass-mask z-[9999] flex items-center justify-center p-4" @click.self="closeDetail">
       <div class="glass-heavy border w-full max-w-3xl max-h-[90vh] rounded-2xl shadow-2xl p-6 flex flex-col gap-4 animate-[zoomIn_0.15s_ease-out] overflow-hidden">
         <!-- 头部 -->
         <div class="flex items-center justify-between border-b border-slate-100 dark:border-slate-800/60 pb-3 shrink-0">

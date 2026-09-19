@@ -167,7 +167,7 @@ onUnmounted(() => {
         <div
           v-for="log in filteredLogs"
           :key="log.id"
-          class="break-all hover:bg-slate-900/60 py-0.5 px-1 rounded transition-colors text-slate-300"
+          class="log-row break-all hover:bg-slate-900/60 py-0.5 px-1 rounded transition-colors text-slate-300"
         >
           <!-- 桌面端显示完整毫秒 -->
           <span class="text-slate-500 select-none hidden sm:inline mr-1.5 sm:mr-2">[{{ log.time }}]</span>
