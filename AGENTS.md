@@ -65,6 +65,7 @@ fluxor/
             ├── Logs.vue         # 日志：暗色终端风格、级别过滤（Debug/Info/Warning/Error）、搜索、暂停/继续、智能自动滚动
             ├── Config.vue       # 配置：内核状态卡（启动/停止/升级）、常规参数、端口校验（1025-65535+重复检测）、TUN（gVisor/System/Mixed）、高级运维（重载/清缓存/GEO）、内置 DNS 查询
             └── Subscription.vue # 订阅：代理/面板端口、密钥显隐切换、规则集（lite/base/full）、UI 面板选择、订阅 CRUD 模态框（zoomIn 动画，支持订阅名称、链接、检测间隔、节点前缀）、流量/健康度/有效期卡片、「保存并应用」
+                                 #   切换模式订阅卡片另有「自定义规则」模态框：类型/取值/目标/插入位置表单（支持再编辑）+ 规则列表（逐条即时保存、上/下调整顺序、无整体保存按钮）
 ```
 
 > **构建流程**：`make` → ① 清理旧 `frontend/dist` 与 `backend/dist`；② `npm run build` 输出到 `frontend/dist/`；③ 拷贝至 `backend/dist/`；④ 在 `backend/` 内 `go build -ldflags` （依赖 `//go:embed dist`，同时注入版本号）输出到项目根目录 `./fluxor`。版本号用 `make V=1.0.0` 指定，缺省 `1.0.0`（`make V=dev` 可产出不参与更新判断的调试版本）。
@@ -81,11 +82,12 @@ backend/
 └── internal/
     ├── config/                   # 【叶子】全局配置与持久化状态
     │   ├── doc.go                #   包说明
-    │   ├── model.go              #   SubscribeConfig / Subscription 数据结构
+    │   ├── model.go              #   SubscribeConfig / Subscription / CustomRule（订阅级自定义规则）
     │   ├── state.go              #   Current（当前配置快照）+ Mu（读写锁）
     │   ├── paths.go              #   全部运行路径（Socket/PID/内核/面板/日志等）
     │   ├── modes.go              #   fnos / openwrt 两套默认路径
     │   ├── name.go               #   订阅名校验与节点文件名清洗（防路径穿越）
+    │   ├── rules.go              #   CustomRule 列表操作：同组内上/下移动、按生效顺序重排
     │   └── load.go               #   配置加载、默认值补齐、持久化
     │                             #     + FileMu / UpdateConfigFile：fluxor.json 的共用文件锁与「读—改—写」
     ├── configgen/                # 【基础层】config.yaml 模板 + YAML 结构化改写
@@ -97,6 +99,7 @@ backend/
     │   ├── groups_full.go        #   full 规则集的代理组（含 __SUB_NAMES__ 占位，按 YAML 节点注入订阅名）
     │   ├── providers_full.go     #   full 规则集的 rule-providers
     │   ├── rules_full.go         #   full 规则集的规则
+    │   ├── customrules.go        #   订阅自定义规则：校验 + 幂等注入 rules 序列（before/after 双锚点）
     │   └── doc.go                #   包说明
     ├── httpx/                    # 【叶子】HTTP 通用工具
     │   ├── response.go           #   WriteJSONError / RespondJSON
@@ -104,7 +107,8 @@ backend/
     ├── configcheck/              # 【叶子】Clash 配置校验与 YAML 文档操作（依赖 yaml.v3）
     │   ├── doc.go                #   包说明：provider 契约 vs 主配置契约
     │   ├── check.go              #   ValidateClashConfig：YAML 映射 + 顶层字段及类型校验
-    │   └── document.go           #   Doc：保留键序/注释的顶层字段读写与序列化
+    │   ├── rulespec.go           #   规则类型白名单 + 载荷/目标校验 + 规则行组装 + RuleEnv
+    │   └── document.go           #   Doc：保留键序/注释的顶层字段读写与序列化（含 NodeNames/MappingKeys）
     ├── core/                     # 内核进程生命周期
     │   ├── client.go             #   CoreRequest + cancelableReadCloser（Context 回收）
     │   ├── lifecycle.go          #   启动/停止/热重载（含内核 PID 身份校验）
@@ -125,6 +129,8 @@ backend/
     │   ├── api_generate.go       #   /subscribe/generate
     │   ├── api_update.go         #   /subscribe/update/{name}
     │   ├── api_updateinfo.go     #   /subscribe/update-info/{name}
+    │   ├── customrules.go        #   /subscribe/custom-rules/{name}：订阅级自定义规则 读/增/改/排序/删（即时持久化）
+    │   ├── runtimeconfig.go      #   writeRuntimeConfig：订阅文件 → config.yaml 副本 + 自定义规则叠加
     │   ├── patch.go              #   向节点文件注入端口/密钥/DNS（YAML 结构化改写）
     │   ├── ensure.go             #   切换模式下确保订阅文件就绪
     │   ├── update.go             #   切换模式下的单个订阅更新（锁内取快照 → 锁外下载 → 锁内写回）
@@ -253,6 +259,7 @@ func (c *cancelableReadCloser) Close() error {
 | `/subscribe/generate` | POST | `subscription.HandleGenerateConfig` | 保存配置 + 生成 config.yaml + 重载内核 |
 | `/subscribe/update/{name}` | GET/POST | `subscription.HandleSubscribeUpdate` | 手动更新指定订阅节点数据 |
 | `/subscribe/update-info/{name}` | POST | `subscription.HandleUpdateSubscriptionInfo` | 更新订阅元信息（名称、链接、检测间隔等） |
+| `/subscribe/custom-rules/{name}` | GET/POST/PUT/PATCH/DELETE | `subscription.HandleCustomRulesAPI` | 切换模式下该订阅的自定义规则：查询 / 新增 / 修改（body 带 `id`）/ 排序（`{id,direction:up\|down}`）/ 删除（`?id=`）；所有写操作即时持久化，激活订阅改动后重写 config.yaml 并重载内核 |
 | `/traffic` | WS | `wsproxy.WsProxyHandler("/traffic")` | 实时流量数据 WebSocket 代理 |
 | `/memory` | WS | `wsproxy.WsProxyHandler("/memory")` | 实时内存数据 WebSocket 代理 |
 | `/logs` | WS | `wsproxy.WsProxyHandler("/logs")` | 实时日志流 WebSocket 代理 |
@@ -347,6 +354,23 @@ func (c *cancelableReadCloser) Close() error {
 7. **前端必须有兜底**：SSE 可能被中间反代缓冲/剥离。`overview.ts` 起一个 5 秒看门狗——超时未收到任何事件（含接入快照）才降级请求一次 `/core/status`；正常收到事件立即清除，**不产生额外请求**。内核版本由 `ensureCoreVersion()` 在「运行中」且尚未取得时请求一次 `/version`（取到即不再重复）。浏览器 `EventSource` 自带重连，前端**不要**再叠加握手超时（与 `wsConnect` 不同）。
 
 > `/core/status` 保留：供内核启停/重启/升级操作后由前端主动确认，以及上述 SSE 降级兜底。启动阶段不调用。
+
+### 3.9 切换模式下的自定义规则注入规约（`configgen` + `subscription`）
+
+切换模式的 `config.yaml` 是「订阅文件副本」，自定义规则只能在**复制之后**叠加，必须遵守：
+
+1. **订阅文件保持原样**：`proxies/<订阅名>.yaml` 始终等于「机场下发内容 + Fluxor 必需字段（端口/密钥/DNS）」，自定义规则只写入 `config.yaml`。因此注入点是 `writeRuntimeConfig`（`subscription/runtimeconfig.go`），而不是 `patchSubscriptionFile`——后者会作用到 `ensure.go` 里**所有订阅**（含未激活的纯备份文件）。
+2. **只增不覆盖**：`rules` 是「顺序即语义」的序列，任何 `doc.Set("rules", ...)` 式的整键覆盖都会吃掉机场自带规则。`configgen.ApplyCustomRules` 只做节点级插入：`before`（默认）插到首位、`after` 插到最后一条 `MATCH` 之前；`rules` 缺失或为 null 时新建序列，`rules` 不是序列时报错并放弃改写。
+   同一分组内按切片顺序依次插入，因此**切片顺序 = 界面展示顺序 = 生效顺序**：所有写操作（新增/修改/排序）落盘前都会经 `config.SortCustomRulesForDisplay` 归一化为「before 组在前、after 组在后」，避免三者出现分歧。
+3. **必须幂等**：订阅每次更新（含定时更新）都会重放一次注入，因此要先按规则文本去重再插入，重复调用产物必须逐字节一致。
+4. **目标解析失败必须跳过而不是写进去**：内核遇到无法解析的目标会拒绝加载**整份**配置（实测 `rules[0] [DOMAIN,x.com,G] error: proxy [G] not found`）。机场更新后代理组改名属常态，此时静默跳过该条（日志 + 返回 `ApplyResult.Skipped`，前端在列表中标注原因）远优于让配置整体不可用。同理，`RULE-SET` 的取值必须存在于该订阅的 `rule-providers`。
+5. **规则类型走白名单**：`configcheck/rulespec.go` 的清单以实测 `-t` 通过为准（该内核版本不支持 `PROTOCOL`），只收录「单载荷 + 单目标」类型；`AND/OR/NOT/SUB-RULE`（需嵌套语法）与 `MATCH`（会截断其后全部规则）不开放给表单。
+6. **合法目标随模式而异，且「可选目标」与「校验目标」不是同一集合**：前端目标下拉只列代理组（`RuleContext.GroupNames`）——节点名由机场随时改名增删，引用了它就有整份配置加载失败的风险；而校验集合（`RuleEnv.Targets`）仍包含代理节点，因为内核确实接受指向节点的规则，把节点排除会让用户既有规则被判为失效并静默跳过。融合模式的节点来自 `proxy-providers`、运行时才加载，静态校验看不到，规则只能指向代理组——这也是本功能只做切换模式的原因之一。
+7. **排序只在同插入位置分组内进行**：`before` 与 `after` 在 `config.yaml` 中的落点相差甚远（最前 vs MATCH 之前），跨组交换会让「界面顺序」与「生效顺序」不一致，因此 `config.MoveCustomRule` 只在同组内与相邻规则交换，到边界时返回 `moved=false`（接口回 400，而不是假装成功）。
+8. **写盘顺序**：`writeRuntimeConfig` 是「复制 → 解析 → 注入 → 写回」，注入失败不落盘，避免留下内核加载不了的半成品 `config.yaml`；无自定义规则时完全跳过读写，保持副本的逐字节一致。
+
+> 规则写操作（增/改/排序/删）的事务顺序统一为：锁内改 `config.Current` → `SaveSubscribeConfig()` 持久化 → 若该订阅是激活订阅则 `writeRuntimeConfig` + `ReloadCore()`。内核未运行时只更新 `config.yaml`（下次启动生效），并把「已保存但未同步」的情况作为 warning 如实回给前端。
+> 「修改」是就地替换（保持列表位置），「排序」是同组内相邻交换（`config/rules.go` 的 `MoveCustomRule`），两者都不改变其他规则的相对顺序。
 
 ---
 

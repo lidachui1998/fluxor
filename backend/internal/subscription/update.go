@@ -16,6 +16,11 @@ type subscriptionSnapshot struct {
 	mode       string
 	isActive   bool
 	proxiesDir string
+	// customRules 是该订阅自定义规则的锁内副本。
+	//
+	// 必须在锁内复制：config.Current.Subscriptions 的底层数组由全局锁保护，
+	// 若在锁外直接遍历该切片读取规则，会与并发的增删规则构成数据竞争。
+	customRules []config.CustomRule
 	// cfg 是锁内对 config.Current 的值拷贝，供锁外打补丁时读取标量字段
 	// （端口/密钥/面板等）。注意其 Subscriptions 与全局共享同一底层数组，
 	// 因此锁外只允许读取标量字段，不得遍历该切片。
@@ -46,6 +51,7 @@ func takeSubscriptionSnapshot(subName string) (subscriptionSnapshot, bool) {
 		return snap, false
 	}
 	snap.isActive = snap.mode == "switch" && config.Current.ActiveSubscription == subName
+	snap.customRules = copyCustomRules(config.Current, subName)
 	return snap, true
 }
 
@@ -106,7 +112,7 @@ func updateSubscriptionInSwitchMode(subName string) (needsReload bool, err error
 		return false, fmt.Errorf("订阅 %s 不存在", subName)
 	}
 
-	updatedAt, subInfo, targetFile, err := fetchAndPatchSubscription(snap, subName)
+	updatedAt, subInfo, _, err := fetchAndPatchSubscription(snap, subName)
 	if err != nil {
 		return false, err
 	}
@@ -114,12 +120,15 @@ func updateSubscriptionInSwitchMode(subName string) (needsReload bool, err error
 
 	// 如果该订阅是当前激活的订阅，则复制到 configTarget，并标记需要重载
 	if snap.isActive {
-		log.Printf("[UPDATE] 当前订阅为激活订阅，开始复制配置文件到 %s", config.ConfigTarget)
-		if err := copyFile(targetFile, config.ConfigTarget); err != nil {
-			log.Printf("[UPDATE] 复制失败: %v", err)
-			return false, fmt.Errorf("复制配置文件失败: %w", err)
+		log.Printf("[UPDATE] 当前订阅为激活订阅，开始写入运行配置 %s", config.ConfigTarget)
+		// 自定义规则取锁内快照（snap.customRules），避免在锁外引用全局切片
+		result, err := writeRuntimeConfig(subName, snap.customRules)
+		if err != nil {
+			log.Printf("[UPDATE] 写入运行配置失败: %v", err)
+			return false, err
 		}
-		log.Printf("[UPDATE] 复制完成")
+		log.Printf("[UPDATE] 运行配置写入完成（自定义规则 %d 条，跳过 %d 条）",
+			result.Applied, len(result.Skipped))
 		return true, nil // 需要重载
 	}
 

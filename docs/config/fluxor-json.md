@@ -10,7 +10,7 @@ Fluxor 的设计核心之一是不引入复杂的数据库系统。所有的全�
 
 | 事项 | 说明 |
 |------|------|
-| 写入时机 | 点击网页上的「保存并应用」、修改订阅、切换 TProxy 开关等操作时，由程序即时写回 |
+| 写入时机 | 点击网页上的「保存并应用」、修改订阅、切换 TProxy 开关、增删订阅自定义规则等操作时，由程序即时写回 |
 | 写入方式 | 「读—改—写」，只更新自己负责的字段，不整文件覆写 |
 | 建议 | **面板运行期间不要手动编辑该文件**，避免覆盖掉正在写入的内容 |
 
@@ -44,6 +44,23 @@ Fluxor 的设计核心之一是不引入复杂的数据库系统。所有的全�
       "update_interval": 86400,
       "health_interval": 300,
       "prefix": "香港",
+      "custom_rules": [
+        {
+          "id": "a345c008a8f85685",
+          "type": "DOMAIN-SUFFIX",
+          "payload": "ads.example.com",
+          "target": "REJECT",
+          "position": "after"
+        },
+        {
+          "id": "602a1b0615fb591a",
+          "type": "IP-CIDR",
+          "payload": "1.1.1.0/24",
+          "target": "🚀 节点选择",
+          "position": "before",
+          "no_resolve": true
+        }
+      ],
       "updated_at": "2026-07-02T15:00:00Z",
       "subscription_info": {
         "upload": 10737418240,
@@ -89,6 +106,20 @@ Fluxor 的设计核心之一是不引入复杂的数据库系统。所有的全�
 * **`update_interval`**：以秒为单位的自动静默更新间隔（`0` 表示不自动更新）。
 * **`health_interval`**：以秒为单位的后台健康测速频率。
 * **`prefix`**：**节点名称前缀**（不是过滤正则）。填写后生成的节点名会自动带上该前缀，对应内核 `proxy-provider` 的 `override.additional-prefix`，用于多订阅时区分节点来源。
+* **`custom_rules`**：**切换模式**下该订阅的自定义规则列表（融合模式不使用）。每条规则由结构化字段组成，写入 `config.yaml` 时由面板组装成内核规则行：
+
+  | 字段 | 说明 |
+  |------|------|
+  | `id` | 面板生成的稳定标识，用于修改 / 排序 / 删除单条规则 |
+  | `type` | 规则类型（如 `DOMAIN-SUFFIX`、`RULE-SET`），取值受面板白名单限制 |
+  | `payload` | 规则取值（如 `ads.example.com`、`1.1.1.0/24`、规则集名称） |
+  | `target` | 命中目标：该订阅自带的代理组，或 `DIRECT` / `REJECT` / `PASS` |
+  | `position` | `before`（默认，插到规则最前，优先级高于订阅自带规则）或 `after`（插在最后一条 `MATCH` 之前） |
+  | `no_resolve` | 仅 IP 类与 `RULE-SET` 规则使用，跳过域名解析 |
+
+  数组顺序即生效顺序：`before` 组的规则按数组顺序插在规则最前，`after` 组的规则按数组顺序插在最后一条 `MATCH` 之前；界面上的上/下移动只在同组内交换，并即时写回本文件。
+
+  规则由「订阅配置」页的自定义规则弹窗维护，逐条即时写入本文件；目标已失效的规则会被跳过而不写入 `config.yaml`（内核遇到无法解析的目标会拒绝加载整份配置），并在弹窗中标注原因。详见 [订阅工作模式](./subscription-modes)。
 * **`updated_at`**：最近一次成功更新的时间。
 * **`subscription_info`**：机场返回的流量配额，包含已用上传（`upload`）、已用下载（`download`）、总配额（`total`）与过期时间戳（`expire`），会在「订阅配置」页作为流量卡片渲染。
 

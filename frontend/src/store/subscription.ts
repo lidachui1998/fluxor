@@ -11,6 +11,44 @@ export interface SubscriptionInfo {
   updatedAt: string | null
 }
 
+/**
+ * 切换模式下挂在某个订阅上的单条自定义规则。
+ *
+ * 与后端 config.CustomRule 一一对应：存的是结构化字段而非拼好的规则文本，
+ * 规则行由后端按内核语法组装（用户输入的逗号/空格无法破坏规则行结构）。
+ */
+export interface CustomRule {
+  id: string
+  type: string          // 规则类型，如 'DOMAIN-SUFFIX'
+  payload: string       // 规则载荷，如 'example.com'
+  target: string        // 该订阅的代理组/代理节点名，或 'DIRECT' | 'REJECT' | 'PASS'
+  position: string      // 'before'（默认，插在最前）| 'after'（插在最后一条 MATCH 之前）
+  no_resolve?: boolean
+  // 以下两个字段仅由后端在响应中返回，请求体不需要
+  line: string          // 后端组装好的规则行，用于列表展示
+  valid: boolean
+  reason?: string       // valid=false 时的原因
+}
+
+/** 内核支持的规则类型白名单及其载荷示例（示例用作输入框 placeholder）。 */
+export interface RuleTypeSpec {
+  type: string          // 'DOMAIN' | 'DOMAIN-SUFFIX' | ... | 'RULE-SET'
+  example: string       // 载荷示例
+  no_resolve: boolean   // 该类型是否支持 no-resolve 选项
+}
+
+/** /subscribe/custom-rules/{name} 的统一响应体：增删查共用。 */
+export interface CustomRulesPayload {
+  file_ready: boolean     // 订阅原始文件是否已下载（false 时无法添加规则）
+  rules: CustomRule[]     // 已按生效顺序返回（before 组在前、after 组在后），前端原样渲染，勿再排序/分组
+  groups: string[]        // 该订阅自带的代理组（仅代理组，不含代理节点），作为可选目标
+  builtins: string[]      // ['DIRECT','REJECT','PASS']
+  providers: string[]     // 该订阅 rule-providers 的键，供 RULE-SET 选择
+  rule_types: RuleTypeSpec[]
+  status?: 'ok' | 'warning'
+  message?: string
+}
+
 export interface SubscriptionItem {
   name: string
   url: string
@@ -18,6 +56,8 @@ export interface SubscriptionItem {
   health_interval: number
   prefix: string
   info?: SubscriptionInfo | null
+  // 订阅级自定义规则（切换模式）：编辑订阅时必须原样带回，否则保存并应用会丢规则
+  custom_rules?: CustomRule[]
 }
 
 export interface SubscriptionConfigData {

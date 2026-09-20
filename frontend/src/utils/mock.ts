@@ -108,6 +108,80 @@ let mockTproxyProxyLocal = true
 let mockTproxyDstExceptions = ['# 公共 DNS 服务器', '223.5.5.5', '1.12.12.12']
 let mockTproxySrcExceptions = ['# Docker 默认网段', '172.17.0.0/16']
 
+// 切换模式订阅的自定义规则（按订阅名隔离，模拟后端的即时持久化）
+const mockCustomRulesBySub: Record<string, any[]> = {
+  'Sub-Mock-01': [
+    { id: 'mock-rule-01', type: 'DOMAIN-SUFFIX', payload: 'ads.example.com', target: 'REJECT', position: 'after', line: 'DOMAIN-SUFFIX,ads.example.com,REJECT', valid: true },
+    { id: 'mock-rule-02', type: 'RULE-SET', payload: 'gone', target: '已改名的组', position: 'after', line: 'RULE-SET,gone,已改名的组', valid: false, reason: '规则集 "gone" 不存在于该订阅的 rule-providers 中' }
+  ]
+}
+
+// 与后端 configcheck.RuleSpecs() 保持一致的类型白名单及载荷示例
+const mockCustomRuleTypes = [
+  { type: 'DOMAIN', example: 'example.com', no_resolve: false },
+  { type: 'DOMAIN-SUFFIX', example: 'example.com', no_resolve: false },
+  { type: 'DOMAIN-KEYWORD', example: 'example', no_resolve: false },
+  { type: 'DOMAIN-REGEX', example: '^ads\\..*$', no_resolve: false },
+  { type: 'GEOSITE', example: 'github', no_resolve: false },
+  { type: 'GEOIP', example: 'CN', no_resolve: true },
+  { type: 'IP-CIDR', example: '1.1.1.0/24', no_resolve: true },
+  { type: 'IP-CIDR6', example: '2001:db8::/32', no_resolve: true },
+  { type: 'IP-SUFFIX', example: '1.1.1.0/24', no_resolve: true },
+  { type: 'IP-ASN', example: '13335', no_resolve: true },
+  { type: 'SRC-IP-CIDR', example: '192.168.1.0/24', no_resolve: true },
+  { type: 'SRC-PORT', example: '443', no_resolve: false },
+  { type: 'DST-PORT', example: '443', no_resolve: false },
+  { type: 'PROCESS-NAME', example: 'curl', no_resolve: false },
+  { type: 'NETWORK', example: 'tcp', no_resolve: false },
+  { type: 'RULE-SET', example: '从该订阅的规则集中选择', no_resolve: true }
+]
+
+const mockCustomRuleGroups = ['节点选择', '自动选择', '广告拦截']
+const mockCustomRuleBuiltins = ['DIRECT', 'REJECT', 'PASS']
+const mockCustomRuleProviders = ['ads', 'private']
+// 支持 no-resolve 的类型（IP 类与 RULE-SET），用于组装规则行
+const mockCustomRuleNoResolveTypes = mockCustomRuleTypes.filter(t => t.no_resolve).map(t => t.type)
+
+// 与后端一致：响应中的 rules 已按生效顺序排列（before 组整体在前、after 组整体在后），前端原样渲染
+const orderMockCustomRules = (rules: any[]) => [
+  ...rules.filter(r => r.position === 'before'),
+  ...rules.filter(r => r.position !== 'before')
+]
+
+// 递增序号：id 是列表 key 也是编辑/排序的定位依据，同一毫秒内连续写入不能重复
+let mockRuleSeq = 0
+const nextMockRuleId = () => `mock-rule-${Date.now()}-${++mockRuleSeq}`
+
+// 由请求体组装一条规则：规则行由结构化字段拼装，no-resolve 仅对支持的类型生效，position 缺省为最前
+const buildMockCustomRule = (body: any, id: string) => {
+  const type = String(body.type || '').toUpperCase()
+  const payload = String(body.payload || '').trim()
+  const target = String(body.target || '').trim()
+  const noResolve = !!body.no_resolve && mockCustomRuleNoResolveTypes.includes(type)
+  return {
+    id,
+    type,
+    payload,
+    target,
+    position: body.position === 'after' ? 'after' : 'before',
+    no_resolve: noResolve,
+    line: [type, payload, target].join(',') + (noResolve ? ',no-resolve' : ''),
+    valid: true
+  }
+}
+
+// 组装 /subscribe/custom-rules 的统一响应体（status/message 仅写操作时携带）
+const buildMockCustomRulesPayload = (rules: any[], status?: string, message?: string) => ({
+  file_ready: true,
+  rules: orderMockCustomRules(rules),
+  groups: mockCustomRuleGroups,
+  builtins: mockCustomRuleBuiltins,
+  providers: mockCustomRuleProviders,
+  rule_types: mockCustomRuleTypes,
+  status,
+  message
+})
+
 // 模拟 HTTP API
 export function handleMockFetch(path: string, options: RequestInit = {}): Response {
   const method = (options.method || 'GET').toUpperCase()
@@ -223,6 +297,61 @@ export function handleMockFetch(path: string, options: RequestInit = {}): Respon
   // 延迟测试模拟
   if (cleanPath.includes('/delaytest/')) {
     return reply({ delay: Math.floor(40 + Math.random() * 100) })
+  }
+
+  // 订阅自定义规则（切换模式）：GET 查询 / POST 新增 / PUT 修改 / PATCH 排序 / DELETE 删除（?id=）
+  // 规则按订阅名隔离，写操作立即改内存数组，与后端「即时持久化」语义一致
+  if (cleanPath.includes('/subscribe/custom-rules/')) {
+    const subName = decodeURIComponent(cleanPath.split('/subscribe/custom-rules/')[1] || '')
+    if (!mockCustomRulesBySub[subName]) mockCustomRulesBySub[subName] = []
+    const rules = mockCustomRulesBySub[subName]
+
+    if (method === 'POST') {
+      const body = JSON.parse(options.body as string || '{}')
+      rules.push(buildMockCustomRule(body, nextMockRuleId()))
+      return reply(buildMockCustomRulesPayload(rules, 'ok'))
+    }
+
+    if (method === 'PUT') {
+      const body = JSON.parse(options.body as string || '{}')
+      const idx = rules.findIndex(r => r.id === body.id)
+      if (idx < 0) return reply({ status: 'error', message: '规则不存在: ' + body.id }, 404)
+      // 就地替换：索引与 id 都保持原样，列表位置不变（与后端 PUT 语义一致）
+      rules[idx] = buildMockCustomRule(body, rules[idx].id)
+      return reply(buildMockCustomRulesPayload(rules, 'ok'))
+    }
+
+    if (method === 'PATCH') {
+      const body = JSON.parse(options.body as string || '{}')
+      const direction = body.direction === 'up' ? 'up' : 'down'
+      // 交换在生效顺序上进行，且只与同 position 分组内的相邻规则交换
+      const ordered = orderMockCustomRules(rules)
+      const idx = ordered.findIndex(r => r.id === body.id)
+      if (idx < 0) return reply({ status: 'error', message: '规则不存在: ' + body.id }, 404)
+      const swapIdx = direction === 'up' ? idx - 1 : idx + 1
+      const neighbour = ordered[swapIdx]
+      // 边界（已是该分组首/末条）回 400，而不是假装成功
+      if (!neighbour || neighbour.position !== ordered[idx].position) {
+        return reply({ status: 'error', message: direction === 'up' ? '规则已在该分组的最前，无法继续移动' : '规则已在该分组的最后，无法继续移动' }, 400)
+      }
+      const moved = ordered[idx]
+      ordered[idx] = neighbour
+      ordered[swapIdx] = moved
+      // 交换结果按生效顺序写回原数组
+      ordered.forEach((r, i) => { rules[i] = r })
+      return reply(buildMockCustomRulesPayload(rules))
+    }
+
+    if (method === 'DELETE') {
+      // cleanPath 已剥离查询串，id 需从原始 path 上取
+      const id = decodeURIComponent(new URLSearchParams(path.split('?')[1] || '').get('id') || '')
+      const idx = rules.findIndex(r => r.id === id)
+      if (idx < 0) return reply({ status: 'error', message: '规则不存在: ' + id }, 404)
+      rules.splice(idx, 1)
+      return reply(buildMockCustomRulesPayload(rules, 'ok'))
+    }
+
+    return reply(buildMockCustomRulesPayload(rules))
   }
 
   return reply({ error: 'Not Found' }, 404)

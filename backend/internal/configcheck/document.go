@@ -109,6 +109,47 @@ func (d *Doc) Delete(key string) bool {
 	return true
 }
 
+// NodeNames 读取顶层序列字段中每一项的 name 字段（如 proxy-groups / proxies）。
+//
+// 用于收集「可作为规则目标的名称」。字段不存在、类型不符或某项缺 name 时跳过
+// 该项而非报错：调用方（规则校验）不应因为配置里有一段异常结构就整体失败。
+func (d *Doc) NodeNames(key string) []string {
+	seq := d.Get(key)
+	if seq == nil || seq.Kind != yaml.SequenceNode {
+		return nil
+	}
+	var names []string
+	for _, item := range seq.Content {
+		if item.Kind != yaml.MappingNode {
+			continue
+		}
+		for i := 0; i+1 < len(item.Content); i += 2 {
+			if strings.EqualFold(item.Content[i].Value, "name") {
+				if name := strings.TrimSpace(item.Content[i+1].Value); name != "" {
+					names = append(names, name)
+				}
+				break
+			}
+		}
+	}
+	return names
+}
+
+// MappingKeys 读取顶层映射字段的键（如 rule-providers 的规则集名称）。
+func (d *Doc) MappingKeys(key string) []string {
+	mapping := d.Get(key)
+	if mapping == nil || mapping.Kind != yaml.MappingNode {
+		return nil
+	}
+	var keys []string
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if name := strings.TrimSpace(mapping.Content[i].Value); name != "" {
+			keys = append(keys, name)
+		}
+	}
+	return keys
+}
+
 // Bytes 序列化回 YAML 文本（2 空格缩进，与模板风格一致）。
 //
 // yaml.v3 会把 emoji 等 astral 平面字符输出为 \U0001F680 转义（语义等价，内核可

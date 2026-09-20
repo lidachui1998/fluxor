@@ -116,9 +116,9 @@ func HandleGenerateConfig(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteJSONError(w, http.StatusInternalServerError, "选中的订阅文件不存在: "+err.Error())
 			return
 		}
-		// 复制文件到 configTarget
-		if err := copyFile(srcFile, config.ConfigTarget); err != nil {
-			httpx.WriteJSONError(w, http.StatusInternalServerError, "复制配置文件失败: "+err.Error())
+		// 复制文件到 configTarget，并叠加该订阅的自定义规则
+		if _, err := writeRuntimeConfig(cfg.ActiveSubscription, copyCustomRules(cfg, cfg.ActiveSubscription)); err != nil {
+			httpx.WriteJSONError(w, http.StatusInternalServerError, "生成运行配置失败: "+err.Error())
 			return
 		}
 		// 保存配置到 subscribe.json
