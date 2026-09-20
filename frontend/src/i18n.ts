@@ -363,12 +363,29 @@ const messages = {
     'subscription.switch_no_selection': '请选中一个订阅',
     'subscription.delete_physical_file': '同时删除本地物理配置文件',
     'subscription.help_title': '使用说明',
-    'subscription.help_content': '切换模式使用订阅文件自带规则和代理组；多订阅推荐融合模式，规则集仅适用于融合模式。',
+    'subscription.help_content': '订阅中心把订阅链接转换成内核可运行的配置；改动后需点击右上角「保存并应用」才会生效。\n'
+      + '\n【模式】\n'
+      + '· 融合：合并全部订阅，并使用内置的 base / full 规则集，多订阅推荐。\n'
+      + '· 切换：只使用当前选中订阅自带的规则与代理组；点击订阅卡片选中，再次点击取消。\n'
+      + '\n【端口与密钥】\n'
+      + '· 代理端口：内核的混合代理端口（HTTP / SOCKS5）。\n'
+      + '· 面板端口：外置面板的访问端口。\n'
+      + '· TPROXY 端口：透明代理端口，留空或 0 表示不启用。\n'
+      + '· 面板密钥：访问外置面板所需的密码。\n'
+      + '· 端口需在 1025-65535 之间，且互不重复。\n'
+      + '\n【规则集】\n'
+      + '· 规则集分「标准」与「详细」两档，前者轻量、后者完整；仅在融合模式下生效，切换模式使用订阅自带规则。\n'
+      + '\n【订阅列表】\n'
+      + '· 名称支持中英文、数字与 emoji（最多 32 个字符）；更新与健康检查间隔的单位为秒。\n'
+      + '· 更新：重新下载该订阅的节点信息；编辑：修改订阅信息；删除：可勾选同时删除本地物理配置文件。\n'
+      + '· 自定义规则：融合模式在标题右侧「自定义规则」中按规则集档位配置；切换模式在各订阅卡片上配置。规则改动立即保存，无需再次保存。\n'
+      + '\n【外置面板】\n'
+      + '· 可选 MetaCubeXD 或 Zashboard；「MetaCubeXD 后端地址」留空则保持不变。',
     'subscription.custom_rules': '自定义规则',
     'subscription.custom_rules_title': '自定义规则 · {name}',
     'subscription.custom_rules_merge_title': '自定义规则 · 融合模式',
+    'subscription.custom_rules_merge_hint': '融合模式按规则集档位分别保存；切换模式在各自的订阅上添加自定义规则。',
     'subscription.custom_rule_effective_badge': '当前生效',
-    'subscription.custom_rules_hint': '规则仅对该订阅生效；添加、修改、排序、删除都会立即保存，无需再点保存。',
     'subscription.custom_rule_type': '类型',
     'subscription.custom_rule_payload': '取值',
     'subscription.custom_rule_target': '目标',
@@ -764,12 +781,29 @@ const messages = {
     'subscription.switch_no_selection': 'Please active a subscribe',
     'subscription.delete_physical_file': 'Delete local configuration file simultaneously',
     'subscription.help_title': 'Help',
-    'subscription.help_content': 'In switch mode, the built‑in rules and proxy groups from the subscription file are applied. For users with multiple subscriptions, merge mode is strongly recommended, as rule sets are only effective when merge mode is enabled.',
+    'subscription.help_content': 'The subscription center turns subscription links into a kernel‑ready configuration. Click "Save & Apply" at the top right to make changes take effect.\n'
+      + '\n[Modes]\n'
+      + '· Merge: merges all subscriptions and uses the built‑in base / full rule sets — recommended for multiple subscriptions.\n'
+      + '· Switch: uses only the rules and proxy groups shipped with the selected subscription. Click a subscription card to select it, click again to deselect.\n'
+      + '\n[Ports & secret]\n'
+      + '· Proxy port: the kernel mixed proxy port (HTTP / SOCKS5).\n'
+      + '· Panel port: the port the external panel listens on.\n'
+      + '· TPROXY port: transparent proxy port; leave empty or 0 to disable.\n'
+      + '· Panel secret: the password required to access the external panel.\n'
+      + '· Ports must be within 1025‑65535 and must not collide with each other.\n'
+      + '\n[Rule sets]\n'
+      + '· Two tiers: "Base" (lightweight) and "Detailed" (complete); both only apply in merge mode — switch mode uses the rules shipped with the subscription.\n'
+      + '\n[Subscription list]\n'
+      + '· Names may contain Chinese, English, digits and emoji (max 32 characters); update and health‑check intervals are in seconds.\n'
+      + '· Update: re‑download the node data of this subscription; Edit: change subscription info; Delete: optionally remove the local physical config file as well.\n'
+      + '· Custom rules: in merge mode configure them per rule‑set tier via "Custom Rules" next to the title; in switch mode configure them on each subscription card. Rule changes are saved immediately — no extra save step.\n'
+      + '\n[External panel]\n'
+      + '· Choose MetaCubeXD or Zashboard; an empty "MetaCubeXD Backend URL" keeps the current value.',
     'subscription.custom_rules': 'Custom Rules',
     'subscription.custom_rules_title': 'Custom Rules · {name}',
     'subscription.custom_rules_merge_title': 'Custom Rules · Merge mode',
+    'subscription.custom_rules_merge_hint': 'Merge mode stores rules per rule‑set tier; in switch mode add custom rules on each subscription.',
     'subscription.custom_rule_effective_badge': 'Active',
-    'subscription.custom_rules_hint': 'Rules apply to this subscription only. Adding, editing, reordering and deleting are all saved immediately — no extra save step.',
     'subscription.custom_rule_type': 'Type',
     'subscription.custom_rule_payload': 'Value',
     'subscription.custom_rule_target': 'Target',

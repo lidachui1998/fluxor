@@ -67,7 +67,8 @@ fluxor/
             └── Subscription.vue # 订阅：代理/面板端口、密钥显隐切换、规则集（lite/base/full）、UI 面板选择、订阅 CRUD 模态框（zoomIn 动画，支持订阅名称、链接、检测间隔、节点前缀）、流量/健康度/有效期卡片、「保存并应用」
                                  #   「自定义规则」弹窗（components/CustomRulesDialog.vue，多作用域 + 页签）：
                                  #   切换模式由订阅卡片按钮打开（作用域=该订阅，单页签）；
-                                 #   融合模式由标题行「添加订阅」左侧按钮打开（作用域=base/full 两个页签，各读各的代理组与规则集）
+                                 #   融合模式由标题行「添加订阅」左侧按钮打开（作用域=base/full 两个页签，各读各的代理组与规则集），
+                                 #   并传入 hint 文案说明作用域与切换模式的入口（文案由父组件按模式给定，组件内不判模式）
 ```
 
 > **构建流程**：`make` → ① 清理旧 `frontend/dist` 与 `backend/dist`；② `npm run build` 输出到 `frontend/dist/`；③ 拷贝至 `backend/dist/`；④ 在 `backend/` 内 `go build -ldflags` （依赖 `//go:embed dist`，同时注入版本号）输出到项目根目录 `./fluxor`。版本号用 `make V=1.0.0` 指定，缺省 `1.0.0`（`make V=dev` 可产出不参与更新判断的调试版本）。

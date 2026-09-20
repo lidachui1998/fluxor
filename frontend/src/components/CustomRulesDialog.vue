@@ -10,7 +10,7 @@
 import { ref, reactive, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { apiFetch } from '../utils/api'
-import { CloseOutline, CreateOutline, TrashOutline, AddOutline, SyncOutline, ArrowUpOutline, ArrowDownOutline } from '@vicons/ionicons5'
+import { CreateOutline, TrashOutline, AddOutline, SyncOutline, ArrowUpOutline, ArrowDownOutline } from '@vicons/ionicons5'
 import { useGlobalStore } from '../store/global'
 import type { CustomRule, CustomRulesPayload, RuleTypeSpec } from '../store/subscription'
 
@@ -75,6 +75,9 @@ const props = defineProps<{
   isActive: boolean
   // 弹窗标题（父组件已把订阅名/模式名拼进文案）
   title: string
+  // 作用域提示文案：只有融合模式需要，切换模式留空即整段不显示。
+  // 由父组件给定而不是组件内按 endpoint 判模式：组件对两种模式只做「key → URL 片段」的映射
+  hint?: string
   // 作用域接口前缀：'/subscribe/custom-rules' | '/subscribe/merge-custom-rules'
   endpoint: string
   scopes: { key: string, label: string, effective: boolean }[]
@@ -433,7 +436,7 @@ const handleDeleteRule = async (rule: CustomRule) => {
   }
 }
 
-// 关闭：把「改动过的作用域 key」交给父组件。三条关闭路径（页脚关闭 / 头部 × / 遮罩点击）
+// 关闭：把「改动过的作用域 key」交给父组件。两条关闭路径（页脚关闭 / 遮罩点击）
 // 都收敛到这里，不能有分支绕过去——漏掉任何一个都会导致规则页继续显示旧列表。
 const closeDialog = () => {
   const closedKeys = props.scopes.filter(scope => mutatedKeys.has(scope.key)).map(scope => scope.key)
@@ -460,11 +463,8 @@ defineExpose({ takeMutatedScopes })
   <Teleport to="body">
     <div v-if="isActive && visible" class="fixed inset-0 glass-mask z-[9999] flex items-center justify-center p-4" @click.self="closeDialog">
       <div class="glass-heavy w-full max-w-lg max-h-[85vh] rounded-[20px] shadow-2xl border p-6 flex flex-col gap-4 animate-[zoomIn_0.2s_ease-out]">
-        <div class="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-3 shrink-0">
+        <div class="flex items-center border-b border-slate-100 dark:border-slate-800 pb-3 shrink-0">
           <h2 class="text-lg font-bold break-all">{{ title }}</h2>
-          <button @click="closeDialog" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 flex items-center justify-center p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-all shrink-0">
-            <CloseOutline class="w-5 h-5" />
-          </button>
         </div>
 
         <!-- 作用域页签：仅多作用域（融合模式 base/full）时出现，单作用域不与标题重复 -->
@@ -489,7 +489,9 @@ defineExpose({ takeMutatedScopes })
         </div>
 
         <div class="flex-1 min-h-0 overflow-y-auto flex flex-col gap-4 pr-1">
-          <p class="text-xs text-slate-400 dark:text-slate-500 leading-normal">{{ t('subscription.custom_rules_hint') }}</p>
+          <!-- 作用域提示：只有融合模式需要（切换模式的规则本来就只作用于该订阅，无需说明），
+               文案由父组件传入；组件内不判模式 -->
+          <p v-if="props.hint" class="text-xs text-slate-400 dark:text-slate-500 leading-normal">{{ props.hint }}</p>
 
           <div v-if="isLoading" class="flex items-center justify-center gap-2 py-8 text-xs text-slate-500 dark:text-slate-400">
             <div class="w-4 h-4 border-2 border-slate-300 dark:border-slate-700 !border-t-accent rounded-full animate-spin"></div>

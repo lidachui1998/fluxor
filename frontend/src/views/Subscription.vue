@@ -2,7 +2,7 @@
 import { ref, onMounted, onActivated, onDeactivated, computed, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { apiFetch } from '../utils/api'
-import { MailOutline, EyeOutline, EyeOffOutline, SyncOutline, CreateOutline, TrashOutline, CloseOutline, InformationCircleOutline, OptionsOutline } from '@vicons/ionicons5'
+import { MailOutline, EyeOutline, EyeOffOutline, SyncOutline, CreateOutline, TrashOutline, CloseOutline, InformationCircleOutline, OptionsOutline, AddOutline, SaveOutline } from '@vicons/ionicons5'
 import { useGlobalStore } from '../store/global'
 import { storeToRefs } from 'pinia'
 import {
@@ -56,12 +56,15 @@ const rulesDialogRef = ref<InstanceType<typeof CustomRulesDialog> | null>(null)
 const rulesEndpoint = ref('')
 const rulesScopes = ref<{ key: string, label: string, effective: boolean }[]>([])
 const rulesTitle = ref('')
+// 自定义规则弹窗的作用域提示：融合模式的规则挂在规则集档位上，切换模式在各订阅卡片上，文案随模式切换
+const rulesHint = ref('')
 
 // 打开订阅级（切换模式）自定义规则：作用域即该订阅名，单作用域 → 不渲染页签
 const openSubRulesDialog = (name: string) => {
   rulesEndpoint.value = '/subscribe/custom-rules'
   rulesScopes.value = [{ key: name, label: name, effective: name === currentConfig.value.active_subscription }]
   rulesTitle.value = t('subscription.custom_rules_title', { name })
+  rulesHint.value = ''
   showRulesModal.value = true
 }
 
@@ -73,6 +76,7 @@ const openMergeRulesDialog = () => {
     { key: 'full', label: t('subscription.rule_group_full'), effective: currentConfig.value.rule_group === 'full' },
   ]
   rulesTitle.value = t('subscription.custom_rules_merge_title')
+  rulesHint.value = t('subscription.custom_rules_merge_hint')
   showRulesModal.value = true
 }
 
@@ -109,6 +113,11 @@ const nameHint = computed(() =>
     ? t('subscription.name_too_long')
     : ''
 )
+
+// 只有 MetaCubeXD 用得到「后端地址」，选 Zashboard 时该字段整块不渲染。
+// 显隐只作用于渲染：meta_backend_url 始终留在 currentConfig 中，
+// 「保存并应用」照常提交原内容，来回切换面板不会把已填地址弄丢。
+const isMetaCubeXd = computed(() => currentConfig.value.ui_panel === 'metacubexd')
 // 点击卡片选中
 const selectSubscription = (name: string) => {
     if (currentConfig.value.mode === 'switch') {
@@ -522,6 +531,7 @@ onUnmounted(() => {
       </h3>
       <button @click="saveAndApply" :disabled="isApplying" class="px-4 py-1.5 bg-accent hover:bg-accent-hover text-white text-xs font-semibold rounded-lg shadow-sm transition-all flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
         <SyncOutline v-if="isApplying" class="w-3.5 h-3.5 animate-spin" />
+        <SaveOutline v-else class="w-3.5 h-3.5" />
         {{ isApplying ? t('subscription.applying_short') : t('subscription.save_and_apply') }}
       </button>
     </div>
@@ -529,58 +539,73 @@ onUnmounted(() => {
     <!-- 内容区域内滚动容器 -->
     <div class="flex-1 min-h-0 overflow-y-auto glass-medium shadow-none p-6 rounded-xl border border-slate-200/50 dark:border-slate-800/50 transition-all pr-4">
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div class="flex flex-col gap-2">
-          <label class="text-sm font-medium text-slate-600 dark:text-slate-400">{{ t('subscription.proxy_port') }}</label>
-          <input type="number" v-model="currentConfig.proxy_port" min="0" max="65535" step="1" class="px-4 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:ring-2 focus:ring-accent outline-none" />
+        <!-- 字段顺序：窄窗口按文档顺序（端口三件套 → 规则集/外置面板 → 面板密钥 → 后端地址）；
+             桌面端用 md:order-N 还原成「端口成对 → 密钥 → 规则集/外置面板 → 后端地址」的成组排列
+             （md:contents 拆掉包裹层后，order 决定各字段在外层网格中的落位）。 -->
+        <!-- 端口三件套：窄窗口下三列同一行，省下一行纵向空间；md 起 md:contents 让这三个
+             字段脱离包裹层直接参与外层两列网格，排列顺序由上面的 md:order-N 决定。
+             窄窗口列宽有限，输入框左右内边距在 sm 以下收紧，避免 5 位端口号被数字调节箭头挤掉。 -->
+        <div class="grid grid-cols-3 gap-2 md:contents">
+          <div class="flex flex-col gap-2 md:order-1">
+            <label class="text-xs font-medium text-slate-600 dark:text-slate-400">{{ t('subscription.proxy_port') }}</label>
+            <input type="number" v-model="currentConfig.proxy_port" min="0" max="65535" step="1" class="px-2.5 sm:px-4 py-2.5 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:ring-2 focus:ring-accent outline-none" />
+          </div>
+          <div class="flex flex-col gap-2 md:order-2">
+            <label class="text-xs font-medium text-slate-600 dark:text-slate-400">{{ t('subscription.panel_port') }}</label>
+            <input type="number" v-model="currentConfig.panel_port" min="0" max="65535" step="1" class="px-2.5 sm:px-4 py-2.5 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:ring-2 focus:ring-accent outline-none" />
+          </div>
+          <div class="flex flex-col gap-2 md:order-3">
+            <label class="text-xs font-medium text-slate-600 dark:text-slate-400">{{ t('subscription.tproxy_port') }}</label>
+            <input
+              type="number"
+              v-model.number="currentConfig.tproxy_port"
+              min="0" max="65535" step="1" 
+              @input="onTproxyPortInput"
+              :placeholder="t('config.port_disabled_hint')"
+              class="px-2.5 sm:px-4 py-2.5 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:ring-2 focus:ring-accent outline-none"
+            />
+          </div>
         </div>
-        <div class="flex flex-col gap-2">
-          <label class="text-sm font-medium text-slate-600 dark:text-slate-400">{{ t('subscription.panel_port') }}</label>
-          <input type="number" v-model="currentConfig.panel_port" min="0" max="65535" step="1" class="px-4 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:ring-2 focus:ring-accent outline-none" />
+        <!-- 规则集 / 外置面板：窄窗口下同一行；md 起 md:contents 让这两个字段回到外层两列网格 -->
+        <div class="grid grid-cols-2 gap-2 md:contents">
+          <div class="flex flex-col gap-2 md:order-5">
+            <label class="text-xs font-medium text-slate-600 dark:text-slate-400">{{ t('subscription.rule_group') }}</label>
+            <select v-model="currentConfig.rule_group" class="px-4 py-2.5 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:ring-2 focus:ring-accent outline-none">
+              <option value="base">{{ t('subscription.rule_group_base') }}</option>
+              <option value="full">{{ t('subscription.rule_group_full') }}</option>
+            </select>
+          </div>
+          <div class="flex flex-col gap-2 md:order-6">
+            <label class="text-xs font-medium text-slate-600 dark:text-slate-400">{{ t('subscription.ui_panel') }}</label>
+            <select v-model="currentConfig.ui_panel" class="px-4 py-2.5 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:ring-2 focus:ring-accent outline-none">
+              <option value="metacubexd">MetaCubeXD</option>
+              <option value="zashboard">Zashboard</option>
+            </select>
+          </div>
         </div>
-        <div class="flex flex-col gap-2">
-          <label class="text-sm font-medium text-slate-600 dark:text-slate-400">{{ t('subscription.tproxy_port') }}</label>
-          <input
-            type="number"
-            v-model.number="currentConfig.tproxy_port"
-            min="0" max="65535" step="1" 
-            @input="onTproxyPortInput"
-            :placeholder="t('config.port_disabled_hint')"
-            class="px-4 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:ring-2 focus:ring-accent outline-none"
-          />
-        </div>
-        <div class="flex flex-col gap-2">
-          <label class="text-sm font-medium text-slate-600 dark:text-slate-400">{{ t('subscription.panel_secret') }}</label>
+        <!-- 面板密钥：紧跟外置面板（窄窗口下在上者之后、后端地址之前） -->
+        <div class="flex flex-col gap-2 md:order-4">
+          <label class="text-xs font-medium text-slate-600 dark:text-slate-400">{{ t('subscription.panel_secret') }}</label>
           <div class="relative flex items-center">
-            <input :type="showSecret ? 'text' : 'password'" v-model="currentConfig.panel_secret" class="w-full pl-4 pr-10 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:ring-2 focus:ring-accent outline-none" />
+            <input :type="showSecret ? 'text' : 'password'" v-model="currentConfig.panel_secret" class="w-full pl-4 pr-10 py-2.5 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:ring-2 focus:ring-accent outline-none" />
             <button @click="showSecret = !showSecret" class="absolute right-3 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
               <EyeOutline v-if="showSecret" class="w-5 h-5" />
               <EyeOffOutline v-else class="w-5 h-5" />
             </button>
           </div>
         </div>
-        <div class="flex flex-col gap-2">
-          <label class="text-sm font-medium text-slate-600 dark:text-slate-400">{{ t('subscription.rule_group') }}</label>
-          <select v-model="currentConfig.rule_group" class="px-4 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:ring-2 focus:ring-accent outline-none">
-            <option value="base">{{ t('subscription.rule_group_base') }}</option>
-            <option value="full">{{ t('subscription.rule_group_full') }}</option>
-          </select>
-        </div>
-        <div class="flex flex-col gap-2">
-          <label class="text-sm font-medium text-slate-600 dark:text-slate-400">{{ t('subscription.ui_panel') }}</label>
-          <select v-model="currentConfig.ui_panel" class="px-4 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:ring-2 focus:ring-accent outline-none">
-            <option value="metacubexd">MetaCubeXD</option>
-            <option value="zashboard">Zashboard</option>
-          </select>
-        </div>
 
-        <div class="flex flex-col gap-2">
-          <label class="text-sm font-medium text-slate-600 dark:text-slate-400">{{ t('subscription.meta_backend_url') }}</label>
+        <!-- MetaCubeXD 后端地址：只有 MetaCubeXD 需要，选 Zashboard 时整块不渲染。
+             隐藏的只是输入框本身，meta_backend_url 仍留在 currentConfig 里，「保存并应用」
+             照常把原内容提交给后端——切来切去不会把已填的地址弄丢。 -->
+        <div v-if="isMetaCubeXd" class="flex flex-col gap-2 md:order-7">
+          <label class="text-xs font-medium text-slate-600 dark:text-slate-400">{{ t('subscription.meta_backend_url') }}</label>
           <div class="relative flex items-center">
             <input
               :type="showBackendUrl ? 'text' : 'password'"
               v-model="currentConfig.meta_backend_url"
               :placeholder="t('subscription.meta_backend_url_placeholder')"
-              class="w-full pl-4 pr-10 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:ring-2 focus:ring-accent outline-none"
+              class="w-full pl-4 pr-10 py-2.5 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:ring-2 focus:ring-accent outline-none"
             />
             <button
               @click="showBackendUrl = !showBackendUrl"
@@ -596,39 +621,42 @@ onUnmounted(() => {
       <div class="relative flex flex-wrap gap-y-3 gap-x-4 items-center justify-between mt-8 mb-4">
         <h4 class="font-semibold text-base shrink-0 order-1">{{ t('subscription.subscription_list') }}</h4>
         <!-- 分段控件居中：
-             · 移动端（<sm）：order-3 + w-full 折行独占第二行，按钮组留在第一行右对齐；
-              · 桌面端（sm+）：脱离文档流绝对定位在整行水平/垂直中点（left-1/2 + 双向 -translate-1/2），
-                这样居中的基准是「整行」而不是「标题与按钮之间的剩余空间」，不会因标题或
-                按钮组宽度不同而偏左偏右。左标题 64px、右按钮组 ~194px，640px 及以上不会重叠。 -->
-        <div class="w-full flex justify-center order-3 sm:order-2 sm:w-auto sm:absolute sm:left-1/2 sm:top-1/2 sm:-translate-x-1/2 sm:-translate-y-1/2">
-          <div class="flex bg-slate-100 dark:bg-slate-800 rounded-lg p-0.5 transition-all w-full sm:w-auto">
+             · 窄窗口（<lg）：order-3 + w-full 折行独占第二行，按钮组留在第一行右对齐；
+             · 桌面端（lg+）：脱离文档流绝对定位在整行水平/垂直中点（left-1/2 + 双向 -translate-1/2），
+               这样居中的基准是「整行」而不是「标题与按钮之间的剩余空间」，不会因标题或
+               按钮组宽度不同而偏左偏右。
+             居中定位从 lg 起才生效：绝对定位的滑块不占布局空间，行内剩余宽度必须同时容得下
+             滑块与按钮组。滑块加宽后，1024px 以下（尤其侧边栏展开时）两者会互相压字，
+             故该档位退回折行布局——滑块独占一行，任何宽度下都不会重叠。 -->
+        <div class="w-full flex justify-center order-3 lg:order-2 lg:w-auto lg:absolute lg:left-1/2 lg:top-1/2 lg:-translate-x-1/2 lg:-translate-y-1/2">
+          <div class="flex bg-slate-100 dark:bg-slate-800 rounded-lg p-0.5 transition-all w-full lg:w-auto">
             <button
               @click="currentConfig.mode = 'merge'"
-              class="flex-1 sm:flex-none px-4 sm:px-7 py-1.5 text-xs font-semibold rounded-md transition-all duration-200"
+              class="flex-1 lg:flex-none px-4 lg:px-10 py-1.5 text-xs font-semibold rounded-md transition-all duration-200"
               :class="currentConfig.mode === 'merge' ? 'bg-accent text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'"
             >
               {{ t('subscription.mode_merge') }}
             </button>
             <button
               @click="currentConfig.mode = 'switch'"
-              class="flex-1 sm:flex-none px-4 sm:px-7 py-1.5 text-xs font-semibold rounded-md transition-all duration-200"
+              class="flex-1 lg:flex-none px-4 lg:px-10 py-1.5 text-xs font-semibold rounded-md transition-all duration-200"
               :class="currentConfig.mode === 'switch' ? 'bg-accent text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'"
             >
               {{ t('subscription.mode_switch') }}
             </button>
           </div>
         </div>
-        <!-- 操作按钮组：ml-auto 让它在第一行贴右，紧邻标题（移动端滑块折到第二行后仍如此） -->
-        <div class="flex items-center gap-2 ml-auto shrink-0 order-2 sm:order-3">
+        <!-- 操作按钮组：ml-auto 让它在第一行贴右，紧邻标题（窄窗口下滑块折到第二行后仍如此） -->
+        <div class="flex items-center gap-2 ml-auto shrink-0 order-2 lg:order-3">
           <button
             v-if="currentConfig.mode === 'merge'"
             @click="openMergeRulesDialog"
-            class="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 text-xs font-semibold rounded-lg transition-all flex items-center gap-1.5"
+            class="px-3.5 py-1.5 bg-accent hover:bg-accent-hover text-white text-xs font-semibold rounded-lg shadow-sm transition-all flex items-center gap-1.5"
           >
             <OptionsOutline class="w-4 h-4" /> {{ t('subscription.custom_rules') }}
           </button>
-          <button @click="openSubModal(-1)" class="px-3.5 py-1.5 bg-accent hover:bg-accent-hover text-white text-xs font-semibold rounded-lg shadow-sm transition-all">
-            {{ t('subscription.add_subscription') }}
+          <button @click="openSubModal(-1)" class="px-3.5 py-1.5 bg-accent hover:bg-accent-hover text-white text-xs font-semibold rounded-lg shadow-sm transition-all flex items-center gap-1.5">
+            <AddOutline class="w-4 h-4" /> {{ t('subscription.add_subscription') }}
           </button>
         </div>
       </div>
@@ -655,18 +683,10 @@ onUnmounted(() => {
               {{ t('rules.updating') }}
             </span>
           </div>
-          <div class="flex justify-between items-start gap-4">
-            <div class="min-w-0 flex-1">
-              <span class="font-semibold text-slate-800 dark:text-slate-100 break-all">{{ item.name }}</span>
-              <div class="text-xs text-slate-400 dark:text-slate-500 mt-1 select-all break-all flex items-center gap-1.5">
-                <button @click.stop="showUrls[idx] = !showUrls[idx]" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 focus:outline-none" :title="showUrls[idx] ? t('subscription.hide_url') : t('subscription.show_url')">
-                  <EyeOffOutline v-if="showUrls[idx]" class="w-3.5 h-3.5" />
-                  <EyeOutline v-else class="w-3.5 h-3.5" />
-                </button>
-                <span>{{ showUrls[idx] ? item.url : '••••••••' }}</span>
-              </div>
-            </div>
-            <div class="flex gap-1.5" @click.stop>
+          <!-- 第一行：订阅名与操作按钮同排（按钮 shrink-0 不换行，名称过长时自行折行） -->
+          <div class="flex justify-between items-start gap-3">
+            <span class="min-w-0 font-semibold text-slate-800 dark:text-slate-100 break-all">{{ item.name }}</span>
+            <div class="flex gap-1.5 shrink-0" @click.stop>
               <button v-if="savedSubNames.has(item.name)" @click="handleUpdateSub(idx)" :disabled="isUpdating[idx]" class="p-2 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 rounded-lg transition-all" :title="t('rules.update')">
                 <SyncOutline class="w-4 h-4 inline-block" :class="{ 'animate-spin': isUpdating[idx] }" />
               </button>
@@ -680,6 +700,15 @@ onUnmounted(() => {
                 <TrashOutline class="w-4 h-4" />
               </button>
             </div>
+          </div>
+
+          <!-- 第二行：订阅链接独占整行（不再与按钮共享宽度），窄屏下也能拿到卡片满宽 -->
+          <div class="-mt-2 text-xs text-slate-400 dark:text-slate-500 select-all break-all flex items-start gap-1.5 min-w-0">
+            <button @click.stop="showUrls[idx] = !showUrls[idx]" class="shrink-0 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 focus:outline-none" :title="showUrls[idx] ? t('subscription.hide_url') : t('subscription.show_url')">
+              <EyeOffOutline v-if="showUrls[idx]" class="w-3.5 h-3.5" />
+              <EyeOutline v-else class="w-3.5 h-3.5" />
+            </button>
+            <span class="min-w-0">{{ showUrls[idx] ? item.url : '••••••••' }}</span>
           </div>
 
           <!-- 信息展示 -->
@@ -724,14 +753,14 @@ onUnmounted(() => {
     <!-- 使用说明弹窗 -->
     <Teleport to="body">
       <div v-if="isActive && showHelpModal" class="fixed inset-0 glass-mask z-[9999] flex items-center justify-center p-4" @click.self="showHelpModal = false">
-        <div class="glass-heavy w-full max-w-lg rounded-[20px] shadow-2xl border p-6 flex flex-col gap-4 animate-[zoomIn_0.2s_ease-out]">
-          <div class="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-3">
+        <div class="glass-heavy w-full max-w-lg max-h-[85vh] rounded-[20px] shadow-2xl border p-6 flex flex-col gap-4 animate-[zoomIn_0.2s_ease-out]">
+          <div class="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-3 shrink-0">
             <h2 class="text-lg font-bold">{{ t('subscription.help_title') }}</h2>
             <button @click="showHelpModal = false" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 flex items-center justify-center p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-all">
               <CloseOutline class="w-5 h-5" />
             </button>
           </div>
-          <div class="text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap leading-relaxed">
+          <div class="flex-1 min-h-0 overflow-y-auto pr-1 text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap leading-relaxed">
             {{ t('subscription.help_content') }}
           </div>
         </div>
@@ -801,6 +830,7 @@ onUnmounted(() => {
       :visible="showRulesModal"
       :is-active="isActive"
       :title="rulesTitle"
+      :hint="rulesHint"
       :endpoint="rulesEndpoint"
       :scopes="rulesScopes"
       @close="closeRulesDialog"
