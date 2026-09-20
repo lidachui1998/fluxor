@@ -590,6 +590,12 @@ const handleProxyLocalToggle = async (newVal: boolean) => {
   await persistProxyLocal(newVal)
 }
 
+// TProxy 开启时该开关被锁定（切换会重建正被 TProxy 持有的 nft 规则）。
+// 此时点击不改变值，只说明原因——与「绕过设置齿轮」同一套交互。
+const onProxyLocalBlocked = () => {
+  globalStore.showToast(t('config.tproxy_proxy_local_readonly_warning'), 'warning')
+}
+
 // persistProxyLocal 写入本机流量代理开关并同步本地状态
 const persistProxyLocal = async (enabled: boolean) => {
   try {
@@ -845,9 +851,10 @@ onUnmounted(() => {
             <FormSwitch v-else v-model="configStore.tproxyEnabled" @update:model-value="toggleTProxy" />
           </div>
 
-          <!-- 代理本机流量（由弹窗移出）。
+          <!-- 同时代理本机出站流量（由弹窗移出）。
                启用 TProxy 时禁止修改：此时切换会重建 nft 规则，而 TProxy 开关
-               正持有规则，故禁用。 -->
+               正持有规则，故禁用——置灰原因经 disabled-hint 外露（悬停 title +
+               点击 toast），避免开关无声不响应。 -->
           <div class="flex items-center justify-between">
             <label
               class="text-xs font-semibold"
@@ -860,7 +867,9 @@ onUnmounted(() => {
               v-else
               :model-value="tproxyProxyLocal"
               :disabled="configStore.tproxyEnabled"
+              :disabled-hint="t('config.tproxy_proxy_local_readonly_warning')"
               @update:model-value="handleProxyLocalToggle"
+              @blocked="onProxyLocalBlocked"
             />
           </div>
         </div>
