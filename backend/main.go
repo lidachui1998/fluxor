@@ -142,6 +142,7 @@ func main() {
 	tproxy.LoadTproxySrcExceptions()
 	tproxy.LoadTproxyDstExceptions()
 	tproxy.LoadTproxyProxyLocal()
+	tproxy.LoadTproxyIPv6()
 	// 冷启动收敛：把开关状态归零并清除可能残留的 nft/策略路由规则，
 	// 避免上次非优雅退出后出现「面板显示关闭、流量仍被劫持」的错配。
 	tproxy.ResetOnStartup()
@@ -314,6 +315,7 @@ func main() {
 	mux.HandleFunc(config.BaseURL+"/config/tproxy", tproxy.HandleTproxyState)
 	mux.HandleFunc(config.BaseURL+"/config/tproxy/exceptions", tproxy.HandleTproxyExceptions)
 	mux.HandleFunc(config.BaseURL+"/config/tproxy/proxy-local", tproxy.HandleTproxyProxyLocal)
+	mux.HandleFunc(config.BaseURL+"/config/tproxy/proxy-ipv6", tproxy.HandleTproxyProxyIPv6)
 
 	mux.HandleFunc(config.BaseURL+"/ipinfo/local/v4", netinfo.HandleLocalIPv4)
 	mux.HandleFunc(config.BaseURL+"/ipinfo/local/v6", netinfo.HandleLocalIPv6)

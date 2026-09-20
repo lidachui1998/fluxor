@@ -38,6 +38,7 @@ sniffer:
 tun:
   enable: false
   stack: mixed
+  inet6_address: 'fdfe:dcba:9876::1/126'
   dns-hijack:
     - "any:53"
     - "tcp://any:53"

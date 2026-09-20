@@ -107,6 +107,7 @@ let activeMockConns = [
 // TProxy 状态模拟（与后端语义保持一致）
 let mockTproxyEnabled = false
 let mockTproxyProxyLocal = true
+let mockTproxyIPv6 = false
 let mockTproxyDstExceptions = ['# 公共 DNS 服务器', '223.5.5.5', '1.12.12.12']
 let mockTproxySrcExceptions = ['# Docker 默认网段', '172.17.0.0/16']
 
@@ -308,6 +309,13 @@ export function handleMockFetch(path: string, options: RequestInit = {}): Respon
       mockTproxyProxyLocal = !!body.enabled
     }
     return reply({ enabled: mockTproxyProxyLocal })
+  }
+  if (cleanPath.endsWith('/config/tproxy/proxy-ipv6')) {
+    if (method === 'POST') {
+      const body = JSON.parse(options.body as string || '{}')
+      mockTproxyIPv6 = !!body.enabled
+    }
+    return reply({ enabled: mockTproxyIPv6 })
   }
   if (cleanPath.endsWith('/config/tproxy')) {
     if (method === 'POST') {

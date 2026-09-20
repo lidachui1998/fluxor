@@ -19,7 +19,7 @@
 
 | 层 | 技术 |
 |----|------|
-| 后端 | Go 1.27（标准库），唯一外部依赖 `gorilla/websocket` v1.5.3 |
+| 后端 | Go 1.27（标准库），外部依赖仅 2 个：`gorilla/websocket` v1.5.3、`gopkg.in/yaml.v3` v3.0.1 |
 | 前端 | Vue 3.5（Composition API）+ TypeScript 5.9 |
 | 状态管理 | Pinia 4 |
 | 构建工具 | Vite 8（Rolldown）+ vue-tsc |

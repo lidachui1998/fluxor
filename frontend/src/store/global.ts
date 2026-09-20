@@ -50,7 +50,7 @@ export const useGlobalStore = defineStore('global', () => {
   // 校验历史脏值：localStorage 可能残留已废弃/被篡改的主题名，
   // 直接采用会落到未定义的 data-theme 上（样式全失效）并渲染出裸 key。
   const storedTheme = localStorage.getItem('fluxor-theme')
-  const theme = ref<string>(isThemeName(storedTheme) ? storedTheme : 'pink')
+  const theme = ref<string>(isThemeName(storedTheme) ? storedTheme : 'system')
   
   const toasts = ref<ToastMessage[]>([])
   const confirmDialog = ref<ConfirmState | null>(null)

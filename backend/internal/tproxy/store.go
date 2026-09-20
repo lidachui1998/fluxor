@@ -14,6 +14,7 @@ import (
 const (
 	keyTproxyEnabled       = "tproxy_enabled"
 	keyTproxyProxyLocal    = "tproxy_proxy_local"
+	keyTproxyIPv6          = "tproxy_ipv6"
 	keyTproxyDstExceptions = "tproxy_dst_exceptions"
 	keyTproxySrcExceptions = "tproxy_src_exceptions"
 	keyTproxyExceptionsOld = "tproxy_exceptions" // 旧字段，读取时迁移
@@ -163,6 +164,47 @@ func SaveTproxyProxyLocal(enabled bool) error {
 	defer exceptionsMu.Unlock()
 	tproxyProxyLocal = enabled
 	return saveProxyLocal(enabled)
+}
+
+// LoadTproxyIPv6 读取接管 IPv6 开关，默认关闭。
+//
+// 默认关闭是刻意的：节点侧普遍没有 IPv6 出口，而 IPv6 一旦被接管，原本直连
+// 可达的 IPv6 目标会改为经代理出站并可能失败；同时「被劫持 DNS 返回空 AAAA」
+// 已让绝大多数域名不会走 IPv6，收益只在「客户端自带解析（DoH/DoT/ISP v6 DNS）」
+// 或写入字面量 IPv6 的场景出现。因此交由用户显式开启。
+func LoadTproxyIPv6() bool {
+	exceptionsMu.Lock()
+	defer exceptionsMu.Unlock()
+
+	full, err := config.ReadConfigFile()
+	if err == nil {
+		if raw, ok := full[keyTproxyIPv6]; ok {
+			if enabled, ok := raw.(bool); ok {
+				tproxyIPv6 = enabled
+				return enabled
+			}
+		}
+	}
+
+	tproxyIPv6 = false
+	if err := saveTproxyIPv6(false); err != nil {
+		log.Printf("[TProxy] 写入默认 IPv6 接管开关失败: %v", err)
+	}
+	return false
+}
+
+func saveTproxyIPv6(enabled bool) error {
+	return config.UpdateConfigFile(func(full map[string]any) {
+		full[keyTproxyIPv6] = enabled
+	})
+}
+
+// SaveTproxyIPv6 外部调用，加锁并保存
+func SaveTproxyIPv6(enabled bool) error {
+	exceptionsMu.Lock()
+	defer exceptionsMu.Unlock()
+	tproxyIPv6 = enabled
+	return saveTproxyIPv6(enabled)
 }
 
 // LoadTproxyEnabled 读取持久化的 TProxy 开关状态。

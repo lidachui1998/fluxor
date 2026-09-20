@@ -9,9 +9,29 @@ var (
 	tproxyMu                 sync.RWMutex
 	exceptionsMu             sync.RWMutex
 	tproxyProxyLocal         bool
+	tproxyIPv6               bool
 	tproxyDstExceptionsCache []string
 	tproxySrcExceptionsCache []string
 )
+
+// proxyLocalEnabled 读取「同时代理本机出站流量」开关（并发安全）。
+//
+// 规则装配（rules.go）需要读该开关，必须经本函数，不得直接访问 tproxyProxyLocal。
+func proxyLocalEnabled() bool {
+	exceptionsMu.RLock()
+	defer exceptionsMu.RUnlock()
+	return tproxyProxyLocal
+}
+
+// ipv6Enabled 读取「接管 IPv6 流量」开关（并发安全）。
+//
+// 默认关闭：节点普遍没有 IPv6 出口，无条件接管会把原本可直连的 IPv6 目标
+// 变成必走代理而失败，故由用户显式开启。读取一律走本函数。
+func ipv6Enabled() bool {
+	exceptionsMu.RLock()
+	defer exceptionsMu.RUnlock()
+	return tproxyIPv6
+}
 
 // GetTproxyState 读取 TProxy 开关状态（并发安全）。
 //

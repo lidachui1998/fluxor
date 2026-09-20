@@ -78,6 +78,11 @@ const tproxySrcExceptionsText = ref('')
 const tproxyProxyLocal = ref(false)
 const tproxyProxyLocalLoaded = ref(false)
 
+// 接管 IPv6 开关（默认关闭）。与「同时代理本机出站流量」同为页面级状态：
+// 二者都只在 TProxy 开关行下方展示，且启用 TProxy 期间均置灰不可改。
+const tproxyIPv6 = ref(false)
+const tproxyIPv6Loaded = ref(false)
+
 // 打开 TUN 高级设置弹窗：弹窗内两项均为实时修改，无需预设值，
 // 仅确保网卡列表已加载
 const openTunAdvancedDialog = async () => {
@@ -98,6 +103,20 @@ const fetchTproxyProxyLocal = async () => {
     }
   } catch (e) {
     console.error('获取本机流量代理开关失败:', e)
+  }
+}
+
+// 读取接管 IPv6 开关状态（默认关闭）
+const fetchTproxyIPv6 = async () => {
+  try {
+    const resp = await apiFetch('/config/tproxy/proxy-ipv6')
+    if (resp.ok) {
+      const data = await resp.json()
+      tproxyIPv6.value = data.enabled
+      tproxyIPv6Loaded.value = true
+    }
+  } catch (e) {
+    console.error('获取 IPv6 接管开关失败:', e)
   }
 }
 
@@ -614,6 +633,53 @@ const persistProxyLocal = async (enabled: boolean) => {
   }
 }
 
+// 处理接管 IPv6 开关。语义与「同时代理本机出站流量」一致：
+//   - 开启：先二次确认（额外说明「节点无 IPv6 出口会导致原本直连可达的 IPv6 目标失败」），
+//     确认后才写入后端持久化文件；
+//   - 关闭：直接写入后端持久化，不确认。
+// 后端写入成功后以服务端返回值为准回写本地状态。
+const handleTproxyIPv6Toggle = async (newVal: boolean) => {
+  if (newVal) {
+    const confirmed = await globalStore.showConfirm({
+      title: t('common.warning'),
+      message: t('config.tproxy_ipv6_warning'),
+      type: 'warning'
+    })
+    if (!confirmed) return // 取消则保持原值
+  }
+  await persistTproxyIPv6(newVal)
+}
+
+// TProxy 开启时该开关被锁定（切换会重建正被 TProxy 持有的 nft 规则）。
+// 此时点击不改变值，只说明原因——与「绕过设置齿轮」同一套交互。
+const onTproxyIPv6Blocked = () => {
+  globalStore.showToast(t('config.tproxy_ipv6_readonly_warning'), 'warning')
+}
+
+// persistTproxyIPv6 写入 IPv6 接管开关并同步本地状态
+const persistTproxyIPv6 = async (enabled: boolean) => {
+  try {
+    const resp = await apiFetch('/config/tproxy/proxy-ipv6', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled })
+    })
+    if (!resp.ok) {
+      // 后端在「TProxy 已启用且重新应用规则失败」时会带上原因，需如实透出
+      let msg = t('common.operation_failed')
+      try {
+        const data = await resp.json()
+        if (data.message) msg = data.message
+      } catch (_) {}
+      globalStore.showToast(msg, 'error')
+    }
+  } catch (e) {
+    globalStore.showToast(`${t('common.error')}: ${(e as Error).message}`, 'error')
+  } finally {
+    await fetchTproxyIPv6() // 以服务端状态为准
+  }
+}
+
 // 处理 TUN 开关切换（开启时弹窗确认）
 const handleTunToggle = async (newVal: boolean) => {
   if (newVal) {
@@ -642,6 +708,7 @@ const changeLang = () => {
 onMounted(async () => {
   fetchInterfaces()
   fetchTproxyProxyLocal()
+  fetchTproxyIPv6()
 })
 
 onUnmounted(() => {
@@ -870,6 +937,30 @@ onUnmounted(() => {
               :disabled-hint="t('config.tproxy_proxy_local_readonly_warning')"
               @update:model-value="handleProxyLocalToggle"
               @blocked="onProxyLocalBlocked"
+            />
+          </div>
+
+          <!-- 接管 IPv6 流量（默认关闭）。
+               与「同时代理本机出站流量」同一套交互：开启先二次确认（见
+               handleTproxyIPv6Toggle），TProxy 启用期间置灰并在悬停/点击时说明原因。
+               该开关只决定 IPv6 家族（nft ip6 表 + `ip -6` 策略路由）是否随
+               TProxy 一起下发，不影响 IPv4 侧的任何行为。 -->
+          <div class="flex items-center justify-between">
+            <label
+              class="text-xs font-semibold cursor-help"
+              :class="configStore.tproxyEnabled ? 'text-slate-400 dark:text-slate-500' : 'text-slate-700 dark:text-slate-300'"
+              :title="t('config.tproxy_ipv6_hint')"
+            >
+              {{ t('config.tproxy_ipv6_label') }}
+            </label>
+            <div v-if="!tproxyIPv6Loaded" class="w-7 h-4 rounded-full bg-slate-200 dark:bg-slate-700 animate-pulse"></div>
+            <FormSwitch
+              v-else
+              :model-value="tproxyIPv6"
+              :disabled="configStore.tproxyEnabled"
+              :disabled-hint="t('config.tproxy_ipv6_readonly_warning')"
+              @update:model-value="handleTproxyIPv6Toggle"
+              @blocked="onTproxyIPv6Blocked"
             />
           </div>
         </div>
