@@ -422,3 +422,141 @@ func TestApplyCustomRulesDefaultPositionIsBefore(t *testing.T) {
 		t.Fatalf("MATCH 仍应在末位，实际末条为 %s", lines[len(lines)-1])
 	}
 }
+
+// TestMergeRuleSetEnvFromTemplates 档位环境直接来自生成用的模板常量。
+//
+// 断言的是「模板里确实存在这些组」这一事实关系，而不是把 36 个组名抄一遍：
+// 模板增删代理组时这里不需要改，界面与生成也就不会错配。
+func TestMergeRuleSetEnvFromTemplates(t *testing.T) {
+	baseEnv, err := MergeRuleSetEnv(RuleGroupBase)
+	if err != nil {
+		t.Fatalf("base 档位环境构建失败: %v", err)
+	}
+	if !baseEnv.ContainsTarget("🚀 节点选择") || !baseEnv.ContainsTarget("🎯 全球直连") {
+		t.Fatal("base 档位应包含模板中的代理组")
+	}
+	if !baseEnv.ContainsTarget("DIRECT") {
+		t.Fatal("内置目标应始终可用")
+	}
+	if _, ok := baseEnv.Providers["ads"]; ok {
+		t.Fatal("base 档位没有 rule-providers，不应出现规则集")
+	}
+
+	fullEnv, err := MergeRuleSetEnv(RuleGroupFull)
+	if err != nil {
+		t.Fatalf("full 档位环境构建失败: %v", err)
+	}
+	for _, name := range []string{"🚀 节点选择", "🇭🇰 香港节点", "🛑 广告域名", "🔴 全球拦截"} {
+		if !fullEnv.ContainsTarget(name) {
+			t.Fatalf("full 档位应包含代理组 %s", name)
+		}
+	}
+	for _, name := range []string{"ads", "cn", "gfw", "mediaip"} {
+		if _, ok := fullEnv.Providers[name]; !ok {
+			t.Fatalf("full 档位应包含规则集 %s", name)
+		}
+	}
+
+	// 融合模式的节点来自 proxy-providers、运行时才加载，绝不能出现在目标集合里
+	for _, env := range []configcheck.RuleEnv{baseEnv, fullEnv} {
+		for name := range env.Targets {
+			if strings.Contains(name, "节点") && !strings.Contains(name, "节点选择") && !strings.Contains(name, "香港节点") &&
+				!strings.Contains(name, "台湾节点") && !strings.Contains(name, "日本节点") &&
+				!strings.Contains(name, "新加坡节点") && !strings.Contains(name, "美国节点") {
+				t.Fatalf("目标集合不应出现代理节点: %s", name)
+			}
+		}
+	}
+
+	if _, err := MergeRuleSetEnv("nope"); err == nil {
+		t.Fatal("未知档位必须报错")
+	}
+	if !IsValidMergeRuleSet("base") || !IsValidMergeRuleSet("full") || IsValidMergeRuleSet("lite") {
+		t.Fatal("IsValidMergeRuleSet 判定有误")
+	}
+}
+
+// TestMergeRuleSetContextRejectsInvalid 档位内置规则参与判重，且目标按档位校验。
+func TestMergeRuleSetContextRejectsInvalid(t *testing.T) {
+	baseCtx, err := MergeRuleSetContext(RuleGroupBase)
+	if err != nil {
+		t.Fatalf("构建 base 上下文失败: %v", err)
+	}
+	// base 模板自带 GEOSITE,github,🚀 节点选择 等规则
+	if !baseCtx.HasRuleLine("GEOSITE,github,🚀 节点选择") {
+		t.Fatal("应识别出 base 模板的内置规则")
+	}
+	// base 档位没有 rule-providers，引用规则集必须失败
+	if _, err := ValidateCustomRule(config.CustomRule{
+		Type: "RULE-SET", Payload: "ads", Target: "🚀 节点选择",
+	}, baseCtx.Env); err == nil {
+		t.Fatal("base 档位引用 RULE-SET 应被拒绝")
+	}
+	// full 档位独有的代理组在 base 下不存在
+	if _, err := ValidateCustomRule(config.CustomRule{
+		Type: "DOMAIN", Payload: "a.com", Target: "🇭🇰 香港节点",
+	}, baseCtx.Env); err == nil {
+		t.Fatal("base 档位引用 full 独有代理组应被拒绝")
+	}
+}
+
+// TestGenerateConfigInjectsMergeCustomRules 融合模式生成时按当前档位注入自定义规则，
+// 且只注入当前档位的那一份（另一档位的规则必须保持惰性）。
+func TestGenerateConfigInjectsMergeCustomRules(t *testing.T) {
+	doc, err := configcheck.ParseDoc([]byte(configTemplate))
+	if err != nil {
+		t.Fatalf("解析模板失败: %v", err)
+	}
+	cfg := config.SubscribeConfig{
+		RuleGroup: RuleGroupBase,
+		MergeCustomRules: map[string][]config.CustomRule{
+			RuleGroupBase: {{
+				ID: "base-rule", Type: "DOMAIN", Payload: "base.example.com",
+				Target: "🎯 全球直连", Position: config.RulePositionBefore,
+			}},
+			RuleGroupFull: {{
+				ID: "full-rule", Type: "DOMAIN", Payload: "full.example.com",
+				Target: "🚀 节点选择", Position: config.RulePositionBefore,
+			}},
+		},
+	}
+	if err := appendRuleSet(doc, cfg); err != nil {
+		t.Fatalf("追加规则集失败: %v", err)
+	}
+	if err := applyMergeCustomRules(doc, cfg); err != nil {
+		t.Fatalf("注入自定义规则失败: %v", err)
+	}
+	out, err := doc.Bytes()
+	if err != nil {
+		t.Fatalf("序列化失败: %v", err)
+	}
+	text := string(out)
+	if !strings.Contains(text, "base.example.com") {
+		t.Fatalf("当前档位的规则应被注入:\n%s", text)
+	}
+	if strings.Contains(text, "full.example.com") {
+		t.Fatalf("非当前档位的规则不得进入配置:\n%s", text)
+	}
+	// base 的规则应插在模板规则之前（默认最前）
+	lines := ruleLines(t, doc)
+	if lines[0] != "DOMAIN,base.example.com,🎯 全球直连" {
+		t.Fatalf("默认应插到最前，实际首条为 %s", lines[0])
+	}
+}
+
+// TestMergeRuleSkips 目标失效的规则被如实统计（供接口回报）。
+func TestMergeRuleSkips(t *testing.T) {
+	cfg := config.SubscribeConfig{
+		RuleGroup: RuleGroupBase,
+		MergeCustomRules: map[string][]config.CustomRule{
+			RuleGroupBase: {
+				{ID: "ok", Type: "DOMAIN", Payload: "a.com", Target: "🎯 全球直连"},
+				{ID: "bad", Type: "DOMAIN", Payload: "b.com", Target: "🇭🇰 香港节点"},
+			},
+		},
+	}
+	skipped := MergeRuleSkips(cfg, RuleGroupBase)
+	if len(skipped) != 1 || !strings.Contains(skipped[0], "b.com") {
+		t.Fatalf("应恰好统计出 1 条失效规则，实际: %v", skipped)
+	}
+}

@@ -1,3 +1,5 @@
+import type { CustomRule, CustomRulesPayload } from '../store/subscription'
+
 // 模拟后端数据库，维持状态更改
 let coreRunning = true
 const mockConfigs = {
@@ -109,7 +111,7 @@ let mockTproxyDstExceptions = ['# 公共 DNS 服务器', '223.5.5.5', '1.12.12.1
 let mockTproxySrcExceptions = ['# Docker 默认网段', '172.17.0.0/16']
 
 // 切换模式订阅的自定义规则（按订阅名隔离，模拟后端的即时持久化）
-const mockCustomRulesBySub: Record<string, any[]> = {
+const mockCustomRulesBySub: Record<string, CustomRule[]> = {
   'Sub-Mock-01': [
     { id: 'mock-rule-01', type: 'DOMAIN-SUFFIX', payload: 'ads.example.com', target: 'REJECT', position: 'after', line: 'DOMAIN-SUFFIX,ads.example.com,REJECT', valid: true },
     { id: 'mock-rule-02', type: 'RULE-SET', payload: 'gone', target: '已改名的组', position: 'after', line: 'RULE-SET,gone,已改名的组', valid: false, reason: '规则集 "gone" 不存在于该订阅的 rule-providers 中' }
@@ -135,6 +137,27 @@ const mockCustomRuleTypes = [
   { type: 'NETWORK', example: 'tcp', no_resolve: false },
   { type: 'RULE-SET', example: '从该订阅的规则集中选择', no_resolve: true }
 ]
+
+// 融合模式的两档规则集：各自的代理组与规则集清单都不同（与后端 configgen 模板一致），
+// 因此两档的规则必须分开存放——同一份列表放在两档下必然有一半指向不存在的目标。
+// base ≈ 5 个代理组且没有 rule-providers；full ≈ 38 个代理组 + 31 个规则集（此处取代表样子集）。
+const mockMergeBaseGroups = ['🚀 节点选择', '👉 手动选择', '♻️ 自动选择', '🐟 漏网之鱼', '🎯 全球直连']
+const mockMergeFullGroups = [
+  '🚀 节点选择', '👉 手动选择', '♻️ 自动选择', '📈 网络测试', '🕹️ 游戏平台', '🤖 AI 平台',
+  '🎬 Prime Video', '📹 油管视频', '🎵 TikTok', '🇨🇳 国内域名', '🀄️ 国内 IP',
+  '🐟 漏网之鱼', '🛑 广告域名', '🎯 全球直连', '🇭🇰 香港节点', '🇯🇵 日本节点',
+]
+// base 档位没有 rule-providers，RULE-SET 在这里无从选择（前端会禁用表单）
+const mockMergeBaseProviders: string[] = []
+const mockMergeFullProviders = ['ads', 'cn', 'gfw']
+
+// 融合模式的自定义规则（按档位 base/full 隔离，互不影响）
+const mockMergeCustomRules: Record<string, CustomRule[]> = {
+  base: [],
+  full: [
+    { id: 'mock-merge-rule-01', type: 'RULE-SET', payload: 'ads', target: '🛑 广告域名', position: 'before', line: 'RULE-SET,ads,🛑 广告域名', valid: true },
+  ],
+}
 
 const mockCustomRuleGroups = ['节点选择', '自动选择', '广告拦截']
 const mockCustomRuleBuiltins = ['DIRECT', 'REJECT', 'PASS']
@@ -170,25 +193,95 @@ const buildMockCustomRule = (body: any, id: string) => {
   }
 }
 
-// 组装 /subscribe/custom-rules 的统一响应体（status/message 仅写操作时携带）
-const buildMockCustomRulesPayload = (rules: any[], status?: string, message?: string) => ({
+// 快捷响应封装（模块级：合并规则的处理函数同样需要）
+const reply = (data: any, status = 200) => new Response(JSON.stringify(data), { status })
+
+// 组装自定义规则接口的统一响应体（切换/融合两种模式同构，仅 groups/providers 不同；
+// status/message 仅写操作时携带）
+const buildMockCustomRulesPayload = (
+  rules: CustomRule[],
+  groups: string[],
+  providers: string[],
+  status?: 'ok' | 'warning',
+  message?: string,
+): CustomRulesPayload => ({
   file_ready: true,
   rules: orderMockCustomRules(rules),
-  groups: mockCustomRuleGroups,
+  groups,
   builtins: mockCustomRuleBuiltins,
-  providers: mockCustomRuleProviders,
+  providers,
   rule_types: mockCustomRuleTypes,
   status,
   message
 })
 
+// 处理 /subscribe/custom-rules 与 /subscribe/merge-custom-rules 的共用逻辑：
+// 两者的方法语义完全一致，只有「作用域 → 规则数组/groups/providers」的映射不同。
+//
+// 返回 null 表示当前方法不是本模块写的（调用方继续向下匹配），
+// rawQuery 需传入含查询串的原始 path——DELETE 的 id 只能从这里取。
+const handleMockCustomRulesRequest = (
+  rules: CustomRule[],
+  groups: string[],
+  providers: string[],
+  rawPath: string,
+  method: string,
+  bodyRaw: string | undefined,
+): Response | null => {
+  if (method === 'POST') {
+    const body = JSON.parse(bodyRaw || '{}')
+    rules.push(buildMockCustomRule(body, nextMockRuleId()))
+    return reply(buildMockCustomRulesPayload(rules, groups, providers, 'ok'))
+  }
+
+  if (method === 'PUT') {
+    const body = JSON.parse(bodyRaw || '{}')
+    const idx = rules.findIndex(r => r.id === body.id)
+    if (idx < 0) return reply({ status: 'error', message: '规则不存在: ' + body.id }, 404)
+    // 就地替换：索引与 id 都保持原样，列表位置不变（与后端 PUT 语义一致）
+    rules[idx] = buildMockCustomRule(body, rules[idx].id)
+    return reply(buildMockCustomRulesPayload(rules, groups, providers, 'ok'))
+  }
+
+  if (method === 'PATCH') {
+    const body = JSON.parse(bodyRaw || '{}')
+    const direction = body.direction === 'up' ? 'up' : 'down'
+    // 交换在生效顺序上进行，且只与同 position 分组内的相邻规则交换
+    const ordered = orderMockCustomRules(rules)
+    const idx = ordered.findIndex(r => r.id === body.id)
+    if (idx < 0) return reply({ status: 'error', message: '规则不存在: ' + body.id }, 404)
+    const swapIdx = direction === 'up' ? idx - 1 : idx + 1
+    const neighbour = ordered[swapIdx]
+    // 边界（已是该分组首/末条）回 400，而不是假装成功
+    if (!neighbour || neighbour.position !== ordered[idx].position) {
+      return reply({ status: 'error', message: direction === 'up' ? '规则已在该分组的最前，无法继续移动' : '规则已在该分组的最后，无法继续移动' }, 400)
+    }
+    const moved = ordered[idx]
+    ordered[idx] = neighbour
+    ordered[swapIdx] = moved
+    // 交换结果按生效顺序写回原数组
+    ordered.forEach((r, i) => { rules[i] = r })
+    return reply(buildMockCustomRulesPayload(rules, groups, providers))
+  }
+
+  if (method === 'DELETE') {
+    // 原始 path 的查询串已随 cleanPath 一起剥离，id 需从这里取
+    const id = decodeURIComponent(new URLSearchParams(rawPath.split('?')[1] || '').get('id') || '')
+    const idx = rules.findIndex(r => r.id === id)
+    if (idx < 0) return reply({ status: 'error', message: '规则不存在: ' + id }, 404)
+    rules.splice(idx, 1)
+    return reply(buildMockCustomRulesPayload(rules, groups, providers, 'ok'))
+  }
+
+  if (method === 'GET') return reply(buildMockCustomRulesPayload(rules, groups, providers))
+
+  return null
+}
+
 // 模拟 HTTP API
 export function handleMockFetch(path: string, options: RequestInit = {}): Response {
   const method = (options.method || 'GET').toUpperCase()
   const cleanPath = path.split('?')[0].replace(/\/$/, '')
-
-  // 快捷响应封装
-  const reply = (data: any, status = 200) => new Response(JSON.stringify(data), { status })
 
   if (cleanPath.endsWith('/core/status')) return reply({ running: coreRunning })
   // 后端编译期注入的版本号（dev 模式下用固定值模拟）
@@ -299,59 +392,35 @@ export function handleMockFetch(path: string, options: RequestInit = {}): Respon
     return reply({ delay: Math.floor(40 + Math.random() * 100) })
   }
 
+  // 融合模式自定义规则（/subscribe/merge-custom-rules/{base|full}）：方法语义与切换模式一致，
+  // 区别只在于作用域是规则集档位、两档各有自己的代理组与规则集清单（互不影响）。
+  // 该前缀必须在切换模式那条更短的前缀之前匹配（两者字符串不同，此处仅作可读性排序）。
+  if (cleanPath.includes('/subscribe/merge-custom-rules/')) {
+    const ruleGroup = decodeURIComponent(cleanPath.split('/subscribe/merge-custom-rules/')[1] || '')
+    if (ruleGroup !== 'base' && ruleGroup !== 'full') {
+      return reply({ status: 'error', message: '未知规则集: ' + ruleGroup }, 400)
+    }
+    if (!mockMergeCustomRules[ruleGroup]) mockMergeCustomRules[ruleGroup] = []
+    const groups = ruleGroup === 'full' ? mockMergeFullGroups : mockMergeBaseGroups
+    const providers = ruleGroup === 'full' ? mockMergeFullProviders : mockMergeBaseProviders
+    const resp = handleMockCustomRulesRequest(mockMergeCustomRules[ruleGroup], groups, providers, path, method, options.body as string | undefined)
+    if (resp) return resp
+  }
+
   // 订阅自定义规则（切换模式）：GET 查询 / POST 新增 / PUT 修改 / PATCH 排序 / DELETE 删除（?id=）
   // 规则按订阅名隔离，写操作立即改内存数组，与后端「即时持久化」语义一致
   if (cleanPath.includes('/subscribe/custom-rules/')) {
     const subName = decodeURIComponent(cleanPath.split('/subscribe/custom-rules/')[1] || '')
     if (!mockCustomRulesBySub[subName]) mockCustomRulesBySub[subName] = []
-    const rules = mockCustomRulesBySub[subName]
-
-    if (method === 'POST') {
-      const body = JSON.parse(options.body as string || '{}')
-      rules.push(buildMockCustomRule(body, nextMockRuleId()))
-      return reply(buildMockCustomRulesPayload(rules, 'ok'))
-    }
-
-    if (method === 'PUT') {
-      const body = JSON.parse(options.body as string || '{}')
-      const idx = rules.findIndex(r => r.id === body.id)
-      if (idx < 0) return reply({ status: 'error', message: '规则不存在: ' + body.id }, 404)
-      // 就地替换：索引与 id 都保持原样，列表位置不变（与后端 PUT 语义一致）
-      rules[idx] = buildMockCustomRule(body, rules[idx].id)
-      return reply(buildMockCustomRulesPayload(rules, 'ok'))
-    }
-
-    if (method === 'PATCH') {
-      const body = JSON.parse(options.body as string || '{}')
-      const direction = body.direction === 'up' ? 'up' : 'down'
-      // 交换在生效顺序上进行，且只与同 position 分组内的相邻规则交换
-      const ordered = orderMockCustomRules(rules)
-      const idx = ordered.findIndex(r => r.id === body.id)
-      if (idx < 0) return reply({ status: 'error', message: '规则不存在: ' + body.id }, 404)
-      const swapIdx = direction === 'up' ? idx - 1 : idx + 1
-      const neighbour = ordered[swapIdx]
-      // 边界（已是该分组首/末条）回 400，而不是假装成功
-      if (!neighbour || neighbour.position !== ordered[idx].position) {
-        return reply({ status: 'error', message: direction === 'up' ? '规则已在该分组的最前，无法继续移动' : '规则已在该分组的最后，无法继续移动' }, 400)
-      }
-      const moved = ordered[idx]
-      ordered[idx] = neighbour
-      ordered[swapIdx] = moved
-      // 交换结果按生效顺序写回原数组
-      ordered.forEach((r, i) => { rules[i] = r })
-      return reply(buildMockCustomRulesPayload(rules))
-    }
-
-    if (method === 'DELETE') {
-      // cleanPath 已剥离查询串，id 需从原始 path 上取
-      const id = decodeURIComponent(new URLSearchParams(path.split('?')[1] || '').get('id') || '')
-      const idx = rules.findIndex(r => r.id === id)
-      if (idx < 0) return reply({ status: 'error', message: '规则不存在: ' + id }, 404)
-      rules.splice(idx, 1)
-      return reply(buildMockCustomRulesPayload(rules, 'ok'))
-    }
-
-    return reply(buildMockCustomRulesPayload(rules))
+    const resp = handleMockCustomRulesRequest(
+      mockCustomRulesBySub[subName],
+      mockCustomRuleGroups,
+      mockCustomRuleProviders,
+      path,
+      method,
+      options.body as string | undefined,
+    )
+    if (resp) return resp
   }
 
   return reply({ error: 'Not Found' }, 404)

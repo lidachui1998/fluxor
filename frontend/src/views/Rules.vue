@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { ref, onMounted, onActivated, onUnmounted, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { storeToRefs } from 'pinia'
 import { apiFetch } from '../utils/api'
@@ -184,6 +184,22 @@ onMounted(async () => {
   if (!hasData && (!rulesOk || !providersOk) && configStore.coreStatus.running) {
     globalStore.showToast(t('common.network_error'), 'error')
   }
+})
+
+// 订阅页改动过激活订阅的自定义规则后会留下「列表已过期」标记（见 rules store）：
+// 只有真正切到本页（KeepAlive 的 onActivated）才消费它并静默补拉一次规则，
+// 用户不切过来就不产生任何请求。
+let rulesActivatedOnce = false
+onActivated(async () => {
+  const stale = rulesStore.consumeNeedsRefresh()
+  // 首次激活与 onMounted 的首次拉取重叠（数据已是新的），只需清掉标记、不再重复请求
+  if (!rulesActivatedOnce) {
+    rulesActivatedOnce = true
+    return
+  }
+  if (!stale) return
+  // 静默刷新：沿用页面已有的快照，避免切页瞬间闪出加载态
+  await rulesStore.fetchRules(true)
 })
 
 onUnmounted(() => {

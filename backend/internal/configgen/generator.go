@@ -42,6 +42,11 @@ func GenerateConfig(cfg config.SubscribeConfig) error {
 		return err
 	}
 
+	// 融合模式的自定义规则：必须在该档位的代理组就位后注入，否则目标校验看不到组
+	if err := applyMergeCustomRules(doc, cfg); err != nil {
+		return err
+	}
+
 	// 替换 DNS 块
 	if err := applyDNSBlock(doc); err != nil {
 		return err

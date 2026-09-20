@@ -35,6 +35,14 @@ func HandleSubscribeConfigAPI(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		// 与 /subscribe/generate 同一道理：自定义规则由规则接口维护，
+		// 这个整体覆盖写接口若在请求体缺少这些字段时把它们清空，
+		// 会导致运行配置与磁盘状态双双丢规则（详见 config.InheritRuleOwnedFields）。
+		config.Mu.RLock()
+		prev := config.Current
+		config.Mu.RUnlock()
+		newConfig.InheritRuleOwnedFields(prev)
+
 		config.Mu.Lock()
 		config.Current = newConfig
 		config.Mu.Unlock()

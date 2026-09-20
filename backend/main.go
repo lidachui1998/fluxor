@@ -285,8 +285,10 @@ func main() {
 	mux.HandleFunc(config.BaseURL+"/subscribe/generate", subscription.HandleGenerateConfig)
 	mux.HandleFunc(config.BaseURL+"/subscribe/update/", subscription.HandleSubscribeUpdate)
 	mux.HandleFunc(config.BaseURL+"/subscribe/update-info/", subscription.HandleUpdateSubscriptionInfo)
-	// 切换模式：订阅级自定义规则（查询 / 新增 / 删除，增删即时持久化并同步运行配置）
+	// 切换模式：订阅级自定义规则（查询 / 新增 / 修改 / 排序 / 删除，即时持久化并同步运行配置）
 	mux.HandleFunc(config.BaseURL+"/subscribe/custom-rules/", subscription.HandleCustomRulesAPI)
+	// 融合模式：按规则集档位（base / full）分开存放的自定义规则，接口语义与切换模式一致
+	mux.HandleFunc(config.BaseURL+"/subscribe/merge-custom-rules/", subscription.HandleMergeCustomRulesAPI)
 
 	// 获取所有订阅的代理信息（融合模式使用）
 	mux.HandleFunc(config.BaseURL+"/providers/proxies", dashapi.HandleProvidersProxiesAll)

@@ -1,17 +1,15 @@
 <script setup lang="ts">
-import { ref, onMounted, onActivated, computed, onUnmounted, watch } from 'vue'
+import { ref, onMounted, onActivated, onDeactivated, computed, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { apiFetch } from '../utils/api'
-import { MailOutline, EyeOutline, EyeOffOutline, SyncOutline, CreateOutline, TrashOutline, AddOutline, CloseOutline, InformationCircleOutline, OptionsOutline, ArrowUpOutline, ArrowDownOutline } from '@vicons/ionicons5'
+import { MailOutline, EyeOutline, EyeOffOutline, SyncOutline, CreateOutline, TrashOutline, CloseOutline, InformationCircleOutline, OptionsOutline } from '@vicons/ionicons5'
 import { useGlobalStore } from '../store/global'
 import { storeToRefs } from 'pinia'
 import {
   useSubscriptionStore,
   type SubscriptionItem,
-  type CustomRule,
-  type CustomRulesPayload,
-  type RuleTypeSpec,
 } from '../store/subscription'
+import CustomRulesDialog from '../components/CustomRulesDialog.vue'
 import { useRulesStore } from '../store/rules'
 import { useProxyStore } from '../store/proxies'
 import { useConfigStore } from '../store/config'
@@ -49,285 +47,54 @@ const editForm = ref<SubscriptionItem>({
   custom_rules: []
 })
 
-// ------- 自定义规则弹窗（切换模式，仅订阅级生效）-------
-// 一次只写一条规则，添加成功后仅清空取值，保留类型/目标便于连续录入
-interface RuleFormState {
-  type: string
-  payload: string
-  target: string
-  position: string
-  no_resolve: boolean
-}
+// ------- 自定义规则弹窗（多作用域，两种模式共用 CustomRulesDialog）-------
+// 弹窗自身状态（各作用域的 payload/表单/在途标志）全部由子组件持有，
+// 父组件只负责：决定打开哪个 endpoint + 哪几个作用域，以及关闭时按「作用域是否生效」
+// 决定要不要登记「规则列表已过期」。
 const showRulesModal = ref(false)
-const rulesSubName = ref('')
-const rulesLoading = ref(false)
-const rulesPayload = ref<CustomRulesPayload | null>(null)
-const ruleForm = ref<RuleFormState>({
-  type: '',
-  payload: '',
-  target: '',
-  position: 'before',
-  no_resolve: false
-})
-const isSavingRule = ref(false)
-const deletingRuleId = ref('')
-// 正在编辑的规则 id（空串表示新增模式）；上/下移请求期间用 movingRuleId 串行化
-const editingRuleId = ref('')
-const movingRuleId = ref('')
-// 记录在途的移动方向，让转圈出现在真正被点的那一侧
-const movingDirection = ref<'up' | 'down' | ''>('')
-// 编辑规则时会把已存字段灌回表单，type 的程序化赋值不得触发「改类型即清空取值」的重置
-let isApplyingRuleToForm = false
+const rulesDialogRef = ref<InstanceType<typeof CustomRulesDialog> | null>(null)
+const rulesEndpoint = ref('')
+const rulesScopes = ref<{ key: string, label: string, effective: boolean }[]>([])
+const rulesTitle = ref('')
 
-// 后端返回的可选项一律经 computed 兜底为空数组，模板因此无需处理 null
-const ruleTypes = computed<RuleTypeSpec[]>(() => rulesPayload.value?.rule_types ?? [])
-const ruleBuiltins = computed<string[]>(() => rulesPayload.value?.builtins ?? [])
-const ruleGroups = computed<string[]>(() => rulesPayload.value?.groups ?? [])
-const ruleProviders = computed<string[]>(() => rulesPayload.value?.providers ?? [])
-const ruleList = computed<CustomRule[]>(() => rulesPayload.value?.rules ?? [])
-// 目标下拉的额外选项：历史规则的 target 可能来自已改名的节点，不在 builtins/groups 里。
-// 单独追加一条，否则下拉显示为空并在保存时把用户的目标静默改掉（数据丢失）
-const ruleTargetExtra = computed<string[]>(() => {
-  const target = ruleForm.value.target
-  if (!target) return []
-  return ruleBuiltins.value.includes(target) || ruleGroups.value.includes(target) ? [] : [target]
-})
-// 当前类型对应的规格：驱动 placeholder 与 no-resolve 选项的显隐
-const selectedRuleType = computed<RuleTypeSpec | null>(
-  () => ruleTypes.value.find(spec => spec.type === ruleForm.value.type) ?? null
-)
-const isRuleSetType = computed(() => ruleForm.value.type === 'RULE-SET')
-// RULE-SET 的取值只能来自该订阅的 rule-providers，为空时无从选择
-const hasNoRuleProviders = computed(() => isRuleSetType.value && ruleProviders.value.length === 0)
-// file_ready=false 时后端无法校验规则，整个表单禁用
-const rulesFormDisabled = computed(() => !rulesPayload.value?.file_ready || hasNoRuleProviders.value)
-// 新增与编辑共用同一个提交按钮，校验条件一致
-const canSubmitRule = computed(() =>
-  !rulesFormDisabled.value
-  && !isSavingRule.value
-  && ruleForm.value.payload.trim() !== ''
-  && ruleForm.value.target !== ''
-)
-// 编辑模式：提交按钮改为「保存」并多出一个「取消编辑」
-const isEditingRule = computed(() => editingRuleId.value !== '')
-// 上/下移与删除共用一个「有请求在途」的判定，避免并发写同一条列表
-const isRuleBusy = computed(() => !!movingRuleId.value || !!deletingRuleId.value)
-// rules 已按生效顺序返回（before 组在前、after 组在后，组内连续），
-// 故「同 position 组内的第一条/最后一条」即为该组的上/下边界
-const ruleMoveLimits = computed<Record<string, { canMoveUp: boolean, canMoveDown: boolean }>>(() => {
-  const limits: Record<string, { canMoveUp: boolean, canMoveDown: boolean }> = {}
-  ruleList.value.forEach((rule) => {
-    const samePosition = ruleList.value.filter(item => item.position === rule.position)
-    limits[rule.id] = {
-      canMoveUp: samePosition[0]?.id !== rule.id,
-      canMoveDown: samePosition[samePosition.length - 1]?.id !== rule.id,
-    }
-  })
-  return limits
-})
-
-// 内置目标的展示名走 i18n；订阅自带的分组/节点名原样展示
-const builtinTargetKeys: Record<string, string> = {
-  DIRECT: 'subscription.custom_rule_target_direct',
-  REJECT: 'subscription.custom_rule_target_reject',
-  PASS: 'subscription.custom_rule_target_pass',
-}
-const ruleTargetLabel = (target: string) => {
-  const key = builtinTargetKeys[target]
-  return key ? t(key) : target
-}
-
-const rulesEndpoint = (name: string) => `/subscribe/custom-rules/${encodeURIComponent(name)}`
-
-// 用响应刷新本地数据；仅首次载入时初始化表单默认值
-const applyRulesPayload = (data: CustomRulesPayload) => {
-  rulesPayload.value = data
-  if (!ruleForm.value.type && data.rule_types?.length) {
-    ruleForm.value.type = data.rule_types[0].type
-  }
-  if (!ruleForm.value.target) {
-    ruleForm.value.target = data.builtins?.[0] || data.groups?.[0] || ''
-  }
-}
-
-// 切换类型时重置取值与 no-resolve（两者都与类型强相关）。
-// flush:'sync' + isApplyingRuleToForm：编辑模式回填已在存的取值，这次程序化赋值不能触发重置；
-// 用户手动改类型仍走同一逻辑（同步执行只是让标志位在赋值期间可靠生效）。
-watch(() => ruleForm.value.type, (newType) => {
-  if (isApplyingRuleToForm) return
-  ruleForm.value.payload = ''
-  ruleForm.value.no_resolve = false
-  // RULE-SET 只能从下拉里选，默认选中第一个规则集，避免出现空选项
-  if (newType === 'RULE-SET') {
-    ruleForm.value.payload = ruleProviders.value[0] || ''
-  }
-}, { flush: 'sync' })
-
-const loadCustomRules = async () => {
-  rulesLoading.value = true
-  try {
-    const resp = await apiFetch(rulesEndpoint(rulesSubName.value))
-    const data = await resp.json()
-    if (!resp.ok) {
-      globalStore.showToast(`${t('subscription.custom_rule_load_failed')}: ${data.message || ''}`, 'error')
-      return
-    }
-    applyRulesPayload(data)
-  } catch (e) {
-    globalStore.showToast(`${t('common.error')}: ${(e as Error).message}`, 'error')
-  } finally {
-    rulesLoading.value = false
-  }
-}
-
-const openRulesModal = (name: string) => {
-  rulesSubName.value = name
-  rulesPayload.value = null
-  ruleForm.value = { type: '', payload: '', target: '', position: 'before', no_resolve: false }
-  editingRuleId.value = ''
+// 打开订阅级（切换模式）自定义规则：作用域即该订阅名，单作用域 → 不渲染页签
+const openSubRulesDialog = (name: string) => {
+  rulesEndpoint.value = '/subscribe/custom-rules'
+  rulesScopes.value = [{ key: name, label: name, effective: name === currentConfig.value.active_subscription }]
+  rulesTitle.value = t('subscription.custom_rules_title', { name })
   showRulesModal.value = true
-  loadCustomRules()
 }
 
-const closeRulesModal = () => {
-  showRulesModal.value = false
+// 打开规则集档位级（融合模式）自定义规则：base/full 两档各自独立，用页签切换
+const openMergeRulesDialog = () => {
+  rulesEndpoint.value = '/subscribe/merge-custom-rules'
+  rulesScopes.value = [
+    { key: 'base', label: t('subscription.rule_group_base'), effective: currentConfig.value.rule_group === 'base' },
+    { key: 'full', label: t('subscription.rule_group_full'), effective: currentConfig.value.rule_group === 'full' },
+  ]
+  rulesTitle.value = t('subscription.custom_rules_merge_title')
+  showRulesModal.value = true
 }
 
-// 进入编辑模式：把该条规则回填到表单，并记住 id 供 PUT 就地替换（列表位置不变）
-const startEditRule = (rule: CustomRule) => {
-  isApplyingRuleToForm = true
-  editingRuleId.value = rule.id
-  ruleForm.value.type = rule.type
-  ruleForm.value.payload = rule.payload
-  ruleForm.value.target = rule.target
-  // 位置取值以 before 为默认（与后端 NormalizeRulePosition 一致），避免历史空值显示成「末尾」
-  ruleForm.value.position = rule.position === 'after' ? 'after' : 'before'
-  ruleForm.value.no_resolve = !!rule.no_resolve
-  isApplyingRuleToForm = false
-}
-
-// 用户主动「取消编辑」：回到新增的默认态（插入位置也回到默认的「最前」）
-const cancelEditRule = () => {
-  editingRuleId.value = ''
-  ruleForm.value.payload = ''
-  ruleForm.value.position = 'before'
-  ruleForm.value.no_resolve = false
-}
-
-// 提交成功后的表单复位：退出编辑态（保存/取消按钮随之消失），并清空取值。
+// flushRulesStaleMark 登记「规则页的列表已过期」，只在确实改动过当前生效作用域时登记。
 //
-// 新增与修改共用，保证两条路径收敛到同一个「可以继续录入」的状态：
-// 保留类型/目标/位置便于连续录入，只清取值——否则刚提交的内容留在表单里，
-// 会让人误以为仍处于编辑中。RULE-SET 的取值必须来自下拉，故回落到第一个规则集。
-const resetFormAfterSubmit = () => {
-  editingRuleId.value = ''
-  ruleForm.value.payload = isRuleSetType.value ? (ruleProviders.value[0] || '') : ''
+// 为什么限定生效作用域：切换模式下只有激活订阅的规则会进入 config.yaml，融合模式下
+// 只有当前 rule_group 那一档会重新生成配置；其余作用域的规则不进运行配置，内核规则
+// 集合压根没变，刷新规则页纯属多余请求。
+// 为什么由子组件在关闭时才上报：用户可能连续改多条，登记时机收敛到「关闭弹窗」，
+// 标记由规则页切入时消费——用户一直不切过去就不会产生请求。
+const flushRulesStaleMark = (mutatedKeys: string[] = []) => {
+  if (mutatedKeys.length === 0) return
+  const effectiveKey = currentConfig.value.mode === 'switch'
+    ? currentConfig.value.active_subscription
+    : currentConfig.value.rule_group
+  if (!effectiveKey || !mutatedKeys.includes(effectiveKey)) return
+  rulesStore.markNeedsRefresh()
 }
 
-// 新增（POST）或保存修改（PUT）：后端即时持久化，弹窗无需整体保存按钮
-const handleSubmitRule = async () => {
-  if (!canSubmitRule.value) return
-  const editingId = editingRuleId.value
-  isSavingRule.value = true
-  try {
-    const resp = await apiFetch(rulesEndpoint(rulesSubName.value), {
-      method: editingId ? 'PUT' : 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        // 修改必须带 id：后端据此就地替换，保持该规则在列表中的位置
-        ...(editingId ? { id: editingId } : {}),
-        type: ruleForm.value.type,
-        payload: ruleForm.value.payload.trim(),
-        target: ruleForm.value.target,
-        position: ruleForm.value.position,
-        no_resolve: ruleForm.value.no_resolve,
-      })
-    })
-    const data = await resp.json()
-    if (!resp.ok) {
-      // 校验失败（如与已有规则行重复）时原样展示后端提示，并保持编辑态便于修正
-      globalStore.showToast(data.message || t('subscription.operation_failed'), 'error')
-      return
-    }
-    applyRulesPayload(data)
-    resetFormAfterSubmit()
-    // 修改成功用「规则已更新」，新增成功用「规则已添加」
-    const successText = editingId
-      ? t('subscription.custom_rule_updated')
-      : t('subscription.custom_rule_added')
-    // status=warning 表示规则已保存但运行配置未同步，需如实告知
-    if (data.status === 'warning' && data.message) {
-      globalStore.showToast(data.message, 'warning')
-    } else {
-      globalStore.showToast(successText, 'success')
-    }
-  } catch (e) {
-    globalStore.showToast(`${t('common.error')}: ${(e as Error).message}`, 'error')
-  } finally {
-    isSavingRule.value = false
-  }
-}
-
-// 上/下移：与同插入位置分组内的相邻规则交换。成功静默替换列表（用户会连续点按，不弹提示）
-const handleMoveRule = async (rule: CustomRule, direction: 'up' | 'down') => {
-  if (movingRuleId.value) return
-  movingRuleId.value = rule.id
-  movingDirection.value = direction
-  try {
-    const resp = await apiFetch(rulesEndpoint(rulesSubName.value), {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: rule.id, direction })
-    })
-    const data = await resp.json()
-    if (!resp.ok) {
-      // 已是该分组首/末条时后端回 400，原样展示后端提示
-      globalStore.showToast(data.message || t('subscription.operation_failed'), 'error')
-      return
-    }
-    applyRulesPayload(data)
-    // status=warning 表示顺序已保存但运行配置未同步，需如实告知
-    if (data.status === 'warning' && data.message) {
-      globalStore.showToast(data.message, 'warning')
-    }
-  } catch (e) {
-    globalStore.showToast(`${t('common.error')}: ${(e as Error).message}`, 'error')
-  } finally {
-    movingRuleId.value = ''
-    movingDirection.value = ''
-  }
-}
-
-const handleDeleteRule = async (rule: CustomRule) => {
-  if (deletingRuleId.value) return
-  const confirmed = await globalStore.showConfirm({
-    title: t('common.confirm_delete'),
-    message: t('subscription.custom_rule_delete_confirm'),
-    type: 'danger',
-  })
-  if (!confirmed) return
-
-  deletingRuleId.value = rule.id
-  try {
-    const resp = await apiFetch(`${rulesEndpoint(rulesSubName.value)}?id=${encodeURIComponent(rule.id)}`, { method: 'DELETE' })
-    const data = await resp.json()
-    if (!resp.ok) {
-      globalStore.showToast(data.message || t('subscription.operation_failed'), 'error')
-      return
-    }
-    applyRulesPayload(data)
-    // 被删掉的正是当前编辑的那条：退出编辑态，否则之后的保存会打到一个不存在的 id 上
-    if (editingRuleId.value === rule.id) cancelEditRule()
-    if (data.status === 'warning' && data.message) {
-      globalStore.showToast(data.message, 'warning')
-    } else {
-      globalStore.showToast(t('subscription.custom_rule_deleted'), 'success')
-    }
-  } catch (e) {
-    globalStore.showToast(`${t('common.error')}: ${(e as Error).message}`, 'error')
-  } finally {
-    deletingRuleId.value = ''
-  }
+const closeRulesDialog = (mutatedKeys: string[] = []) => {
+  flushRulesStaleMark(mutatedKeys)
+  showRulesModal.value = false
 }
 
 // 新增选中状态（绑定到 currentConfig.active_subscription）
@@ -726,6 +493,15 @@ onActivated(() => {
   subscriptionStore.loadConfig(true)
 })
 
+onDeactivated(() => {
+  // 改完规则后未关弹窗直接切走：子组件只是被 isActive 隐藏、不会触发 close。
+  // 若就此丢弃这次改动，规则页会一直显示旧列表——「漏登记」的代价远大于「多登记一次」，
+  // 因此把待上报的作用域从子组件取出来，走与关闭时同一个判定逻辑登记。
+  if (!showRulesModal.value) return
+  flushRulesStaleMark(rulesDialogRef.value?.takeMutatedScopes() ?? [])
+  showRulesModal.value = false
+})
+
 onUnmounted(() => {
   // 清理所有未完成的订阅轮询定时器
   activePolls.forEach(timer => clearInterval(timer))
@@ -817,27 +593,44 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <div class="flex flex-wrap gap-y-3 gap-x-4 items-center justify-between mt-8 mb-4">
+      <div class="relative flex flex-wrap gap-y-3 gap-x-4 items-center justify-between mt-8 mb-4">
         <h4 class="font-semibold text-base shrink-0 order-1">{{ t('subscription.subscription_list') }}</h4>
-        <div class="flex bg-slate-100 dark:bg-slate-800 rounded-lg p-0.5 transition-all shrink-0 order-3 sm:order-2 w-full sm:w-auto sm:ml-auto">
+        <!-- 分段控件居中：
+             · 移动端（<sm）：order-3 + w-full 折行独占第二行，按钮组留在第一行右对齐；
+              · 桌面端（sm+）：脱离文档流绝对定位在整行水平/垂直中点（left-1/2 + 双向 -translate-1/2），
+                这样居中的基准是「整行」而不是「标题与按钮之间的剩余空间」，不会因标题或
+                按钮组宽度不同而偏左偏右。左标题 64px、右按钮组 ~194px，640px 及以上不会重叠。 -->
+        <div class="w-full flex justify-center order-3 sm:order-2 sm:w-auto sm:absolute sm:left-1/2 sm:top-1/2 sm:-translate-x-1/2 sm:-translate-y-1/2">
+          <div class="flex bg-slate-100 dark:bg-slate-800 rounded-lg p-0.5 transition-all w-full sm:w-auto">
+            <button
+              @click="currentConfig.mode = 'merge'"
+              class="flex-1 sm:flex-none px-4 sm:px-7 py-1.5 text-xs font-semibold rounded-md transition-all duration-200"
+              :class="currentConfig.mode === 'merge' ? 'bg-accent text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'"
+            >
+              {{ t('subscription.mode_merge') }}
+            </button>
+            <button
+              @click="currentConfig.mode = 'switch'"
+              class="flex-1 sm:flex-none px-4 sm:px-7 py-1.5 text-xs font-semibold rounded-md transition-all duration-200"
+              :class="currentConfig.mode === 'switch' ? 'bg-accent text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'"
+            >
+              {{ t('subscription.mode_switch') }}
+            </button>
+          </div>
+        </div>
+        <!-- 操作按钮组：ml-auto 让它在第一行贴右，紧邻标题（移动端滑块折到第二行后仍如此） -->
+        <div class="flex items-center gap-2 ml-auto shrink-0 order-2 sm:order-3">
           <button
-            @click="currentConfig.mode = 'merge'"
-            class="flex-1 sm:flex-none px-4 py-1.5 text-xs font-semibold rounded-md transition-all duration-200"
-            :class="currentConfig.mode === 'merge' ? 'bg-accent text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'"
+            v-if="currentConfig.mode === 'merge'"
+            @click="openMergeRulesDialog"
+            class="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 text-xs font-semibold rounded-lg transition-all flex items-center gap-1.5"
           >
-            {{ t('subscription.mode_merge') }}
+            <OptionsOutline class="w-4 h-4" /> {{ t('subscription.custom_rules') }}
           </button>
-          <button
-            @click="currentConfig.mode = 'switch'"
-            class="flex-1 sm:flex-none px-4 py-1.5 text-xs font-semibold rounded-md transition-all duration-200"
-            :class="currentConfig.mode === 'switch' ? 'bg-accent text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'"
-          >
-            {{ t('subscription.mode_switch') }}
+          <button @click="openSubModal(-1)" class="px-3.5 py-1.5 bg-accent hover:bg-accent-hover text-white text-xs font-semibold rounded-lg shadow-sm transition-all">
+            {{ t('subscription.add_subscription') }}
           </button>
         </div>
-        <button @click="openSubModal(-1)" class="px-3.5 py-1.5 bg-accent hover:bg-accent-hover text-white text-xs font-semibold rounded-lg shadow-sm transition-all flex items-center gap-1 shrink-0 order-2 sm:order-3">
-          <AddOutline class="w-4 h-4" /> {{ t('subscription.add_subscription') }}
-        </button>
       </div>
 
       <div id="subList" class="space-y-4">
@@ -880,7 +673,7 @@ onUnmounted(() => {
               <button @click="openSubModal(idx)" class="p-2 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 rounded-lg transition-all" :title="t('common.edit')">
                 <CreateOutline class="w-4 h-4" />
               </button>
-              <button v-if="currentConfig.mode === 'switch' && savedSubNames.has(item.name)" @click="openRulesModal(item.name)" class="p-2 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 rounded-lg transition-all" :title="t('subscription.custom_rules')">
+              <button v-if="currentConfig.mode === 'switch' && savedSubNames.has(item.name)" @click="openSubRulesDialog(item.name)" class="p-2 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 rounded-lg transition-all" :title="t('subscription.custom_rules')">
                 <OptionsOutline class="w-4 h-4" />
               </button>
               <button @click="handleDeleteSub(idx)" class="p-2 hover:bg-red-500/10 hover:text-red-500 text-slate-500 dark:text-slate-400 rounded-lg transition-all" :title="t('common.delete')">
@@ -1001,184 +794,19 @@ onUnmounted(() => {
       </div>
     </Teleport>
 
-    <!-- 自定义规则弹窗（切换模式）：写一条保存一条，无保存按钮 -->
-    <Teleport to="body">
-      <div v-if="isActive && showRulesModal" class="fixed inset-0 glass-mask z-[9999] flex items-center justify-center p-4" @click.self="closeRulesModal">
-        <div class="glass-heavy w-full max-w-lg max-h-[85vh] rounded-[20px] shadow-2xl border p-6 flex flex-col gap-4 animate-[zoomIn_0.2s_ease-out]">
-          <div class="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-3 shrink-0">
-            <h2 class="text-lg font-bold break-all">{{ t('subscription.custom_rules_title', { name: rulesSubName }) }}</h2>
-            <button @click="closeRulesModal" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 flex items-center justify-center p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-all shrink-0">
-              <CloseOutline class="w-5 h-5" />
-            </button>
-          </div>
-
-          <div class="flex-1 min-h-0 overflow-y-auto flex flex-col gap-4 pr-1">
-            <p class="text-xs text-slate-400 dark:text-slate-500 leading-normal">{{ t('subscription.custom_rules_hint') }}</p>
-
-            <div v-if="rulesLoading" class="flex items-center justify-center gap-2 py-8 text-xs text-slate-500 dark:text-slate-400">
-              <div class="w-4 h-4 border-2 border-slate-300 dark:border-slate-700 !border-t-accent rounded-full animate-spin"></div>
-              {{ t('common.loading') }}
-            </div>
-
-            <template v-else-if="rulesPayload">
-              <p v-if="!rulesPayload.file_ready" class="text-xs text-warning leading-normal py-1">{{ t('subscription.custom_rule_not_ready') }}</p>
-              <p v-else-if="hasNoRuleProviders" class="text-xs text-warning leading-normal py-1">{{ t('subscription.custom_rule_no_providers') }}</p>
-
-              <fieldset :disabled="rulesFormDisabled" class="min-w-0 space-y-3" :class="{ 'opacity-60': rulesFormDisabled }">
-                <div class="flex flex-col gap-1.5">
-                  <label class="text-xs font-semibold text-slate-600 dark:text-slate-400">{{ t('subscription.custom_rule_type') }}</label>
-                  <select v-model="ruleForm.type" class="px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:ring-2 focus:ring-accent outline-none text-sm">
-                    <option v-for="spec in ruleTypes" :key="spec.type" :value="spec.type">{{ spec.type }}</option>
-                  </select>
-                </div>
-
-                <div class="flex flex-col gap-1.5">
-                  <label class="text-xs font-semibold text-slate-600 dark:text-slate-400">{{ t('subscription.custom_rule_payload') }}</label>
-                  <select v-if="isRuleSetType" v-model="ruleForm.payload" class="px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:ring-2 focus:ring-accent outline-none text-sm">
-                    <option v-for="provider in ruleProviders" :key="provider" :value="provider">{{ provider }}</option>
-                  </select>
-                  <input v-else type="text" v-model="ruleForm.payload" :placeholder="selectedRuleType ? selectedRuleType.example : ''" class="px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:ring-2 focus:ring-accent outline-none text-sm" />
-                </div>
-
-                <div class="flex flex-col gap-1.5">
-                  <label class="text-xs font-semibold text-slate-600 dark:text-slate-400">{{ t('subscription.custom_rule_target') }}</label>
-                  <select v-model="ruleForm.target" class="px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:ring-2 focus:ring-accent outline-none text-sm">
-                    <optgroup :label="t('subscription.custom_rule_builtin_label')">
-                      <option v-for="builtin in ruleBuiltins" :key="builtin" :value="builtin">{{ ruleTargetLabel(builtin) }}</option>
-                    </optgroup>
-                    <optgroup v-if="ruleGroups.length || ruleTargetExtra.length" :label="t('subscription.custom_rule_groups_label')">
-                      <option v-for="group in ruleGroups" :key="group" :value="group">{{ group }}</option>
-                      <!-- 历史规则的目标已不在可选列表（如引用了改名的节点）：原样列出，避免下拉空选导致保存时被改写 -->
-                      <option v-for="extra in ruleTargetExtra" :key="extra" :value="extra">{{ extra }}</option>
-                    </optgroup>
-                  </select>
-                </div>
-
-                <div class="flex flex-col gap-1.5">
-                  <label class="text-xs font-semibold text-slate-600 dark:text-slate-400">{{ t('subscription.custom_rule_position') }}</label>
-                  <div class="flex bg-slate-100 dark:bg-slate-800 rounded-lg p-0.5 transition-all">
-                    <button
-                      type="button"
-                      @click="ruleForm.position = 'after'"
-                      class="flex-1 px-3 py-1.5 text-xs font-semibold rounded-md transition-all duration-200"
-                      :class="ruleForm.position === 'after' ? 'bg-accent text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'"
-                    >
-                      {{ t('subscription.custom_rule_position_after') }}
-                    </button>
-                    <button
-                      type="button"
-                      @click="ruleForm.position = 'before'"
-                      class="flex-1 px-3 py-1.5 text-xs font-semibold rounded-md transition-all duration-200"
-                      :class="ruleForm.position === 'before' ? 'bg-accent text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'"
-                    >
-                      {{ t('subscription.custom_rule_position_before') }}
-                    </button>
-                  </div>
-                </div>
-
-                <label v-if="selectedRuleType && selectedRuleType.no_resolve" class="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400 select-none cursor-pointer">
-                  <input type="checkbox" v-model="ruleForm.no_resolve" class="w-3.5 h-3.5 rounded accent-accent" />
-                  {{ t('subscription.custom_rule_no_resolve') }}
-                </label>
-
-                <div class="flex items-center gap-2">
-                  <button
-                    type="button"
-                    @click="handleSubmitRule"
-                    :disabled="!canSubmitRule"
-                    class="flex-1 px-4 py-2 text-xs font-semibold rounded-lg bg-accent hover:bg-accent-hover text-white shadow-sm transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <SyncOutline v-if="isSavingRule" class="w-3.5 h-3.5 animate-spin" />
-                    <CreateOutline v-else-if="isEditingRule" class="w-4 h-4" />
-                    <AddOutline v-else class="w-4 h-4" />
-                    {{ isEditingRule ? t('subscription.custom_rule_save') : t('subscription.custom_rule_add') }}
-                  </button>
-                  <button
-                    v-if="isEditingRule"
-                    type="button"
-                    @click="cancelEditRule"
-                    class="px-4 py-2 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 transition-all"
-                  >
-                    {{ t('subscription.custom_rule_cancel_edit') }}
-                  </button>
-                </div>
-              </fieldset>
-
-              <div class="flex flex-col gap-2 border-t border-slate-100 dark:border-slate-800 pt-3">
-                <div v-if="ruleList.length === 0" class="text-xs text-slate-400 dark:text-slate-600 py-3 text-center">
-                  {{ t('subscription.custom_rule_empty') }}
-                </div>
-                <div
-                  v-for="rule in ruleList"
-                  :key="rule.id"
-                  class="flex items-start gap-2 p-2.5 rounded-lg border bg-slate-50/50 dark:bg-slate-900/30"
-                  :class="editingRuleId === rule.id ? 'border-accent' : 'border-slate-200/60 dark:border-slate-800/60'"
-                >
-                  <div class="min-w-0 flex-1 flex flex-col gap-1.5">
-                    <code class="font-mono text-[11px] break-all text-slate-700 dark:text-slate-200">{{ rule.line }}</code>
-                    <div class="flex flex-wrap items-center gap-1.5">
-                      <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-slate-500/10 text-slate-500 dark:text-slate-400">
-                        {{ rule.position === 'before' ? t('subscription.custom_rule_before_badge') : t('subscription.custom_rule_after_badge') }}
-                      </span>
-                      <span v-if="editingRuleId === rule.id" class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-accent/10 text-accent">
-                        {{ t('subscription.custom_rule_editing') }}
-                      </span>
-                      <span v-if="!rule.valid" class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-500/10 text-red-500">
-                        {{ t('subscription.custom_rule_invalid_badge') }}
-                      </span>
-                      <span v-if="!rule.valid && rule.reason" class="text-[10px] text-red-500 break-all">{{ rule.reason }}</span>
-                    </div>
-                  </div>
-                  <button
-                    @click="startEditRule(rule)"
-                    class="p-2 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 rounded-lg transition-all shrink-0"
-                    :title="t('subscription.custom_rule_edit')"
-                  >
-                    <CreateOutline class="w-4 h-4" />
-                  </button>
-                  <button
-                    @click="handleMoveRule(rule, 'up')"
-                    :disabled="isRuleBusy || !ruleMoveLimits[rule.id].canMoveUp"
-                    class="p-2 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
-                    :title="t('subscription.custom_rule_move_up')"
-                  >
-                    <SyncOutline v-if="movingRuleId === rule.id && movingDirection === 'up'" class="w-4 h-4 animate-spin" />
-                    <ArrowUpOutline v-else class="w-4 h-4" />
-                  </button>
-                  <button
-                    @click="handleMoveRule(rule, 'down')"
-                    :disabled="isRuleBusy || !ruleMoveLimits[rule.id].canMoveDown"
-                    class="p-2 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
-                    :title="t('subscription.custom_rule_move_down')"
-                  >
-                    <SyncOutline v-if="movingRuleId === rule.id && movingDirection === 'down'" class="w-4 h-4 animate-spin" />
-                    <ArrowDownOutline v-else class="w-4 h-4" />
-                  </button>
-                  <button
-                    @click="handleDeleteRule(rule)"
-                    :disabled="isRuleBusy"
-                    class="p-2 hover:bg-red-500/10 hover:text-red-500 text-slate-500 dark:text-slate-400 rounded-lg transition-all shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
-                    :title="t('common.delete')"
-                  >
-                    <SyncOutline v-if="deletingRuleId === rule.id" class="w-4 h-4 animate-spin" />
-                    <TrashOutline v-else class="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-            </template>
-
-            <p v-else class="text-xs text-danger leading-normal py-1">{{ t('subscription.custom_rule_load_failed') }}</p>
-          </div>
-
-          <div class="flex justify-end pt-3 border-t border-slate-100 dark:border-slate-800 shrink-0">
-            <button @click="closeRulesModal" class="px-4 py-2 text-sm font-semibold rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 transition-all">
-              {{ t('common.close') }}
-            </button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
+    <!-- 自定义规则弹窗：切换模式（作用域=订阅）与融合模式（作用域=base/full 两档）共用同一组件。
+         写一条保存一条，没有整体保存按钮；关闭时由组件回报「改动过的作用域」，父组件据此登记规则页的过期标记 -->
+    <CustomRulesDialog
+      ref="rulesDialogRef"
+      :visible="showRulesModal"
+      :is-active="isActive"
+      :title="rulesTitle"
+      :endpoint="rulesEndpoint"
+      :scopes="rulesScopes"
+      @close="closeRulesDialog"
+    />
   </div>
+
 </template>
 
 <style>

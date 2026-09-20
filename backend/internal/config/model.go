@@ -14,7 +14,33 @@ type SubscribeConfig struct {
 	Mode               string         `json:"mode"`
 	ActiveSubscription string         `json:"active_subscription"`
 	Subscriptions      []Subscription `json:"subscriptions"`
-	DeletePhysical     []string       `json:"delete_physical,omitempty"`
+	// MergeCustomRules 融合模式的自定义规则，按规则集档位（base / full）分开存放。
+	//
+	// 必须按档位分开：两个档位的代理组、规则集与内置规则完全不同，同一条规则
+	// 在 base 下可能指向不存在的组；分开存放后切换档位即切换各自的规则列表。
+	MergeCustomRules map[string][]CustomRule `json:"merge_custom_rules,omitempty"`
+	DeletePhysical   []string                `json:"delete_physical,omitempty"`
+}
+
+// 融合模式的规则集档位（与 SubscribeConfig.RuleGroup 的取值一致）。
+const (
+	// RuleGroupBase 标准档位：按国内外 IP/域名粗略分流，无 rule-providers。
+	RuleGroupBase = "base"
+	// RuleGroupFull 详细档位：基于 ruleset 细分，带 31 个 rule-providers。
+	RuleGroupFull = "full"
+)
+
+// IsValidRuleGroup 判定规则集档位是否受支持。
+func IsValidRuleGroup(ruleGroup string) bool {
+	return ruleGroup == RuleGroupBase || ruleGroup == RuleGroupFull
+}
+
+// MergeCustomRulesFor 返回某个规则集档位的融合模式自定义规则（无则返回 nil）。
+func (c SubscribeConfig) MergeCustomRulesFor(ruleGroup string) []CustomRule {
+	if c.MergeCustomRules == nil {
+		return nil
+	}
+	return c.MergeCustomRules[ruleGroup]
 }
 
 // Subscription 描述单个订阅源及其最近一次的更新元数据。

@@ -132,6 +132,10 @@ func LoadSubscribeConfig() {
 	if tmp.Subscriptions == nil {
 		tmp.Subscriptions = []Subscription{}
 	}
+	// 融合模式的自定义规则按规则集档位存放：map 必须非 nil，否则首次写入会 panic
+	if tmp.MergeCustomRules == nil {
+		tmp.MergeCustomRules = map[string][]CustomRule{}
+	}
 
 	Current = tmp
 	log.Printf("成功加载订阅配置：%d 个订阅", len(Current.Subscriptions))

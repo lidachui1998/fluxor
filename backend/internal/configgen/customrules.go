@@ -59,6 +59,8 @@ type RuleContext struct {
 //
 // 切换模式下传入的应是该订阅的原始节点文件（proxies/<订阅名>.yaml）：
 // 自定义规则的合法目标与规则集名称都以这份文件为准。
+//
+// Doc 为该文件的文档，供调用方读取更多信息（如代理组名称）。
 func LoadRuleContext(path string) (*RuleContext, error) {
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -68,17 +70,29 @@ func LoadRuleContext(path string) (*RuleContext, error) {
 	if err != nil {
 		return nil, fmt.Errorf("订阅文件 %s 无法解析: %w", path, err)
 	}
-	ctx := &RuleContext{
-		Doc:      doc,
-		Env:      configcheck.RuleEnvFromDoc(doc),
-		existing: map[string]struct{}{},
-	}
+	var lines []string
 	if seq := doc.Get("rules"); seq != nil && seq.Kind == yaml.SequenceNode {
 		for _, item := range seq.Content {
-			ctx.existing[normalizeRuleLine(item.Value)] = struct{}{}
+			lines = append(lines, item.Value)
 		}
 	}
-	return ctx, nil
+	return NewRuleContext(doc, configcheck.RuleEnvFromDoc(doc), lines), nil
+}
+
+// NewRuleContext 用现成的文档、规则目标集合与「已存在的规则行」构造上下文。
+//
+// 切换模式经 LoadRuleContext 从订阅文件构造；融合模式没有订阅文件，
+// 直接用该档位模板的代理组与内置规则构造（doc 可为 nil，此时不带文档）。
+func NewRuleContext(doc *configcheck.Doc, env configcheck.RuleEnv, existingLines []string) *RuleContext {
+	ctx := &RuleContext{
+		Doc:      doc,
+		Env:      env,
+		existing: make(map[string]struct{}, len(existingLines)),
+	}
+	for _, line := range existingLines {
+		ctx.existing[normalizeRuleLine(line)] = struct{}{}
+	}
+	return ctx
 }
 
 // HasRuleLine 判定某条规则行是否已存在（按去空白后的文本比较）。
@@ -96,11 +110,16 @@ func (c *RuleContext) HasRuleLine(line string) bool {
 // 注意与校验集合的差别：RuleEnv.Targets 仍包含节点名——内核确实接受指向节点的
 // 规则，若校验时把节点排除，用户已有的「指向节点」的规则会被判为失效而静默跳过。
 func (c *RuleContext) GroupNames() []string {
-	groups := make(map[string]struct{})
-	for _, name := range c.Doc.NodeNames("proxy-groups") {
-		groups[name] = struct{}{}
+	// 切换模式：直接从订阅文件读代理组（只列组，不列节点）
+	if c.Doc != nil {
+		groups := make(map[string]struct{})
+		for _, name := range c.Doc.NodeNames("proxy-groups") {
+			groups[name] = struct{}{}
+		}
+		return sortedKeys(groups)
 	}
-	return sortedKeys(groups)
+	// 融合模式：没有订阅文件，改为从该档位模板的目标集合里剔除内置目标
+	return nonBuiltinKeys(c.Env.Targets)
 }
 
 // ProviderNames 返回该订阅可引用的规则集名称（已排序）。
@@ -234,6 +253,22 @@ func isMatchRule(line string) bool {
 // 折叠大小写会把两条语义不同的正则误判为重复而漏写。
 func normalizeRuleLine(line string) string {
 	return strings.TrimSpace(line)
+}
+
+// nonBuiltinKeys 返回目标集合中除内核内置目标（DIRECT/REJECT/PASS）以外的名称，已排序。
+func nonBuiltinKeys(targets map[string]struct{}) []string {
+	builtins := make(map[string]struct{}, len(configcheck.BuiltinRuleTargets()))
+	for _, name := range configcheck.BuiltinRuleTargets() {
+		builtins[name] = struct{}{}
+	}
+	rest := make(map[string]struct{}, len(targets))
+	for name := range targets {
+		if _, isBuiltin := builtins[name]; isBuiltin {
+			continue
+		}
+		rest[name] = struct{}{}
+	}
+	return sortedKeys(rest)
 }
 
 // sortedKeys 返回映射键的排序副本，保证前端下拉与列表顺序稳定。

@@ -33,6 +33,26 @@ Fluxor 的设计核心之一是不引入复杂的数据库系统。所有的全�
   "meta_backend_url": "",
   "mode": "merge",
   "active_subscription": "",
+  "merge_custom_rules": {
+    "base": [
+      {
+        "id": "9f1c0b7a2d3e4f58",
+        "type": "DOMAIN-SUFFIX",
+        "payload": "ads.example.com",
+        "target": "🎯 全球直连",
+        "position": "before"
+      }
+    ],
+    "full": [
+      {
+        "id": "1a2b3c4d5e6f7788",
+        "type": "RULE-SET",
+        "payload": "ads",
+        "target": "🛑 广告域名",
+        "position": "before"
+      }
+    ]
+  },
   "tproxy_enabled": false,
   "tproxy_dst_exceptions": [],
   "tproxy_src_exceptions": [],
@@ -88,6 +108,7 @@ Fluxor 的设计核心之一是不引入复杂的数据库系统。所有的全�
 * **`meta_backend_url`**：外部面板回连面板后端所用的地址，留空表示使用默认推导值。
 * **`mode`**：订阅加载方式，取值为 `merge`（融合模式）或 `switch`（切换模式）。详见 [订阅工作模式](./subscription-modes)。
 * **`active_subscription`**：当处于切换模式（`switch`）时，当前正在生效并激活的订阅名。
+* **`merge_custom_rules`**：**融合模式**的自定义规则，**按规则集档位分开存放**（`base` 标准 / `full` 详细）。两个档位的代理组与规则集完全不同，因此各存一份、各自生效——只有当前 `rule_group` 那一份会写进 `config.yaml`，另一份保持惰性。字段结构与订阅级 `custom_rules` 完全一致（见下方「订阅数组」），由「订阅配置」页的自定义规则弹窗按档位页面维护。
 
 ### TProxy 状态字段
 
@@ -106,7 +127,7 @@ Fluxor 的设计核心之一是不引入复杂的数据库系统。所有的全�
 * **`update_interval`**：以秒为单位的自动静默更新间隔（`0` 表示不自动更新）。
 * **`health_interval`**：以秒为单位的后台健康测速频率。
 * **`prefix`**：**节点名称前缀**（不是过滤正则）。填写后生成的节点名会自动带上该前缀，对应内核 `proxy-provider` 的 `override.additional-prefix`，用于多订阅时区分节点来源。
-* **`custom_rules`**：**切换模式**下该订阅的自定义规则列表（融合模式不使用）。每条规则由结构化字段组成，写入 `config.yaml` 时由面板组装成内核规则行：
+* **`custom_rules`**：**切换模式**下该订阅的自定义规则列表（融合模式不使用，改用顶层的 `merge_custom_rules`）。每条规则由结构化字段组成，写入 `config.yaml` 时由面板组装成内核规则行：
 
   | 字段 | 说明 |
   |------|------|

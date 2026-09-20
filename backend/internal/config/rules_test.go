@@ -144,3 +144,74 @@ func TestSortCustomRulesForDisplay(t *testing.T) {
 	}
 	assertOrder(t, SortCustomRulesForDisplay(rules), "b1", "b2", "legacy-unknown", "a1", "a2")
 }
+
+// TestInheritRuleOwnedFieldsMerge 融合模式：请求体没带规则集字段时沿用上一份状态。
+func TestInheritRuleOwnedFieldsMerge(t *testing.T) {
+	prev := SubscribeConfig{
+		MergeCustomRules: map[string][]CustomRule{
+			RuleGroupBase: {{ID: "m1", Payload: "a.example.com"}},
+			RuleGroupFull: {{ID: "m2", Payload: "b.example.com"}},
+		},
+	}
+
+	// 请求体完全没带该字段（旧前端/精简请求体）→ 整套继承
+	dst := SubscribeConfig{}
+	dst.InheritRuleOwnedFields(prev)
+	if len(dst.MergeCustomRulesFor(RuleGroupBase)) != 1 || len(dst.MergeCustomRulesFor(RuleGroupFull)) != 1 {
+		t.Fatalf("应继承两档规则，实际: %+v", dst.MergeCustomRules)
+	}
+
+	// 继承必须是深拷贝：规则接口会在写锁内就地改动切片，共享底层数组会构成数据竞争
+	dst.MergeCustomRules[RuleGroupBase][0].Payload = "changed"
+	if prev.MergeCustomRules[RuleGroupBase][0].Payload != "a.example.com" {
+		t.Fatal("继承后修改不应影响上一份状态（需要深拷贝）")
+	}
+
+	// 显式传了空 map 视为「调用方明确给出」→ 不继承
+	explicit := SubscribeConfig{MergeCustomRules: map[string][]CustomRule{}}
+	explicit.InheritRuleOwnedFields(prev)
+	if len(explicit.MergeCustomRules) != 0 {
+		t.Fatal("显式给出的空 map 不应被继承覆盖")
+	}
+
+	// 上一份也没有规则 → 保持 nil，不凭空造 map
+	plain := SubscribeConfig{}
+	plain.InheritRuleOwnedFields(SubscribeConfig{})
+	if plain.MergeCustomRules != nil {
+		t.Fatal("无可继承内容时应保持 nil")
+	}
+}
+
+// TestInheritRuleOwnedFieldsSubscriptions 切换模式：按订阅名逐条继承 custom_rules。
+func TestInheritRuleOwnedFieldsSubscriptions(t *testing.T) {
+	prev := SubscribeConfig{Subscriptions: []Subscription{
+		{Name: "机场A", CustomRules: []CustomRule{{ID: "r1", Payload: "a.com"}}},
+		{Name: "机场B"},
+	}}
+
+	dst := SubscribeConfig{Subscriptions: []Subscription{
+		{Name: "机场A"}, // 没带 → 继承
+		{Name: "机场B"}, // 上一份也没有 → 保持 nil
+		{Name: "机场C"}, // 新订阅 → 无从继承
+		{Name: "机场D", CustomRules: []CustomRule{}}, // 显式空 → 保持空
+	}}
+
+	dst.InheritRuleOwnedFields(prev)
+	if len(dst.Subscriptions[0].CustomRules) != 1 || dst.Subscriptions[0].CustomRules[0].ID != "r1" {
+		t.Fatalf("机场A 应继承规则，实际: %+v", dst.Subscriptions[0].CustomRules)
+	}
+	if dst.Subscriptions[1].CustomRules != nil {
+		t.Fatal("机场B 无可继承内容时应保持 nil")
+	}
+	if dst.Subscriptions[2].CustomRules != nil {
+		t.Fatal("新订阅不应凭空获得规则")
+	}
+	if dst.Subscriptions[3].CustomRules == nil {
+		t.Fatal("显式空切片应被尊重（不继承）")
+	}
+
+	dst.Subscriptions[0].CustomRules[0].Payload = "changed"
+	if prev.Subscriptions[0].CustomRules[0].Payload != "a.com" {
+		t.Fatal("继承后修改不应影响上一份状态（需要深拷贝）")
+	}
+}

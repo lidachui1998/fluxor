@@ -78,3 +78,54 @@ func SortCustomRulesForDisplay(rules []CustomRule) []CustomRule {
 	}
 	return out
 }
+
+// InheritRuleOwnedFields 让 dst 继承 prev 中「由规则接口维护、调用方可能未携带」的字段。
+//
+// 背景：「保存并应用」（/subscribe/generate）会把请求体整体当作新配置写回
+// config.Current，而请求体由前端拼装——只要它没有带上这些字段，配置生成就会
+// 读到一份空规则集，产出不含自定义规则的 config.yaml；更糟的是内存态的规则被清空，
+// 之后任何一次规则编辑都会把「只剩本次编辑」的列表写回文件，静默丢掉此前的规则。
+//
+// 归属规则接口的字段因此按「请求没带就沿用上一份状态」处理：
+//   - 融合模式：整份 MergeCustomRules（按规则集档位）
+//   - 切换模式：按订阅名逐条的 CustomRules
+//
+// 判据是「键是否出现」而不是「是否为空」：JSON 里没这个键 → nil → 继承；
+// 显式传了 [] → 非 nil 空切片 → 尊重调用方（例如清空后的状态）。
+//
+// 继承时逐条复制切片，避免把 prev 的底层数组交给新配置共享——规则接口会用写锁
+// 就地改动这些切片，共享底层数组会构成数据竞争。
+func (c *SubscribeConfig) InheritRuleOwnedFields(prev SubscribeConfig) {
+	if c.MergeCustomRules == nil && prev.MergeCustomRules != nil {
+		c.MergeCustomRules = make(map[string][]CustomRule, len(prev.MergeCustomRules))
+		for group, rules := range prev.MergeCustomRules {
+			if len(rules) == 0 {
+				c.MergeCustomRules[group] = []CustomRule{}
+				continue
+			}
+			copied := make([]CustomRule, len(rules))
+			copy(copied, rules)
+			c.MergeCustomRules[group] = copied
+		}
+	}
+
+	for i := range c.Subscriptions {
+		if c.Subscriptions[i].CustomRules != nil {
+			continue
+		}
+		for j := range prev.Subscriptions {
+			if prev.Subscriptions[j].Name != c.Subscriptions[i].Name {
+				continue
+			}
+			rules := prev.Subscriptions[j].CustomRules
+			if len(rules) == 0 {
+				// 无规则可继承：保持 nil，避免把「空」写成显式空切片
+				break
+			}
+			copied := make([]CustomRule, len(rules))
+			copy(copied, rules)
+			c.Subscriptions[i].CustomRules = copied
+			break
+		}
+	}
+}

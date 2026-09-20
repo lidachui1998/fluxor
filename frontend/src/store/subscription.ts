@@ -69,6 +69,9 @@ export interface SubscriptionConfigData {
   meta_backend_url: string
   mode: string
   active_subscription: string
+  // 融合模式按规则集档位存放的自定义规则，由专用接口维护；前端只做原样透传，
+  // 但必须带回请求体，否则「保存并应用」会把它们丢掉（后端另有继承兜底）
+  merge_custom_rules?: Record<string, CustomRule[]>
   subscriptions: SubscriptionItem[]
   tproxy_port: number
 }
@@ -117,6 +120,10 @@ export const useSubscriptionStore = defineStore('subscription', () => {
           const subs = cfg.subscriptions || []
           savedSubNames.value = new Set(subs.map((s: any) => s.name))
           currentConfig.value = {
+            // 先铺开后端返回的原始字段：像 merge_custom_rules 这类由专用接口维护、
+            // 前端不直接编辑的字段必须原样带回，否则「保存并应用」的请求体里就没有它们
+            //（后端虽有继承兜底，前端也不该主动丢字段）
+            ...cfg,
             proxy_port: cfg.proxy_port || 7890,
             panel_port: cfg.panel_port || 9090,
             panel_secret: cfg.panel_secret || '',
