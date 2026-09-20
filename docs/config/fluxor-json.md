@@ -102,7 +102,7 @@ Fluxor 的设计核心之一是不引入复杂的数据库系统。所有的全�
 * **`proxy_port`**：混合富强端口（Mixed Port），该端口同时支持 HTTP 和 SOCKS5 富强协议，默认 `7890`。取值为 `0` 表示禁用。
 * **`tproxy_port`**：透明富强网关端口（TProxy Port），专门供 nftables 防火墙重定向劫持流量使用，默认 `7898`。
 * **`panel_port`**：外部控制器监听端口，外置面板（如 MetaCubeXD）会通过该端口发送 HTTP API/WS 请求，默认 `9090`。
-* **`panel_secret`**：面板连接的安全验证密钥。后端在转发内核请求时会自动附加为 `Bearer` 认证头，密钥不会下发给浏览器。
+* **`panel_secret`**：保护内核 **TCP 外部控制端口**（`panel_port`）的密钥，外置面板（MetaCubeXD / Zashboard）或其它客户端直连该端口时需要提供。密钥不会下发给浏览器；Fluxor 面板自身与内核之间的通信走 UNIX Socket，内核对 unix 来源默认信任、不校验密钥，因此该链路不携带认证头。
 * **`rule_group`**：当前选用的规则分流集模板名称，取值为 `base`（标准）或 `full`（详细）。
 * **`ui_panel`**：关联的外部控制面板界面类型，取值为 `metacubexd` 或 `zashboard`。
 * **`meta_backend_url`**：外部面板回连面板后端所用的地址，留空表示使用默认推导值。

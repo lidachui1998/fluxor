@@ -6,11 +6,12 @@ build
 fluxor
 upx-ucl
 .npm-*
-.gomod
-.gopath
-.gocache
+.gomod*
+.gopath*
+.gocache*
 geo*
 mihomo
+.tmp-*
 
 # Makefile 增量构建标记
 .fluxor.target*

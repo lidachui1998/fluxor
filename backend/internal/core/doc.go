@@ -4,7 +4,8 @@ package core
 //
 // 职责包括：
 //   - client.go   与内核 Unix Socket 通信的 HTTP 客户端（含 cancelableReadCloser，
-//     确保大 JSON 响应读取完毕后再释放 Context，避免流被提前截断）
+//     确保大 JSON 响应读取完毕后再释放 Context，避免流被提前截断；
+//     内核对 unix 来源默认信任，故不携带 Authorization 头）
 //   - lifecycle.go 启动 / 停止 / 热重载（重载后异步同步 nftables TProxy 规则）
 //   - logger.go    内核操作日志文件记录器
 //   - tmpcore.go   启动临时内核实例下载订阅节点文件并回读元数据

@@ -17,7 +17,7 @@
 
 1. **内核进程生命周期管理**：负责本地 Mihomo 二进制文件的启动、停止、状态查询及配置热重载（不中断长连接）。
 2. **配置文件订阅与生成**：读取用户的订阅链接及自定义规则集，生成内核可运行的 `config.yaml`。
-3. **通信中转代理 (Bridge)**：由于 Mihomo 运行在本地 Unix Socket 上，Fluxor 后端作为前端与本地内核之间的“双向桥梁”，代理所有的 HTTP API 请求与 WebSocket 数据流（流量、内存、连接、日志等），并自动附加 `Bearer Token` 认证。
+3. **通信中转代理 (Bridge)**：由于 Mihomo 运行在本地 Unix Socket 上，Fluxor 后端作为前端与本地内核之间的“双向桥梁”，代理所有的 HTTP API 请求与 WebSocket 数据流（流量、内存、连接、日志等）。**该链路不携带任何认证头**——内核对 Unix Socket 来源默认信任（见 3.10）；`panel_secret` 只对内核的 TCP 外部控制端口生效。
 
 ---
 
@@ -387,6 +387,16 @@ func (c *cancelableReadCloser) Close() error {
 
 > 规则写操作（增/改/排序/删）的事务顺序统一为：锁内改 `config.Current` → `SaveSubscribeConfig()` 持久化 → 若命中的作用域当前生效（切换：激活订阅；融合：当前档位）则同步运行配置（切换走 `writeRuntimeConfig`，融合走 `configgen.GenerateConfig`）+ `ReloadCore()`。内核未运行时只更新 `config.yaml`（下次启动生效），并把「已保存但未同步」的情况作为 warning 如实回给前端。
 > 「修改」是就地替换（保持列表位置），「排序」是同组内相邻交换（`config/rules.go` 的 `MoveCustomRule`），两者都不改变其他规则的相对顺序。
+
+### 3.10 内核链路不携带认证头（Unix Socket 免密钥）
+
+后端与内核之间的两条链路——`core.CoreRequest`（HTTP）与 `wsproxy.WsProxyHandler`（WebSocket）——**都不得设置 `Authorization` / `Bearer` 头**：
+
+1. **原因**：内核对 `external-controller-unix` 来源默认信任，其鉴权中间件只在**非 unix** 监听上校验 `secret`。实测：同一内核进程，unix socket 上不带密钥、带错误密钥、带正确密钥三者均返回 200；TCP 外部控制端口不带密钥返回 401。因此给 unix 链路加头是纯粹的无效代码——它既不会被校验，也会让「密钥保护了内部链路」的错误印象留在文档里。
+2. **`panel_secret` 的真实作用域**：只写进 `config.yaml` 的 `secret` 字段，保护内核 **TCP** 外部控制端口（`external-controller: 0.0.0.0:<panel_port>`，供 MetaCubeXD / Zashboard 等外置面板直连）。密钥不下发给浏览器，前端一律经后端中转。
+3. **安全边界依赖文件系统权限**：unix socket 的访问控制由 socket 文件权限（及其父目录）承担，不依赖密钥。新写内核客户端代码时不要「顺手补一个认证头」。
+
+> 历史遗留：`core/client.go` 与 `wsproxy/handler.go` 曾各自读取 `config.Current.PanelSecret` 并附加 `Bearer` 头，已按要求全部移除。
 
 ---
 

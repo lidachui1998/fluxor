@@ -2,8 +2,8 @@ package dashapi
 
 // Package dashapi 把内核的 HTTP API 反向代理给前端。
 //
-// 所有请求都经由 core.CoreRequest 发往内核 Unix Socket，由后者统一附加
-// Bearer 认证并处理 Context 释放。本包只做路径解析、方法校验与响应透传。
+// 所有请求都经由 core.CoreRequest 发往内核 Unix Socket，由后者统一处理 Context
+// 释放。内核对 unix 来源默认信任，链路不带认证头——本包只做路径解析、方法校验与响应透传。
 //
 // 文件划分：
 //   - dashboard.go   版本等只读仪表盘接口

@@ -19,10 +19,6 @@ func WsProxyHandler(targetPath string) http.HandlerFunc {
 		}
 		defer conn.Close()
 
-		config.Mu.RLock()
-		secret := config.Current.PanelSecret
-		config.Mu.RUnlock()
-
 		dialer := &websocket.Dialer{
 			NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 				return net.Dial("unix", config.CoreSocket)
@@ -30,15 +26,12 @@ func WsProxyHandler(targetPath string) http.HandlerFunc {
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
 		}
-		header := http.Header{}
-		if secret != "" {
-			header.Set("Authorization", "Bearer "+secret)
-		}
 		path := targetPath
 		if r.URL.RawQuery != "" {
 			path += "?" + r.URL.RawQuery
 		}
-		coreConn, _, err := dialer.Dial("ws://localhost"+path, header)
+		// 内核对 Unix Socket 来源默认信任，无需 Bearer 认证头
+		coreConn, _, err := dialer.Dial("ws://localhost"+path, nil)
 		if err != nil {
 			// 内核未运行或连接失败是预期情况，不记录日志
 			return

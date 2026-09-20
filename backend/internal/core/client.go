@@ -48,12 +48,11 @@ func (c *cancelableReadCloser) Close() error {
 	return err
 }
 
-// CoreRequest 向内核发送 HTTP 请求，自动添加 Authorization 头
+// CoreRequest 向内核发送 HTTP 请求。
+//
+// 走的是 Unix Socket，内核对 unix 来源默认信任（实测带错密钥同样返回 200），
+// 因此不附加 Authorization 头：panel_secret 只对内核的 TCP 外部控制端口生效。
 func CoreRequest(method, path string, body io.Reader) (*http.Response, error) {
-	config.Mu.RLock()
-	secret := config.Current.PanelSecret
-	config.Mu.RUnlock()
-
 	// 动态超时：测速与提供商拉取为 90s，其余普通请求 10s
 	timeout := 10 * time.Second
 	if strings.Contains(path, "/healthcheck") || strings.Contains(path, "/providers/") {
@@ -69,9 +68,6 @@ func CoreRequest(method, path string, body io.Reader) (*http.Response, error) {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if secret != "" {
-		req.Header.Set("Authorization", "Bearer "+secret)
-	}
 
 	resp, err := coreHTTPClient.Do(req)
 	if err != nil {
