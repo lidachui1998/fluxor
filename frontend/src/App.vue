@@ -288,6 +288,10 @@ onMounted(async () => {
     globalStore.showToast(t('common.network_error'), 'error')
   }
 
+  // 排序偏好（含「按质量」）从 localStorage 恢复，但质量分数是内核测速历史的派生结果，
+  // 不随之持久化。此处与 /proxies 同批补齐一次，避免进入代理页时先按名称兜底排一遍。
+  await proxyStore.ensureQualityScores()
+
   // 获取当前用户信息并显示欢迎
   apiFetch('/whoami')
     .then(res => res.ok ? res.json() : null)

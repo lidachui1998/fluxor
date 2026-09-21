@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted, computed } from 'vue'
+import { ref, watch, onMounted, onUnmounted, onActivated, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { GlobeOutline, SyncOutline, SettingsOutline } from '@vicons/ionicons5'
 import { storeToRefs } from 'pinia'
@@ -201,6 +201,13 @@ const handleTestAll = async () => {
 
 onMounted(async () => {
   window.addEventListener('resize', onResize)
+})
+
+// 兜底：按质量排序依赖质量分数，而它是内存态（见 store/ensureQualityScores）。
+// 启动阶段若内核尚未就绪，首次拉取会落空；本页每次被 KeepAlive 激活时补一次，
+// 已有分数则不发请求，因此正常切页不会产生额外内核调用。
+onActivated(() => {
+  proxyStore.ensureQualityScores()
 })
 
 onUnmounted(() => {

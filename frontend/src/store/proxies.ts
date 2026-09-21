@@ -378,6 +378,17 @@ export const useProxyStore = defineStore('proxies', () => {
     }
   }
 
+  // 按需补齐质量分数。
+  // sortOrder 持久化在 localStorage，而质量分数是内核测速历史的派生结果、不随之持久化：
+  // 重进前端后若仍按质量排序，必须重新拉取一次，否则分数全空——列表会退化为按名称
+  // 兜底排序（见 ProxyGroupCard 中 sb - sa === 0 的分支），节点上的分数徽标也一并消失。
+  // 已有分数时不重复请求，避免每次切回本页都打一次内核；强制重算请直接用 fetchQualityScores。
+  const ensureQualityScores = async () => {
+    if (sortOrder.value !== 'quality') return
+    if (Object.keys(qualityScores.value).length > 0) return
+    await fetchQualityScores()
+  }
+
   return {
     proxyGroups,
     delays,
@@ -396,6 +407,7 @@ export const useProxyStore = defineStore('proxies', () => {
     updateSettings,
     qualityScores,
     fetchQualityScores,
+    ensureQualityScores,
     filterRegex,
     setFilterRegex,
     autoCloseConnections,
