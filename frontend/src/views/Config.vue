@@ -430,7 +430,15 @@ const handleRestartCore = async () => {
       globalStore.showToast(t('config.restart_sent'), 'success')
       // 与启动内核同理：立即登记一次以覆盖等待窗口内的切页，延迟再登记一次为准
       markKernelDataStale()
-      setTimeout(() => {
+      setTimeout(async () => {
+        // 以服务端为准重新确认内核状态：顺带复位 coreStatus.loading。
+        //
+        // 该标记的含义是「内核状态未知」，为真时整页渲染成加载占位，而它此前只有
+        // App.vue 中监听运行状态变化的 watcher 会复位——内核自重启若未产生运行状态变化
+        // （PID 未变、后端不推 SSE，实测如此），成功分支就再没有任何复位点，配置页会永久
+        // 卡在 spinner 上。refreshCoreStatus 会更新 running，且无论请求成败都会把 loading
+        // 置回 false（/core/status 读的是后端 PID 文件，不依赖内核 API 是否已就绪）。
+        await configStore.refreshCoreStatus()
         fetchConfigs(true)
         overviewStore.fetchVersionAndStatus()
         markKernelDataStale()
