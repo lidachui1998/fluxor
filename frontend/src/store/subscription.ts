@@ -41,7 +41,8 @@ export interface RuleTypeSpec {
 export interface CustomRulesPayload {
   file_ready: boolean     // 订阅原始文件是否已下载（false 时无法添加规则）
   rules: CustomRule[]     // 已按生效顺序返回（before 组在前、after 组在后），前端原样渲染，勿再排序/分组
-  groups: string[]        // 该订阅自带的代理组（仅代理组，不含代理节点），作为可选目标
+  groups: string[]        // 可选目标：代理组（订阅自带或档位模板），不含代理节点
+  nodes: string[]         // 可选目标：自定义模式下的手工节点名（其余模式为空数组）
   builtins: string[]      // ['DIRECT','REJECT','PASS']
   providers: string[]     // 该订阅 rule-providers 的键，供 RULE-SET 选择
   rule_types: RuleTypeSpec[]

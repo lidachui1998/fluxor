@@ -183,6 +183,70 @@ func TestInheritRuleOwnedFieldsMerge(t *testing.T) {
 }
 
 // TestInheritRuleOwnedFieldsSubscriptions 切换模式：按订阅名逐条继承 custom_rules。
+// TestTemplateRulesFor 模板级作用域取规则：融合档位读 map，自定义模式读独立字段。
+func TestTemplateRulesFor(t *testing.T) {
+	cfg := SubscribeConfig{
+		MergeCustomRules: map[string][]CustomRule{
+			RuleGroupBase: {{ID: "b1"}},
+			RuleGroupFull: {{ID: "f1"}},
+		},
+		CustomModeRules: []CustomRule{{ID: "c1"}},
+	}
+	cases := map[string]string{
+		RuleGroupBase:   "b1",
+		RuleGroupFull:   "f1",
+		RuleScopeCustom: "c1",
+	}
+	for scope, want := range cases {
+		rules := cfg.TemplateRulesFor(scope)
+		if len(rules) != 1 || rules[0].ID != want {
+			t.Fatalf("作用域 %s 应取到 %s，实际 %+v", scope, want, rules)
+		}
+	}
+	if cfg.TemplateRulesFor("unknown") != nil {
+		t.Fatal("未知作用域应返回 nil")
+	}
+	if !IsValidRuleScope(RuleScopeCustom) || !IsValidRuleScope(RuleGroupBase) || IsValidRuleScope("nope") {
+		t.Fatal("IsValidRuleScope 判定不正确")
+	}
+}
+
+// TestInheritRuleOwnedFieldsCustomModeRules 自定义模式的自定义规则同样按「键缺失就继承」处理。
+//
+// 两个整体覆盖写接口（/subscribe/generate、/subscribe/config）都会把请求体整体写回，
+// 漏继承会让「保存并应用」把自定义模式的规则静默清空。
+func TestInheritRuleOwnedFieldsCustomModeRules(t *testing.T) {
+	prev := SubscribeConfig{CustomModeRules: []CustomRule{{ID: "c1", Payload: "a.com"}}}
+
+	// 请求体没带该键 → 继承
+	dst := SubscribeConfig{}
+	dst.InheritRuleOwnedFields(prev)
+	if len(dst.CustomModeRules) != 1 || dst.CustomModeRules[0].ID != "c1" {
+		t.Fatalf("应继承自定义模式规则，实际: %+v", dst.CustomModeRules)
+	}
+	// 必须是深拷贝：规则接口会在写锁内就地改动切片
+	dst.CustomModeRules[0].Payload = "changed"
+	if prev.CustomModeRules[0].Payload != "a.com" {
+		t.Fatal("继承后修改不应影响上一份状态")
+	}
+
+	// 显式传空 → 尊重调用方
+	explicit := SubscribeConfig{CustomModeRules: []CustomRule{}}
+	explicit.InheritRuleOwnedFields(prev)
+	if len(explicit.CustomModeRules) != 0 {
+		t.Fatalf("显式空切片应被尊重，实际: %+v", explicit.CustomModeRules)
+	}
+
+	// 与融合模式的规则互不影响
+	mixed := SubscribeConfig{}
+	mixed.InheritRuleOwnedFields(SubscribeConfig{
+		MergeCustomRules: map[string][]CustomRule{RuleGroupBase: {{ID: "m1"}}},
+	})
+	if len(mixed.CustomModeRules) != 0 || len(mixed.MergeCustomRulesFor(RuleGroupBase)) != 1 {
+		t.Fatalf("两种作用域的继承互不干扰: %+v / %+v", mixed.CustomModeRules, mixed.MergeCustomRules)
+	}
+}
+
 func TestInheritRuleOwnedFieldsSubscriptions(t *testing.T) {
 	prev := SubscribeConfig{Subscriptions: []Subscription{
 		{Name: "机场A", CustomRules: []CustomRule{{ID: "r1", Payload: "a.com"}}},

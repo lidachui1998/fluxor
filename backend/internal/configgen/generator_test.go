@@ -146,7 +146,7 @@ func TestGenerateConfigWithoutSubscriptionsUsesBaseConfig(t *testing.T) {
 // 而不是产出一份内核加载不了的配置。
 func TestAppendRuleSetFullRequiresSubscriptions(t *testing.T) {
 	doc := configcheck.NewDoc()
-	err := appendRuleSet(doc, config.SubscribeConfig{RuleGroup: config.RuleGroupFull})
+	err := appendRuleSet(doc, config.SubscribeConfig{RuleGroup: config.RuleGroupFull}, config.RuleGroupFull)
 	if err == nil {
 		t.Fatalf("无订阅时应报错")
 	}

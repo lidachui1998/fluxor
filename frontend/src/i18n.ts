@@ -418,7 +418,7 @@ const messages = {
     'subscription.node_modal_hint': '留空的项使用协议默认值（默认模板由后端维护）。「保存到列表」只改动列表，点击右上角「保存并应用」后才写入配置并重载内核。',
     'subscription.node_protocol_deprecated': '该协议已过时，不建议使用',
     'subscription.custom_rules_custom_title': '自定义规则 · 自定义模式',
-    'subscription.custom_rules_custom_hint': '自定义模式固定使用标准规则集，这里的规则与「融合模式 · 标准」共用同一份列表。',
+    'subscription.custom_rules_custom_hint': '自定义模式固定使用标准规则集；规则单独保存，与融合模式的规则互不影响。目标可选内置代理组与自定义节点（新增节点请先「保存并应用」）。',
     'subscription.custom_no_nodes_confirm': '节点列表为空，保存后配置中将不包含任何节点，是否继续？',
     // ---------- 协议字段标签（键名与后端 nodespec 字段键一致）----------
     'subscription.node_field.accept-dns': '接受 DNS 配置',
@@ -668,6 +668,7 @@ const messages = {
     'subscription.custom_rule_not_ready': '订阅文件尚未下载，请先保存并应用后再添加规则。',
     'subscription.custom_rule_no_providers': '该订阅未提供规则集，无法添加 RULE-SET 规则。',
     'subscription.custom_rule_groups_label': '代理组',
+    'subscription.custom_rule_nodes_label': '节点',
     'subscription.custom_rule_builtin_label': '内置目标',
     'subscription.custom_rule_target_direct': '直连 (DIRECT)',
     'subscription.custom_rule_target_reject': '拒绝 (REJECT)',
@@ -1096,7 +1097,7 @@ const messages = {
     'subscription.node_modal_hint': 'Empty fields fall back to the protocol defaults (maintained by the backend). "Save to List" only edits the list — click "Save & Apply" to write the configuration and reload the kernel.',
     'subscription.node_protocol_deprecated': 'This protocol is deprecated and not recommended',
     'subscription.custom_rules_custom_title': 'Custom Rules · Custom mode',
-    'subscription.custom_rules_custom_hint': 'Custom mode always uses the base rule set; these rules are shared with "Merge · Base".',
+    'subscription.custom_rules_custom_hint': 'Custom mode always uses the base rule set; its rules are stored separately and do not affect merge mode. Targets can be built-in proxy groups or your custom nodes (save & apply new nodes first).',
     'subscription.custom_no_nodes_confirm': 'The node list is empty — the saved configuration will contain no nodes. Continue?',
     // ---------- Protocol field labels (keyed by backend nodespec field keys) ----------
     'subscription.node_field.accept-dns': 'Accept DNS',
@@ -1346,6 +1347,7 @@ const messages = {
     'subscription.custom_rule_not_ready': 'The subscription file has not been downloaded yet. Save and apply first, then add rules.',
     'subscription.custom_rule_no_providers': 'This subscription provides no rule sets, so RULE-SET rules cannot be added.',
     'subscription.custom_rule_groups_label': 'Proxy groups',
+    'subscription.custom_rule_nodes_label': 'Nodes',
     'subscription.custom_rule_builtin_label': 'Built-in targets',
     'subscription.custom_rule_target_direct': 'Direct (DIRECT)',
     'subscription.custom_rule_target_reject': 'Reject (REJECT)',

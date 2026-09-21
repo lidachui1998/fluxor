@@ -40,8 +40,14 @@ type customRulesPayload struct {
 	FileReady bool `json:"file_ready"`
 	// Rules 该订阅已配置的自定义规则（含合法性判定），顺序即生效顺序。
 	Rules []customRuleView `json:"rules"`
-	// Groups 可选目标：该订阅自带的**代理组**（不含代理节点）。
+	// Groups 可选目标：代理组（订阅自带或档位模板），**不含**代理节点。
 	Groups []string `json:"groups"`
+	// Nodes 可选目标：自定义模式下的手工节点名（其余模式为空）。
+	//
+	// 与代理组一样是合法目标——自定义模式的节点写死在 config.yaml 的 proxies 里，
+	// 规则指向节点名内核能解析；融合/切换模式的节点来自 provider 或订阅文件，
+	// 静态校验看不到，因此只在自定义模式下给出（见 CustomModeRuleContext）。
+	Nodes []string `json:"nodes"`
 	// Builtins 可选的内置目标：DIRECT / REJECT / PASS。
 	Builtins []string `json:"builtins"`
 	// Providers 可选规则集：该订阅 rule-providers 的键，供 RULE-SET 使用。

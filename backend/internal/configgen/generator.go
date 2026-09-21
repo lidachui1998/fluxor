@@ -37,12 +37,13 @@ func GenerateConfig(cfg config.SubscribeConfig) error {
 	}
 
 	// 按规则集追加动态块（rule-providers -> proxy-groups -> rules）
-	if err := appendRuleSet(doc, cfg); err != nil {
+	if err := appendRuleSet(doc, cfg, cfg.RuleGroup); err != nil {
 		return err
 	}
 
-	// 融合模式的自定义规则：必须在该档位的代理组就位后注入，否则目标校验看不到组
-	if err := applyMergeCustomRules(doc, cfg); err != nil {
+	// 融合模式的自定义规则：必须在该档位的代理组就位后注入，否则目标校验看不到组。
+	// 只取当前档位那一份——另一档保持惰性，等切档后再生效。
+	if err := applyCustomRules(doc, cfg.RuleGroup, cfg.MergeCustomRulesFor(cfg.RuleGroup)); err != nil {
 		return err
 	}
 
@@ -187,9 +188,12 @@ func buildProviders(cfg config.SubscribeConfig) (*yaml.Node, error) {
 	return providers, nil
 }
 
-// appendRuleSet 按规则集追加 rule-providers / proxy-groups / rules 三个顶层块。
-func appendRuleSet(doc *configcheck.Doc, cfg config.SubscribeConfig) error {
-	switch cfg.RuleGroup {
+// appendRuleSet 按规则集档位追加 rule-providers / proxy-groups / rules 三个顶层块。
+//
+// 档位由参数传入而不是读 cfg.RuleGroup：自定义模式的规则集固定用标准档位，
+// 但它的自定义规则存在另一个作用域（见 GenerateCustomConfig）。
+func appendRuleSet(doc *configcheck.Doc, cfg config.SubscribeConfig, ruleGroup string) error {
+	switch ruleGroup {
 	case "base":
 		if err := mergeBlock(doc, proxyGroupsBase); err != nil {
 			return err

@@ -80,13 +80,12 @@ const openSubRulesDialog = (name: string) => {
 
 // 打开自定义规则弹窗（标题行按钮）：
 //   - 融合模式：base / full 两档各自独立，用页签切换；
-//   - 自定义模式：模板固定使用标准规则集，只开一个作用域（base），
-//     与「融合模式 + 标准档位」共用同一份规则列表——两者的代理组与内置规则集合相同，
-//     规则在两边都成立，因此复用同一个接口与同一份存储。
+//   - 自定义模式：走独立的作用域与接口（/subscribe/custom-mode-rules/custom），规则与
+//     融合模式各存各的、互不影响；作用域段固定为 custom，因此只开一个（不渲染页签）。
 const openRulesDialog = () => {
   if (currentConfig.value.mode === 'custom') {
-    rulesEndpoint.value = '/subscribe/merge-custom-rules'
-    rulesScopes.value = [{ key: 'base', label: t('subscription.rule_group_base'), effective: true }]
+    rulesEndpoint.value = '/subscribe/custom-mode-rules'
+    rulesScopes.value = [{ key: 'custom', label: t('subscription.custom_rules'), effective: true }]
     rulesTitle.value = t('subscription.custom_rules_custom_title')
     rulesHint.value = t('subscription.custom_rules_custom_hint')
     showRulesModal.value = true
@@ -116,10 +115,10 @@ const openMergeRulesDialog = () => {
 // 标记由规则页切入时消费——用户一直不切过去就不会产生请求。
 const flushRulesStaleMark = (mutatedKeys: string[] = []) => {
   if (mutatedKeys.length === 0) return
-  // 自定义模式固定使用标准规则集，其规则改动同样会改变运行中的规则集合
+  // 自定义模式有独立的规则作用域（custom），其改动同样会改变运行中的规则集合
   const effectiveKey = currentConfig.value.mode === 'switch'
     ? currentConfig.value.active_subscription
-    : (currentConfig.value.mode === 'custom' ? 'base' : currentConfig.value.rule_group)
+    : (currentConfig.value.mode === 'custom' ? 'custom' : currentConfig.value.rule_group)
   if (!effectiveKey || !mutatedKeys.includes(effectiveKey)) return
   rulesStore.markNeedsRefresh()
 }

@@ -16,8 +16,8 @@ import (
 //   - 不写 proxy-providers：节点全部来自 proxies，与订阅无关（订阅列表只是历史数据）；
 //   - 规则集固定 standard（RuleGroupBase）：界面在自定义模式下隐藏档位选择，
 //     生成时也无视 cfg.RuleGroup 里残留的档位，避免「界面不显示、实际按 full 生成」；
-//   - 自定义规则取 standard 档位那一份——与「融合模式 + 标准档位」共用，两者的
-//     代理组与内置规则集合完全相同，规则在两边都成立。
+//   - 自定义规则取自定义模式自己的那一份（config.RuleScopeCustom）——与融合模式的
+//     规则完全独立，两种模式各改各的；模板层面的代理组与内置规则仍与标准档位一致。
 func GenerateCustomConfig(cfg config.SubscribeConfig) error {
 	doc, err := configcheck.ParseDoc([]byte(configTemplate))
 	if err != nil {
@@ -36,14 +36,11 @@ func GenerateCustomConfig(cfg config.SubscribeConfig) error {
 		doc.SetNode("proxies", proxies)
 	}
 
-	// 规则集与自定义规则都按标准档位走：这里用一个局部副本改写 RuleGroup，
-	// 既复用了融合模式的生成链路，又不动调用方持有的配置快照。
-	ruleCfg := cfg
-	ruleCfg.RuleGroup = config.RuleGroupBase
-	if err := appendRuleSet(doc, ruleCfg); err != nil {
+	// 模板固定标准档位；自定义规则只取自定义模式的那一份（与融合模式互不影响）
+	if err := appendRuleSet(doc, cfg, config.RuleGroupBase); err != nil {
 		return err
 	}
-	if err := applyMergeCustomRules(doc, ruleCfg); err != nil {
+	if err := applyCustomRules(doc, config.RuleScopeCustom, cfg.CustomModeRules); err != nil {
 		return err
 	}
 

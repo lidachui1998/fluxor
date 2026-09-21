@@ -133,15 +133,20 @@ const deletingRuleId = computed(() => activeScope.value?.deletingRuleId ?? '')
 const ruleTypes = computed<RuleTypeSpec[]>(() => activePayload.value?.rule_types ?? [])
 const ruleBuiltins = computed<string[]>(() => activePayload.value?.builtins ?? [])
 const ruleGroups = computed<string[]>(() => activePayload.value?.groups ?? [])
+// 节点作为目标只在自定义模式下由后端下发（见 mergecustomrules 的 Nodes 字段）
+const ruleNodes = computed<string[]>(() => activePayload.value?.nodes ?? [])
 const ruleProviders = computed<string[]>(() => activePayload.value?.providers ?? [])
 const ruleList = computed<CustomRule[]>(() => activePayload.value?.rules ?? [])
 
-// 目标下拉的额外选项：历史规则的 target 可能来自已改名的代理组/节点，不在 builtins/groups 里。
+// 目标下拉的额外选项：历史规则的 target 可能来自已改名的代理组/节点，不在 builtins/groups/nodes 里。
 // 单独追加一条，否则下拉显示为空并在保存时把用户的目标静默改掉（数据丢失）
 const ruleTargetExtra = computed<string[]>(() => {
   const target = ruleForm.value?.target
   if (!target) return []
-  return ruleBuiltins.value.includes(target) || ruleGroups.value.includes(target) ? [] : [target]
+  const known = ruleBuiltins.value.includes(target)
+    || ruleGroups.value.includes(target)
+    || ruleNodes.value.includes(target)
+  return known ? [] : [target]
 })
 
 // 当前类型对应的规格：驱动 placeholder 与 no-resolve 选项的显隐
@@ -528,6 +533,11 @@ defineExpose({ takeMutatedScopes })
                     <option v-for="group in ruleGroups" :key="group" :value="group">{{ group }}</option>
                     <!-- 历史规则的目标已不在可选列表（如引用了改名的代理组）：原样列出，避免下拉空选导致保存时被改写 -->
                     <option v-for="extra in ruleTargetExtra" :key="extra" :value="extra">{{ extra }}</option>
+                  </optgroup>
+                  <!-- 节点作为目标只在自定义模式下出现（该模式的节点是静态 proxies，内核能解析；
+                       融合/切换模式的节点运行时才加载，静态校验看不到，故后端不下发） -->
+                  <optgroup v-if="ruleNodes.length" :label="t('subscription.custom_rule_nodes_label')">
+                    <option v-for="node in ruleNodes" :key="node" :value="node">{{ node }}</option>
                   </optgroup>
                 </select>
               </div>

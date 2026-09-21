@@ -5,6 +5,7 @@ import (
 	"fluxor/internal/configcheck"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -98,7 +99,10 @@ func MergeRuleSetRuleLines(ruleGroup string) ([]string, error) {
 }
 
 // MergeRuleSetContext 构建某档位的规则上下文（目标 = 该档位代理组 + 内置目标，
-// 既有规则行 = 该档位内置模板规则），供自定义规则的校验与判重复用。
+// 既有规则行 = 该档位内置模板规则），供融合模式自定义规则的校验与判重复用。
+//
+// 节点名不进目标集合：融合模式的节点来自 proxy-providers、运行时才加载，
+// 静态校验看不到，引用节点名会让内核拒绝加载整份配置（实测 `proxy [X] not found`）。
 func MergeRuleSetContext(ruleGroup string) (*RuleContext, error) {
 	env, err := MergeRuleSetEnv(ruleGroup)
 	if err != nil {
@@ -111,39 +115,63 @@ func MergeRuleSetContext(ruleGroup string) (*RuleContext, error) {
 	return NewRuleContext(nil, env, lines), nil
 }
 
-// mergeCustomRules 取某档位的融合模式自定义规则并注入文档。
+// CustomModeRuleContext 构建自定义模式的规则上下文。
 //
-// 调用点必须在 appendRuleSet 之后：校验集合与最终产物都依赖该档位的代理组就位。
-func applyMergeCustomRules(doc *configcheck.Doc, cfg config.SubscribeConfig) error {
-	rules := cfg.MergeCustomRulesFor(cfg.RuleGroup)
+// 与融合模式的差别只有一处：**手工节点名也是合法目标**。自定义模式的节点写死在
+// config.yaml 的 proxies 里，规则指向节点名内核加载时就能解析；模板则固定用标准档位
+// （界面上自定义模式不提供档位选择），因此本体沿用 MergeRuleSetContext(base)。
+//
+// 节点名同时进入目标集合（校验用）与 Nodes（界面单独成组展示）。
+func CustomModeRuleContext(cfg config.SubscribeConfig) (*RuleContext, error) {
+	ctx, err := MergeRuleSetContext(config.RuleGroupBase)
+	if err != nil {
+		return nil, err
+	}
+	for _, node := range cfg.CustomNodes {
+		name := strings.TrimSpace(node.Name)
+		if name == "" {
+			continue
+		}
+		ctx.Env.Targets[name] = struct{}{}
+		ctx.Nodes = append(ctx.Nodes, name)
+	}
+	sort.Strings(ctx.Nodes)
+	return ctx, nil
+}
+
+// applyCustomRules 把某个作用域的自定义规则注入文档。
+//
+// 调用点必须在 appendRuleSet 之后：校验集合与最终产物都依赖该作用域的代理组就位。
+// scopeName 只用于日志（融合档位 base/full 或自定义模式 custom）。
+func applyCustomRules(doc *configcheck.Doc, scopeName string, rules []config.CustomRule) error {
 	if len(rules) == 0 {
 		return nil
 	}
 	result, err := ApplyCustomRules(doc, rules)
 	if err != nil {
-		return fmt.Errorf("注入融合模式自定义规则失败: %w", err)
+		return fmt.Errorf("注入模板级自定义规则失败（%s）: %w", scopeName, err)
 	}
 	for _, skip := range result.Skipped {
 		// 跳过而不是写进配置：目标不存在的规则会让内核拒绝加载整份配置
-		log.Printf("[CUSTOM-RULE] 融合模式（%s）跳过规则 %s,%s,%s: %s",
-			cfg.RuleGroup, skip.Rule.Type, skip.Rule.Payload, skip.Rule.Target, skip.Reason)
+		log.Printf("[CUSTOM-RULE] %s 跳过规则 %s,%s,%s: %s",
+			scopeName, skip.Rule.Type, skip.Rule.Payload, skip.Rule.Target, skip.Reason)
 	}
 	return nil
 }
 
-// MergeRuleSkips 返回某档位中因目标/规则集失效而无法写入配置的规则说明。
+// RuleSkips 返回一组规则里因目标/规则集失效而无法写入配置的规则说明。
 //
 // 与切换模式 writeRuntimeConfig 返回的 ApplyResult.Skipped 对齐：让接口能如实
 // 回报「规则已保存，但有 N 条因目标不存在未写入配置」，而不是静默少几条规则。
-// 这里只做校验、不改动任何状态。
-func MergeRuleSkips(cfg config.SubscribeConfig, ruleGroup string) []string {
-	env, err := MergeRuleSetEnv(ruleGroup)
-	if err != nil {
+// 上下文由调用方按作用域构造（融合档位用 MergeRuleSetContext，自定义模式用
+// CustomModeRuleContext），这里只做校验、不改动任何状态。
+func RuleSkips(rules []config.CustomRule, ctx *RuleContext) []string {
+	if ctx == nil {
 		return nil
 	}
 	var skipped []string
-	for _, rule := range cfg.MergeCustomRulesFor(ruleGroup) {
-		if _, err := ValidateCustomRule(rule, env); err != nil {
+	for _, rule := range rules {
+		if _, err := ValidateCustomRule(rule, ctx.Env); err != nil {
 			skipped = append(skipped, strings.Join([]string{rule.Type, rule.Payload, rule.Target}, ","))
 		}
 	}

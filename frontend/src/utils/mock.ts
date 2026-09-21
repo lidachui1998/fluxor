@@ -285,6 +285,9 @@ const mockMergeCustomRules: Record<string, CustomRule[]> = {
   ],
 }
 
+// 自定义模式的自定义规则：独立一份，与上面的融合档位互不影响（与后端 custom_mode_rules 对应）
+const mockCustomModeRules: CustomRule[] = []
+
 const mockCustomRuleGroups = ['节点选择', '自动选择', '广告拦截']
 const mockCustomRuleBuiltins = ['DIRECT', 'REJECT', 'PASS']
 const mockCustomRuleProviders = ['ads', 'private']
@@ -330,10 +333,13 @@ const buildMockCustomRulesPayload = (
   providers: string[],
   status?: 'ok' | 'warning',
   message?: string,
+  nodes: string[] = [],
 ): CustomRulesPayload => ({
   file_ready: true,
   rules: orderMockCustomRules(rules),
   groups,
+  // 节点作为目标只在自定义模式下给出（与后端 buildMergeRulesPayload 一致）
+  nodes,
   builtins: mockCustomRuleBuiltins,
   providers,
   rule_types: mockCustomRuleTypes,
@@ -353,11 +359,12 @@ const handleMockCustomRulesRequest = (
   rawPath: string,
   method: string,
   bodyRaw: string | undefined,
+  nodes: string[] = [],
 ): Response | null => {
   if (method === 'POST') {
     const body = JSON.parse(bodyRaw || '{}')
     rules.push(buildMockCustomRule(body, nextMockRuleId()))
-    return reply(buildMockCustomRulesPayload(rules, groups, providers, 'ok'))
+    return reply(buildMockCustomRulesPayload(rules, groups, providers, 'ok', undefined, nodes))
   }
 
   if (method === 'PUT') {
@@ -366,7 +373,7 @@ const handleMockCustomRulesRequest = (
     if (idx < 0) return reply({ status: 'error', message: '规则不存在: ' + body.id }, 404)
     // 就地替换：索引与 id 都保持原样，列表位置不变（与后端 PUT 语义一致）
     rules[idx] = buildMockCustomRule(body, rules[idx].id)
-    return reply(buildMockCustomRulesPayload(rules, groups, providers, 'ok'))
+    return reply(buildMockCustomRulesPayload(rules, groups, providers, 'ok', undefined, nodes))
   }
 
   if (method === 'PATCH') {
@@ -387,7 +394,7 @@ const handleMockCustomRulesRequest = (
     ordered[swapIdx] = moved
     // 交换结果按生效顺序写回原数组
     ordered.forEach((r, i) => { rules[i] = r })
-    return reply(buildMockCustomRulesPayload(rules, groups, providers))
+    return reply(buildMockCustomRulesPayload(rules, groups, providers, undefined, undefined, nodes))
   }
 
   if (method === 'DELETE') {
@@ -396,10 +403,10 @@ const handleMockCustomRulesRequest = (
     const idx = rules.findIndex(r => r.id === id)
     if (idx < 0) return reply({ status: 'error', message: '规则不存在: ' + id }, 404)
     rules.splice(idx, 1)
-    return reply(buildMockCustomRulesPayload(rules, groups, providers, 'ok'))
+    return reply(buildMockCustomRulesPayload(rules, groups, providers, 'ok', undefined, nodes))
   }
 
-  if (method === 'GET') return reply(buildMockCustomRulesPayload(rules, groups, providers))
+  if (method === 'GET') return reply(buildMockCustomRulesPayload(rules, groups, providers, undefined, undefined, nodes))
 
   return null
 }
@@ -539,6 +546,26 @@ export function handleMockFetch(path: string, options: RequestInit = {}): Respon
     return reply({ delay: Math.floor(40 + Math.random() * 100) })
   }
 
+  // 自定义模式自定义规则（/subscribe/custom-mode-rules/custom）：独立一份存储，
+  // 目标里额外含手工节点名，与融合模式的规则互不影响
+  if (cleanPath.includes('/subscribe/custom-mode-rules/')) {
+    const scope = decodeURIComponent(cleanPath.split('/subscribe/custom-mode-rules/')[1] || '')
+    if (scope !== 'custom') {
+      return reply({ status: 'error', message: '未知作用域: ' + scope }, 400)
+    }
+    const customNodes = (mockSubConfig.custom_nodes || []) as { name: string }[]
+    const resp = handleMockCustomRulesRequest(
+      mockCustomModeRules,
+      mockMergeBaseGroups,
+      mockMergeBaseProviders,
+      path,
+      method,
+      options.body as string | undefined,
+      mockSubConfig.mode === 'custom' ? customNodes.map(node => node.name) : [],
+    )
+    if (resp) return resp
+  }
+
   // 融合模式自定义规则（/subscribe/merge-custom-rules/{base|full}）：方法语义与切换模式一致，
   // 区别只在于作用域是规则集档位、两档各有自己的代理组与规则集清单（互不影响）。
   // 该前缀必须在切换模式那条更短的前缀之前匹配（两者字符串不同，此处仅作可读性排序）。
@@ -550,6 +577,7 @@ export function handleMockFetch(path: string, options: RequestInit = {}): Respon
     if (!mockMergeCustomRules[ruleGroup]) mockMergeCustomRules[ruleGroup] = []
     const groups = ruleGroup === 'full' ? mockMergeFullGroups : mockMergeBaseGroups
     const providers = ruleGroup === 'full' ? mockMergeFullProviders : mockMergeBaseProviders
+    // 融合模式的档位不含节点目标（节点只在自定义模式下可选）
     const resp = handleMockCustomRulesRequest(mockMergeCustomRules[ruleGroup], groups, providers, path, method, options.body as string | undefined)
     if (resp) return resp
   }

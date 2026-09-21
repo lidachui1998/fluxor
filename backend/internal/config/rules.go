@@ -96,6 +96,13 @@ func SortCustomRulesForDisplay(rules []CustomRule) []CustomRule {
 // 继承时逐条复制切片，避免把 prev 的底层数组交给新配置共享——规则接口会用写锁
 // 就地改动这些切片，共享底层数组会构成数据竞争。
 func (c *SubscribeConfig) InheritRuleOwnedFields(prev SubscribeConfig) {
+	// 自定义模式的自定义规则同理：请求体没带该键（nil）就沿用上一份状态
+	if c.CustomModeRules == nil && prev.CustomModeRules != nil {
+		copied := make([]CustomRule, len(prev.CustomModeRules))
+		copy(copied, prev.CustomModeRules)
+		c.CustomModeRules = copied
+	}
+
 	if c.MergeCustomRules == nil && prev.MergeCustomRules != nil {
 		c.MergeCustomRules = make(map[string][]CustomRule, len(prev.MergeCustomRules))
 		for group, rules := range prev.MergeCustomRules {

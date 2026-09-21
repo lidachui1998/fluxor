@@ -48,10 +48,13 @@ func TestGenerateCustomConfig(t *testing.T) {
 				},
 			},
 		},
-		// 标准档位的自定义规则应进入产物
+		// 三种作用域的规则各写一份：只有自定义模式那一份应该进产物
 		MergeCustomRules: map[string][]config.CustomRule{
-			config.RuleGroupBase: {{ID: "r1", Type: "DOMAIN-SUFFIX", Payload: "example.org", Target: "🎯 全球直连", Position: "before"}},
-			config.RuleGroupFull: {{ID: "r2", Type: "DOMAIN-SUFFIX", Payload: "full-only.test", Target: "🎯 全球直连", Position: "before"}},
+			config.RuleGroupBase: {{ID: "r1", Type: "DOMAIN-SUFFIX", Payload: "merge-base.test", Target: "🎯 全球直连", Position: "before"}},
+			config.RuleGroupFull: {{ID: "r2", Type: "DOMAIN-SUFFIX", Payload: "merge-full.test", Target: "🎯 全球直连", Position: "before"}},
+		},
+		CustomModeRules: []config.CustomRule{
+			{ID: "c1", Type: "DOMAIN-SUFFIX", Payload: "custom-mode.test", Target: "🎯 全球直连", Position: "before"},
 		},
 	}
 
@@ -65,12 +68,13 @@ func TestGenerateCustomConfig(t *testing.T) {
 	}
 	out := string(raw)
 
-	for _, want := range []string{"香港 01", "🇯🇵 东京 · WS", "example.org", "dns:", "rules:"} {
+	for _, want := range []string{"香港 01", "🇯🇵 东京 · WS", "custom-mode.test", "dns:", "rules:"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("产物应包含 %q，实际:\n%s", want, out)
 		}
 	}
-	for _, unwanted := range []string{"proxy-providers", "full-only.test", "rule-providers"} {
+	// 融合模式的两份规则都不该出现：三种作用域互不影响
+	for _, unwanted := range []string{"proxy-providers", "merge-base.test", "merge-full.test", "rule-providers"} {
 		if strings.Contains(out, unwanted) {
 			t.Errorf("产物不应包含 %q，实际:\n%s", unwanted, out)
 		}

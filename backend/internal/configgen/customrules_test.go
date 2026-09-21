@@ -374,6 +374,62 @@ func lastLine(s string) string {
 	return s
 }
 
+// TestCustomModeRuleTargets 自定义模式下把手工节点名也算作规则目标（仅该模式）。
+//
+// 背景：自定义模式的节点写死在 config.yaml 的 proxies 里，规则指向节点名内核能解析；
+// 融合模式的节点来自 proxy-providers、运行时才加载，静态校验看不到，因此两者的
+// 目标集合按模式区分——这条差异就是「目标下拉在自定义模式下多出节点」的由来。
+func TestCustomModeRuleTargets(t *testing.T) {
+	customCfg := config.SubscribeConfig{
+		Mode: config.ModeCustom,
+		CustomNodes: []config.CustomNode{
+			{ID: "n1", Name: "自建 香港"},
+			{ID: "n2", Name: "自建 日本"},
+		},
+	}
+
+	ctx, err := CustomModeRuleContext(customCfg)
+	if err != nil {
+		t.Fatalf("构建自定义模式上下文失败: %v", err)
+	}
+
+	// 节点是合法目标（否则规则会在生成时被静默跳过）
+	for _, name := range []string{"自建 香港", "自建 日本"} {
+		if !ctx.Env.ContainsTarget(name) {
+			t.Fatalf("自定义模式下节点 %s 应可作为规则目标", name)
+		}
+	}
+	// 下拉里单独成组：GroupNames 不含节点，NodeNames 才给节点
+	if strings.Contains(strings.Join(ctx.GroupNames(), "|"), "自建") {
+		t.Fatalf("节点不应混进代理组列表: %v", ctx.GroupNames())
+	}
+	if got := strings.Join(ctx.NodeNames(), "|"); got != "自建 日本|自建 香港" {
+		t.Fatalf("节点列表应为两个手工节点，实际: %s", got)
+	}
+	// 指向节点的规则能通过校验
+	rule := config.CustomRule{Type: "DOMAIN-SUFFIX", Payload: "example.org", Target: "自建 香港", Position: config.RulePositionBefore}
+	if _, err := ValidateCustomRule(rule, ctx.Env); err != nil {
+		t.Fatalf("指向节点的规则应通过校验: %v", err)
+	}
+	if skipped := RuleSkips([]config.CustomRule{rule}, ctx); len(skipped) != 0 {
+		t.Fatalf("自定义模式下不应把节点目标判为失效: %v", skipped)
+	}
+
+	// 融合模式的上下文里没有节点：同一份规则在那里不合法，也不会出现在下拉里
+	for _, tier := range MergeRuleSetNames() {
+		other, err := MergeRuleSetContext(tier)
+		if err != nil {
+			t.Fatalf("构建 %s 档位上下文失败: %v", tier, err)
+		}
+		if len(other.NodeNames()) != 0 {
+			t.Fatalf("融合模式 %s 档位不应给出节点目标: %v", tier, other.NodeNames())
+		}
+		if _, err := ValidateCustomRule(rule, other.Env); err == nil {
+			t.Fatalf("融合模式 %s 档位下指向节点的规则应判为失效（该模式没有静态节点）", tier)
+		}
+	}
+}
+
 // TestGroupNamesExcludesNodes 目标下拉只列代理组，不暴露代理节点。
 //
 // 校验集合（RuleEnv.Targets）仍包含节点：内核确实接受指向节点的规则，
@@ -520,10 +576,10 @@ func TestGenerateConfigInjectsMergeCustomRules(t *testing.T) {
 			}},
 		},
 	}
-	if err := appendRuleSet(doc, cfg); err != nil {
+	if err := appendRuleSet(doc, cfg, cfg.RuleGroup); err != nil {
 		t.Fatalf("追加规则集失败: %v", err)
 	}
-	if err := applyMergeCustomRules(doc, cfg); err != nil {
+	if err := applyCustomRules(doc, cfg.RuleGroup, cfg.MergeCustomRulesFor(cfg.RuleGroup)); err != nil {
 		t.Fatalf("注入自定义规则失败: %v", err)
 	}
 	out, err := doc.Bytes()
@@ -544,8 +600,8 @@ func TestGenerateConfigInjectsMergeCustomRules(t *testing.T) {
 	}
 }
 
-// TestMergeRuleSkips 目标失效的规则被如实统计（供接口回报）。
-func TestMergeRuleSkips(t *testing.T) {
+// TestRuleSkips 目标失效的规则被如实统计（供接口回报）。
+func TestRuleSkips(t *testing.T) {
 	cfg := config.SubscribeConfig{
 		RuleGroup: RuleGroupBase,
 		MergeCustomRules: map[string][]config.CustomRule{
@@ -555,7 +611,11 @@ func TestMergeRuleSkips(t *testing.T) {
 			},
 		},
 	}
-	skipped := MergeRuleSkips(cfg, RuleGroupBase)
+	ctx, err := MergeRuleSetContext(RuleGroupBase)
+	if err != nil {
+		t.Fatalf("构建上下文失败: %v", err)
+	}
+	skipped := RuleSkips(cfg.MergeCustomRulesFor(RuleGroupBase), ctx)
 	if len(skipped) != 1 || !strings.Contains(skipped[0], "b.com") {
 		t.Fatalf("应恰好统计出 1 条失效规则，实际: %v", skipped)
 	}

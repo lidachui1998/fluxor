@@ -23,9 +23,15 @@ type SubscribeConfig struct {
 	//
 	// 必须按档位分开：两个档位的代理组、规则集与内置规则完全不同，同一条规则
 	// 在 base 下可能指向不存在的组；分开存放后切换档位即切换各自的规则列表。
-	// 自定义模式固定使用标准档位，其自定义规则也寄存在本表的 base 档下（见 ModeCustom）。
 	MergeCustomRules map[string][]CustomRule `json:"merge_custom_rules,omitempty"`
-	DeletePhysical   []string                `json:"delete_physical,omitempty"`
+	// CustomModeRules 自定义模式的自定义规则（独立一份，与融合模式互不影响）。
+	//
+	// 单独存放而不是寄生在 MergeCustomRules 里，是因为两者的**可用目标不同**：
+	// 自定义模式的节点写死在 config.yaml 的 proxies 里，规则可以指向手工节点名；
+	// 融合模式的节点来自 proxy-providers、运行时才加载，静态校验看不到。
+	// 分开之后两种模式各改各的，切模式不会看到「一列失效规则」。
+	CustomModeRules []CustomRule `json:"custom_mode_rules,omitempty"`
+	DeletePhysical  []string     `json:"delete_physical,omitempty"`
 }
 
 // 订阅中心支持的三种模式（SubscribeConfig.Mode 的取值）。
@@ -64,6 +70,26 @@ func (c SubscribeConfig) MergeCustomRulesFor(ruleGroup string) []CustomRule {
 		return nil
 	}
 	return c.MergeCustomRules[ruleGroup]
+}
+
+// 模板级自定义规则的作用域标识。
+//
+// base / full 是融合模式的两个规则集档位（同时也是 SubscribeConfig.RuleGroup 的取值）；
+// RuleScopeCustom 是自定义模式，规则存放在 CustomModeRules，不按档位分表。
+const RuleScopeCustom = "custom"
+
+// IsValidRuleScope 判定作用域是否为「融合档位」或自定义模式。
+func IsValidRuleScope(scope string) bool {
+	return IsValidRuleGroup(scope) || scope == RuleScopeCustom
+}
+
+// TemplateRulesFor 返回某个模板级作用域的规则（融合档位读 MergeCustomRules，
+// 自定义模式读 CustomModeRules），无则返回 nil。
+func (c SubscribeConfig) TemplateRulesFor(scope string) []CustomRule {
+	if scope == RuleScopeCustom {
+		return c.CustomModeRules
+	}
+	return c.MergeCustomRulesFor(scope)
 }
 
 // Subscription 描述单个订阅源及其最近一次的更新元数据。

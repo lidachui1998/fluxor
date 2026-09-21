@@ -50,8 +50,14 @@ func ValidateCustomRule(rule config.CustomRule, env configcheck.RuleEnv) (string
 
 // RuleContext 描述一份配置可供自定义规则使用的上下文。
 type RuleContext struct {
-	Doc      *configcheck.Doc
-	Env      configcheck.RuleEnv
+	Doc *configcheck.Doc
+	// Env 合法目标与规则集名称（校验用；自定义模式下额外含手工节点名）。
+	Env configcheck.RuleEnv
+	// Nodes 自定义模式下额外可选的目标：用户手工添加的节点名。
+	//
+	// 它们与代理组一样是合法目标（自定义模式的节点是 config.yaml 里静态的 proxies，
+	// 内核加载时能解析），但在界面上单独成组陈列，因此这里单列一份而不是混进代理组。
+	Nodes    []string
 	existing map[string]struct{}
 }
 
@@ -118,8 +124,26 @@ func (c *RuleContext) GroupNames() []string {
 		}
 		return sortedKeys(groups)
 	}
-	// 融合模式：没有订阅文件，改为从该档位模板的目标集合里剔除内置目标
-	return nonBuiltinKeys(c.Env.Targets)
+	// 融合模式：没有订阅文件，改为从该档位模板的目标集合里剔除内置目标；
+	// 自定义模式下再剔除手工节点名——它们由 NodeNames 单独列出
+	groups := make(map[string]struct{})
+	for _, name := range nonBuiltinKeys(c.Env.Targets) {
+		groups[name] = struct{}{}
+	}
+	for _, name := range c.Nodes {
+		delete(groups, name)
+	}
+	return sortedKeys(groups)
+}
+
+// NodeNames 返回自定义模式下额外可选的目标（手工节点名），其余模式返回空切片。
+//
+// 返回空切片而非 nil：接口直接序列化该字段，nil 会变成 JSON null，前端得多处理一种形态。
+func (c *RuleContext) NodeNames() []string {
+	if c.Nodes == nil {
+		return []string{}
+	}
+	return c.Nodes
 }
 
 // ProviderNames 返回该订阅可引用的规则集名称（已排序）。

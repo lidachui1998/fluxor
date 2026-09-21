@@ -166,8 +166,8 @@ func TestDefaultBypassListsParsable(t *testing.T) {
 		needles []string
 	}{
 		{
-			name:   "目的绕过",
-			list:   defaultDstExceptions(),
+			name:    "目的绕过",
+			list:    defaultDstExceptions(),
 			needles: []string{"223.5.5.5", "180.76.76.76", "119.29.29.29", "2400:3200::1", "2400:da00::6666"},
 		},
 		{
