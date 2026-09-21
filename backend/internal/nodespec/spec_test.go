@@ -142,6 +142,27 @@ func TestProtocolCount(t *testing.T) {
 	}
 }
 
+// TestDeprecatedProtocolStillAccepted 过时协议只做界面提示，不得影响保存与生成。
+//
+// 回归价值：这条链路一旦被写成"过时即拒绝"，用户既有的 SSR 节点会在下次保存时
+// 直接存不进去，而内核其实仍然支持它。
+func TestDeprecatedProtocolStillAccepted(t *testing.T) {
+	ssr, ok := Lookup("ssr")
+	if !ok {
+		t.Fatalf("找不到 ssr 协议")
+	}
+	if !ssr.Deprecated {
+		t.Fatalf("ssr 应标记为过时协议（界面据此提示）")
+	}
+	out, err := Normalize(config.CustomNode{Name: "n", Type: "ssr", Config: sampleConfig(ssr)})
+	if err != nil {
+		t.Fatalf("过时协议不应被拒绝: %v", err)
+	}
+	if _, err := WritableOrdered(out); err != nil {
+		t.Fatalf("过时协议应能正常写盘: %v", err)
+	}
+}
+
 // TestTransportBlocksConditional 传输层选项块必须按 network 取值条件显示，
 // 否则五个块（含几十个子字段）会同时铺满表单。
 func TestTransportBlocksConditional(t *testing.T) {

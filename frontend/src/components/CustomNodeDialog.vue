@@ -9,6 +9,7 @@ import { computed, reactive, watch, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { CloseOutline, ChevronDownOutline, ChevronForwardOutline, InformationCircleOutline } from '@vicons/ionicons5'
 import NodeFieldInput from './NodeFieldInput.vue'
+import FieldLabel from './FieldLabel.vue'
 import type { CustomNode, NodeFieldSpec, NodeFieldSection, NodeProtocolSpec } from '../store/subscription'
 
 const props = defineProps<{
@@ -27,7 +28,12 @@ const emit = defineEmits<{
   (e: 'close'): void
 }>()
 
-const { t } = useI18n()
+const { t, getLocaleMessage } = useI18n()
+
+// 中文界面下配置标题要附英文小字（见 FieldLabel）：标题类文案的英文统一从 en 语言包取，
+// 避免在组件里再写一份英文常量而与 i18n 漂移。
+const englishText = (key: string): string =>
+  ((getLocaleMessage('en') as Record<string, string>)[key] || '')
 
 // 折叠区（跳过基础项：它始终展开）。顺序即界面顺序。
 const sections: { key: Exclude<NodeFieldSection, ''>, titleKey: string }[] = [
@@ -254,7 +260,7 @@ const handleSave = () => {
           <!-- 第一项：协议（决定下面渲染哪些字段） -->
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div class="flex flex-col gap-1.5">
-              <label class="text-xs font-semibold text-slate-600 dark:text-slate-400">{{ t('subscription.node_protocol') }} <span class="text-danger">*</span></label>
+              <label class="text-xs font-semibold text-slate-600 dark:text-slate-400"><FieldLabel :text="t('subscription.node_protocol')" :english="englishText('subscription.node_protocol')" /> <span class="text-danger">*</span></label>
               <select
                 v-model="form.protocolType"
                 @change="onProtocolChange"
@@ -262,9 +268,11 @@ const handleSave = () => {
               >
                 <option v-for="protocol in protocols" :key="protocol.type" :value="protocol.type">{{ protocol.name }}</option>
               </select>
+              <!-- 过时协议仅提示，不禁用、不阻止保存：既有节点与机场仍在用的协议都要能存进去 -->
+              <p v-if="selectedProtocol?.deprecated" class="text-[11px] text-danger">{{ t('subscription.node_protocol_deprecated') }}</p>
             </div>
             <div class="flex flex-col gap-1.5">
-              <label class="text-xs font-semibold text-slate-600 dark:text-slate-400">{{ t('subscription.node_name') }} <span class="text-danger">*</span></label>
+              <label class="text-xs font-semibold text-slate-600 dark:text-slate-400"><FieldLabel :text="t('subscription.node_name')" :english="englishText('subscription.node_name')" /> <span class="text-danger">*</span></label>
               <input
                 type="text"
                 v-model="form.name"
@@ -296,7 +304,7 @@ const handleSave = () => {
               >
                 <ChevronDownOutline v-if="openSections[section.key]" class="w-3.5 h-3.5" />
                 <ChevronForwardOutline v-else class="w-3.5 h-3.5" />
-                {{ t(section.titleKey) }} ({{ sectionFields(section.key).length }})
+                <FieldLabel :text="t(section.titleKey)" :english="englishText(section.titleKey)" /> ({{ sectionFields(section.key).length }})
               </button>
               <div v-if="openSections[section.key]" class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
                 <NodeFieldInput

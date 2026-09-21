@@ -45,7 +45,8 @@ fluxor/
         │                  #   + CSS 变量亮暗主题（data-theme 选择器）+ 自定义滚动条
         ├── components/    # 公共及细粒度组件 (ProxyGroupCard, FormSwitch, CustomRulesDialog,
         │                  #   CustomNodeDialog（基础/传输层/TLS/高级四个分区 + 按 visible_when 条件显示）
-        │                  #   + NodeFieldInput（含 map 与嵌套 group 递归渲染）：自定义模式的动态协议表单,
+        │                  #   + NodeFieldInput（含 map 与嵌套 group 递归渲染）+ FieldLabel（中文界面下给
+        │                  #     纯中文配置标题补英文小字，仅该弹窗使用）：自定义模式的动态协议表单,
         │                  #   CustomNodeCard：自定义模式的节点卡片)
         ├── composables/   # 全局解耦组合式函数 (useTheme, useLanguage)
         ├── utils/
@@ -446,7 +447,11 @@ func (c *cancelableReadCloser) Close() error {
 
 1. **默认值只存在于后端**：前端不维护协议清单，`GET /subscribe/node-protocols` 下发字段表，`CustomNodeDialog.vue` 按声明渲染动态表单（第一项选协议，随后按「基础 → 传输层 → TLS → 高级」四段渲染，后三段可折叠）。新增协议或调整默认值**只改 `nodespec`**，不发前端版本。字段中文名走 i18n 的 `subscription.node_field.<key>`；同一键在不同协议下含义不同时用 `subscription.node_field.<协议>.<键>` 覆盖（如 vmess 的 `network` 是「传输方式」，ZeroTier 的是「网络 ID」）；再没有就回落到后端下发的英文 label。
 
-1.1 **传输层与 TLS 的建模**：`Section` 决定字段落在哪个折叠区；`VisibleWhen` 让传输选项块按 `network` 条件显示（五个块共几十个子字段不可能同时铺开）；`Kind` 里的 `map`（键值对，界面按「键: 值」每行一条）与 `group`（嵌套块，子字段递归渲染）负责表达 `ws-opts.headers`、`reality-opts` 这类结构。三者都由后端声明驱动，前端只做映射。
+1.05 **协议级提示也由后端声明**：`Protocol.Deprecated`（目前只有 ShadowsocksR）让界面在协议选择框下给出红字提示，**不参与归一化与生成**——内核仍然支持 SSR，用户既有节点与机场仍在用的协议不该因为一句「过时」就存不进去（回归用例 `TestDeprecatedProtocolStillAccepted`）。要新增这类提示（例如某个协议需要额外编译标签），在后端加标记即可，前端不硬编码协议名。
+
+1.1 **中文界面下的配置标题附英文小字**：内核配置项以英文为准，中文界面里光看「路径」「跳过证书校验」对不上 `path` / `skip-cert-verify`，因此该弹窗的标题统一走 `components/FieldLabel.vue`（中文 + 灰色小字英文）。英文名来自后端下发的 `label`（字段）与 en 语言包（分区标题），**纯中文标题才追加**——标题里本来就带英文的（「TLS 配置」「ECH 配置」「V2Ray HTTP Upgrade 快速打开」）不再重复，英文界面与专有名词（WebSocket / gRPC / REALITY）也不追加。仅该弹窗使用，其它页面不加。
+
+1.2 **传输层与 TLS 的建模**：`Section` 决定字段落在哪个折叠区；`VisibleWhen` 让传输选项块按 `network` 条件显示（五个块共几十个子字段不可能同时铺开）；`Kind` 里的 `map`（键值对，界面按「键: 值」每行一条）与 `group`（嵌套块，子字段递归渲染）负责表达 `ws-opts.headers`、`reality-opts` 这类结构。三者都由后端声明驱动，前端只做映射。
 2. **「只存差异」由后端归一化保证**：保存时 `nodespec.Normalize` 把取值按声明类型转换、剔除与默认值相同的项（空值一律视为未填写）；读取（`GET /subscribe/config`）与写盘（`buildProxiesNode`）时再补齐默认值。因此默认值调整能自动作用到历史数据，`fluxor.json` 也不会被零值塞满。前端的表单既可以发完整取值，也可以发逗号分隔文本（列表字段），归一化在服务端统一完成。
 3. **落库前必须过三道校验**（缺失任何一道都会产出内核拒绝加载的配置）：协议与字段取值（`nodespec.Normalize`：未知协议/未知字段/取值类型/下拉选项/必填/`RequireAny` 组合）→ 节点名（非空、长度、无控制字符、列表内不重名，实测 `proxy A is the duplicate name`）→ **名字占用**（不得与标准规则集模板的代理组或内置目标同名，实测 `proxy group X: the duplicate name`）。占用集合直接取 `configgen.MergeRuleSetEnv(base).Targets`，与自定义规则的目标下拉同源，模板一改自动跟随。
 4. **嵌套块「要么不出现、要么填齐」**：块内必填项只在「块真的被填写」时校验。判据是 `blockFilled`（块内至少有一个子字段拿到非空取值），**不是「请求里有没有这个块的键」**——读取接口会把块的每个子字段补齐默认值下发，前端原样带回时整块必然非空，按「键存在」判定会让正常节点的保存对着空气报错（曾实测拦下正常保存）。未知子键则无论块是否为空都要拒绝，否则写错键名会被静默忽略。写盘同理分两套判据：顶层字段只按「是否为空」剔除（必填项取默认值也要写出来），嵌套块内的子项额外按「是否等于默认值」剔除——因为**块的存在本身就是内核眼中的「启用该传输」**，把未使用的块 materialize 出来会平白多出 `h2-opts: {path: /}` 这类噪音。

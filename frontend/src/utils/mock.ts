@@ -83,6 +83,21 @@ const mockNodeProtocols = [
     ]
   },
   {
+    // 过时协议在 mock 里也保留一条：离线联调时能验证「仅提示、不阻止保存」
+    type: 'ssr',
+    name: 'ShadowsocksR',
+    deprecated: true,
+    fields: [
+      { key: 'server', label: 'Server', kind: 'string', required: true },
+      { key: 'port', label: 'Port', kind: 'int', required: true },
+      { key: 'cipher', label: 'Cipher', kind: 'select', default: 'chacha20-ietf', options: ['chacha20-ietf', 'aes-256-cfb'], required: true },
+      { key: 'password', label: 'Password', kind: 'string', secret: true, required: true },
+      { key: 'obfs', label: 'Obfs', kind: 'select', default: 'plain', options: ['plain', 'http_simple', 'tls1.2_ticket_auth'], required: true },
+      { key: 'protocol', label: 'Protocol', kind: 'select', default: 'origin', options: ['origin', 'auth_sha1_v4', 'auth_aes128_md5'], required: true },
+      { key: 'udp', label: 'UDP Relay', kind: 'bool' }
+    ]
+  },
+  {
     type: 'vmess',
     name: 'VMess',
     fields: [

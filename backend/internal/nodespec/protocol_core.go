@@ -90,9 +90,12 @@ var ssProtocol = Protocol{
 	),
 }
 
+// ssrProtocol ShadowsocksR：上游自 2021 年起已停止维护，内核仅做兼容保留，
+// 因此标记为过时并在界面提示（仍然可以正常保存与生成配置）。
 var ssrProtocol = Protocol{
-	Type: "ssr",
-	Name: "ShadowsocksR",
+	Type:       "ssr",
+	Name:       "ShadowsocksR",
+	Deprecated: true,
 	Fields: concat(
 		basicSection(
 			req(str("server", "Server")),

@@ -103,6 +103,8 @@ export interface NodeProtocolSpec {
   name: string
   fields: NodeFieldSpec[]
   require_any?: string[][]
+  /** 后端标记的过时协议（如 ShadowsocksR）：界面给提示，但不阻止保存 */
+  deprecated?: boolean
 }
 
 /**

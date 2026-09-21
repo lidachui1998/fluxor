@@ -101,6 +101,11 @@ type Protocol struct {
 	//   - wireguard / masque：{{ip}, {ipv6}}——本机地址 IPv4 或 IPv6 至少一个；
 	//   - openvpn：{{cert, key}, {username}}——证书认证或用户名认证二选一。
 	RequireAny [][]string `json:"require_any,omitempty"`
+	// Deprecated 已过时的协议：界面在协议选择框下给出提示，**不阻止保存**。
+	//
+	// 只作为提示信息，不参与归一化与生成——用户的既有节点、机场仍在用的协议
+	// 都不该因为一句"过时"就存不进去（见 TestDeprecatedProtocolStillAccepted）。
+	Deprecated bool `json:"deprecated,omitempty"`
 }
 
 // KV 字段名与取值的有序对，用于按声明顺序写 YAML。

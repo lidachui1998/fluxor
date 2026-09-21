@@ -9,6 +9,7 @@ import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { EyeOutline, EyeOffOutline } from '@vicons/ionicons5'
 import FormSwitch from './FormSwitch.vue'
+import FieldLabel from './FieldLabel.vue'
 import type { NodeFieldSpec } from '../store/subscription'
 
 const props = defineProps<{
@@ -53,7 +54,7 @@ const setNestedValue = (child: NodeFieldSpec, childValue: any) => {
     class="sm:col-span-2 rounded-xl border border-slate-200/70 dark:border-slate-700/60 bg-slate-50/60 dark:bg-slate-800/30 p-3 flex flex-col gap-3"
   >
     <div class="text-xs font-bold text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
-      {{ label }}
+      <FieldLabel :text="label" :english="field.label" />
       <span class="font-mono text-[10px] font-normal text-slate-400 dark:text-slate-500">{{ field.key }}</span>
     </div>
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -70,7 +71,7 @@ const setNestedValue = (child: NodeFieldSpec, childValue: any) => {
 
   <div v-else class="flex flex-col gap-1.5" :class="{ 'sm:col-span-2': field.kind === 'text' || field.kind === 'map' }">
     <label class="text-xs font-semibold text-slate-600 dark:text-slate-400">
-      {{ label }}<span v-if="field.required" class="text-danger"> *</span>
+      <FieldLabel :text="label" :english="field.label" /><span v-if="field.required" class="text-danger"> *</span>
     </label>
 
     <FormSwitch
