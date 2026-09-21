@@ -94,7 +94,7 @@ backend/
     │   └── load.go               #   配置加载、默认值补齐、持久化
     │                             #     + FileMu / UpdateConfigFile：fluxor.json 的共用文件锁与「读—改—写」
     ├── configgen/                # 【基础层】config.yaml 模板 + YAML 结构化改写
-    │   ├── generator.go          #   GenerateConfig / GenerateBaseConfig
+    │   ├── generator.go          #   GenerateConfig / GenerateBaseConfig（写盘前归一化顶层键序：标量键在前、块在后，块序 dns→proxy-providers→proxy-groups→proxies→rule-providers→rules）
     │   ├── template_base.go      #   基础字段骨架
     │   ├── template_dns.go       #   统一注入的 DNS 块
     │   ├── groups_lite.go        #   base 规则集的代理组
@@ -112,7 +112,7 @@ backend/
     │   ├── doc.go                #   包说明：provider 契约 vs 主配置契约
     │   ├── check.go              #   ValidateClashConfig：YAML 映射 + 顶层字段及类型校验
     │   ├── rulespec.go           #   规则类型白名单 + 载荷/目标校验 + 规则行组装 + RuleEnv
-    │   └── document.go           #   Doc：保留键序/注释的顶层字段读写与序列化（含 NodeNames/MappingKeys）
+    │   └── document.go           #   Doc：保留键序/注释的顶层字段读写与序列化（含 NodeNames/MappingKeys/OrderTopLevel：顶层键序归一）
     ├── core/                     # 内核进程生命周期
     │   ├── client.go             #   CoreRequest + cancelableReadCloser（Context 回收）
     │   ├── lifecycle.go          #   启动/停止/热重载（含内核 PID 身份校验）
@@ -138,7 +138,7 @@ backend/
     │   ├── customrules.go        #   /subscribe/custom-rules/{name}：切换模式 订阅级自定义规则 读/增/改/排序/删
     │   ├── mergecustomrules.go   #   /subscribe/merge-custom-rules/{ruleGroup}：融合模式 按规则集档位的自定义规则
     │   ├── runtimeconfig.go      #   writeRuntimeConfig：订阅文件 → config.yaml 副本 + 自定义规则叠加
-    │   ├── patch.go              #   向节点文件注入端口/密钥/DNS（YAML 结构化改写）
+    │   ├── patch.go              #   向节点文件注入端口/密钥/DNS（YAML 结构化改写；并归一化顶层键序）
     │   ├── ensure.go             #   切换模式下确保订阅文件就绪
     │   ├── update.go             #   切换模式下的单个订阅更新（锁内取快照 → 锁外下载 → 锁内写回）
     │   ├── metadata.go           #   元数据抓取与键规范化

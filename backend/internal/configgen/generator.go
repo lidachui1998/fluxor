@@ -241,6 +241,12 @@ func applyDNSBlock(doc *configcheck.Doc) error {
 
 // writeConfigTarget 序列化文档并写入内核配置路径。
 func writeConfigTarget(doc *configcheck.Doc) error {
+	// 顶层键序归一：标量键在前、块在后，块按固定顺序排（dns 在 proxy-providers 之前，
+	// 末尾依次 proxy-providers / proxy-groups / proxies / rule-providers / rules）。
+	// 模板自身的键序不保证这一点（geodata-* 三个键就写在 tun 之后），按订阅追加的块
+	// 也只会落在末尾。
+	doc.OrderTopLevel()
+
 	out, err := doc.Bytes()
 	if err != nil {
 		return err

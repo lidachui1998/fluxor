@@ -72,6 +72,12 @@ func patchSubscriptionFile(filePath string, cfg config.SubscribeConfig) error {
 	}
 	doc.SetNode("dns", dnsNode)
 
+	// 顶层键序归一（标量键在前、块按固定顺序排）：上面注入的键若订阅里原本没有，Set
+	// 只会追加到文件末尾——也就是排在 rules 之后；机场文件自身的块序也各不相同。
+	// 切换模式下的 config.yaml 是这份文件的副本，键序随之继承，因此在唯一的注入点收口，
+	// 两种模式的最终产物都满足同一套顺序（只动顺序，不动内容）。
+	doc.OrderTopLevel()
+
 	out, err := doc.Bytes()
 	if err != nil {
 		return err

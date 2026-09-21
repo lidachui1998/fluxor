@@ -182,3 +182,117 @@ func tailLines(s string, n int) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// assertKeysBeforeBlocks 断言产物满足「顶层键在前、顶层块在后」。
+//
+// 判据是「一旦出现块键，其后不得再出现标量键」——即块必须集中在末尾。
+func assertKeysBeforeBlocks(t *testing.T, content []byte) []string {
+	t.Helper()
+	var root yaml.Node
+	if err := yaml.Unmarshal(content, &root); err != nil {
+		t.Fatalf("解析产物失败: %v", err)
+	}
+	if len(root.Content) == 0 || root.Content[0].Kind != yaml.MappingNode {
+		t.Fatalf("产物顶层应为映射")
+	}
+	top := root.Content[0]
+	var keys []string
+	seenBlock := ""
+	for i := 0; i+1 < len(top.Content); i += 2 {
+		key, value := top.Content[i].Value, top.Content[i+1]
+		block := value.Kind == yaml.MappingNode || value.Kind == yaml.SequenceNode
+		keys = append(keys, key)
+		switch {
+		case block && seenBlock == "":
+			seenBlock = key
+		case !block && seenBlock != "":
+			t.Fatalf("顶层键 %s 排在块 %s 之后（要求键在前、块在后）:\n%v", key, seenBlock, keys)
+		}
+	}
+	return keys
+}
+
+// TestGenerateConfigTopLevelKeysBeforeBlocks 融合(full) 与基础配置的顶层键序。
+func TestGenerateConfigTopLevelKeysBeforeBlocks(t *testing.T) {
+	dir := t.TempDir()
+	target := dir + "/config.yaml"
+	oldTarget := config.ConfigTarget
+	config.ConfigTarget = target
+	defer func() { config.ConfigTarget = oldTarget }()
+
+	full := config.SubscribeConfig{
+		RuleGroup:     config.RuleGroupFull,
+		ProxyPort:     7890,
+		TproxyPort:    7895,
+		PanelPort:     9090,
+		PanelSecret:   "s3cret",
+		UIPanel:       "zashboard",
+		Subscriptions: []config.Subscription{{Name: "机场A"}},
+	}
+	for name, cfg := range map[string]config.SubscribeConfig{
+		"full 规则集": full,
+		"base 规则集": func() config.SubscribeConfig {
+			c := full
+			c.RuleGroup = config.RuleGroupBase
+			return c
+		}(),
+		"无订阅基础配置": {ProxyPort: 7890, TproxyPort: 7895, PanelPort: 9090, UIPanel: "meta"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := GenerateConfig(cfg); err != nil {
+				t.Fatalf("生成失败: %v", err)
+			}
+			content, err := os.ReadFile(target)
+			if err != nil {
+				t.Fatalf("读取产物失败: %v", err)
+			}
+			keys := assertKeysBeforeBlocks(t, content)
+			// 无订阅时是纯键的基础配置，没有任何块可断言
+			if name == "无订阅基础配置" {
+				return
+			}
+			// 模板里 geodata-* 三个键原本写在 tun 之后，必须被抬到块之前
+			tunIdx, geodataIdx, rulesIdx := indexOf(keys, "tun"), indexOf(keys, "geodata-mode"), indexOf(keys, "rules")
+			if tunIdx < 0 || rulesIdx < 0 {
+				t.Fatalf("产物缺少块键 tun / rules: %v", keys)
+			}
+			if geodataIdx < 0 || geodataIdx > tunIdx {
+				t.Fatalf("geodata-mode 应排在块 tun 之前，实际键序: %v", keys)
+			}
+			// 块的先后：dns 在 proxy-providers 之前，末尾依次 …rules
+			// base 档位没有 rule-providers，其余块的先后与 full 一致
+			want := []string{"profile", "sniffer", "tun", "dns", "proxy-providers", "proxy-groups"}
+			if name == "full 规则集" {
+				want = append(want, "rule-providers")
+			}
+			want = append(want, "rules")
+			if got := blockKeys(keys); strings.Join(got, "|") != strings.Join(want, "|") {
+				t.Fatalf("%s 块序错误:\n实际: %v\n期望: %v", name, got, want)
+			}
+			if rulesIdx != len(keys)-1 {
+				t.Fatalf("rules 应为最后一个顶层键，实际键序: %v", keys)
+			}
+		})
+	}
+}
+
+// blockKeys 从顶层键序里筛出块键（测试内的块集合是固定的那几个）。
+func blockKeys(keys []string) []string {
+	var out []string
+	for _, key := range keys {
+		switch key {
+		case "profile", "sniffer", "tun", "dns", "proxy-providers", "proxy-groups", "rule-providers", "rules":
+			out = append(out, key)
+		}
+	}
+	return out
+}
+
+func indexOf(list []string, want string) int {
+	for i, item := range list {
+		if item == want {
+			return i
+		}
+	}
+	return -1
+}

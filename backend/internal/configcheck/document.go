@@ -3,6 +3,7 @@ package configcheck
 import (
 	"bytes"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -107,6 +108,84 @@ func (d *Doc) Delete(key string) bool {
 	}
 	d.top.Content = append(d.top.Content[:idx], d.top.Content[idx+2:]...)
 	return true
+}
+
+// topBlockRank 声明产物中已知顶层块的先后（rank 越小越靠前）。
+//
+// 未列出的块（profile / sniffer / tun，以及机场自带的 hosts / experimental 等）rank 为 0：
+// 它们是「配置类块」，保持原有相对顺序、统一排在 dns 之前，与代理/规则数据分开。
+// 代理与规则数据的顺序是刻意的：融合模式的 proxy-providers、切换模式的 proxies 各自就位，
+// proxy-groups 紧随其后，rule-providers 在 rules 之前。
+var topBlockRank = map[string]int{
+	"dns":             1,
+	"proxy-providers": 2, // 融合模式
+	"proxy-groups":    3,
+	"proxies":         4, // 切换模式
+	"rule-providers":  5,
+	"rules":           6,
+}
+
+// OrderTopLevel 归一化顶层键序：标量键在前、块在后，块再按 topBlockRank 排定先后。
+//
+// 动机是产物的可读性与一致性：
+//   - 块往往很长（proxies / rules 动辄数百行），而端口、模式、密钥这类标量键是使用者最先
+//     要找的。若任由 Set/SetNode 追加，后补的标量键（如订阅文件里原本没有的 tproxy-port）
+//     会落到 rules 之后，散在几百行块的下方。
+//   - 块的先后要固定：融合模式追加 proxy-providers / rule-providers / proxy-groups / rules，
+//     切换模式直接沿用机场文件的顺序，两者原本各排各的。
+//
+// 同 rank（含全部未声明的块）保持原有相对顺序（稳定排序），因此同一份配置反复写出的键序
+// 完全一致、可逐字节比对。只调整顶层键序，不动任何值：内核按名取键，不关心顺序。
+func (d *Doc) OrderTopLevel() {
+	if len(d.top.Content) < 2 {
+		return
+	}
+	type entry struct {
+		key   *yaml.Node
+		value *yaml.Node
+		block bool
+		rank  int
+	}
+	// Content 以 [key0, value0, key1, value1, ...] 平铺存储，按「键值对」整体搬移，
+	// 保证键与其值（含各自的注释）始终成对。
+	entries := make([]entry, 0, len(d.top.Content)/2)
+	for i := 0; i+1 < len(d.top.Content); i += 2 {
+		key, value := d.top.Content[i], d.top.Content[i+1]
+		block := isBlockValue(value)
+		rank := 0
+		if block {
+			rank = topBlockRank[strings.ToLower(key.Value)]
+		}
+		entries = append(entries, entry{key: key, value: value, block: block, rank: rank})
+	}
+
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].block != entries[j].block {
+			return !entries[i].block // 标量键恒在块之前
+		}
+		return entries[i].rank < entries[j].rank
+	})
+
+	content := make([]*yaml.Node, 0, len(d.top.Content))
+	for _, e := range entries {
+		content = append(content, e.key, e.value)
+	}
+	d.top.Content = content
+}
+
+// isBlockValue 判定顶层值节点是否属于「块」（映射 / 序列），别名按其指向的节点判定。
+func isBlockValue(node *yaml.Node) bool {
+	if node == nil {
+		return false
+	}
+	switch node.Kind {
+	case yaml.MappingNode, yaml.SequenceNode:
+		return true
+	case yaml.AliasNode:
+		return isBlockValue(node.Alias)
+	default:
+		return false
+	}
 }
 
 // NodeNames 读取顶层序列字段中每一项的 name 字段（如 proxy-groups / proxies）。
