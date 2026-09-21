@@ -39,8 +39,8 @@ func mergeRuleSetBlocks(ruleGroup string) (groups, providers, rules string, err 
 	case RuleGroupBase:
 		return proxyGroupsBase, "", rulesBase, nil
 	case RuleGroupFull:
-		// 取 full 的代理组模板；__SUB_NAMES__ 是 use 列表的占位标量，
-		// 解析读名字时无需替换（它出现在值位，不影响 name 的读取）。
+		// full 的代理组模板是纯静态内容（地区组以 include-all-providers 引用
+		// provider，模板里不含订阅名），可直接读取组名，无需先做任何替换。
 		return proxyGroupsFullTemplate, ruleProvidersFull, rulesFull, nil
 	default:
 		return "", "", "", fmt.Errorf("未知规则集: %s", ruleGroup)

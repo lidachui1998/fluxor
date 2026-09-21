@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -19,10 +18,10 @@ import (
 func GenerateConfig(cfg config.SubscribeConfig) error {
 	// 无订阅时退化为基础配置。
 	//
-	// 不能继续走「模板 + 规则集」：full 规则集的代理组以 use: [订阅名] 引用 provider
-	// （groups_full.go 的 __SUB_NAMES__），订阅为空时会被序列化为 use: []，内核直接
-	// 拒绝加载（proxy group：`use` or `proxies` missing），使「删除最后一个订阅并保存」
-	// 后重载必然失败。此时也不应再下发规则集——没有节点可供规则分流。
+	// 不能继续走「模板 + 规则集」：full 规则集的地区组以 include-all-providers 引用
+	// 全部订阅 provider（groups_full.go），无订阅时这样的组既无 use 也无 proxies，内核
+	// 直接拒绝加载（proxy group：`use` or `proxies` missing），使「删除最后一个订阅并
+	// 保存」后重载必然失败。此时也不应再下发规则集——没有节点可供规则分流。
 	if len(cfg.Subscriptions) == 0 {
 		return GenerateBaseConfig(cfg)
 	}
@@ -178,63 +177,35 @@ func buildProviders(cfg config.SubscribeConfig) (*yaml.Node, error) {
 
 // appendRuleSet 按规则集追加 rule-providers / proxy-groups / rules 三个顶层块。
 func appendRuleSet(doc *configcheck.Doc, cfg config.SubscribeConfig) error {
-	var blocks []string
 	switch cfg.RuleGroup {
 	case "base":
-		blocks = []string{proxyGroupsBase, rulesBase}
+		if err := mergeBlock(doc, proxyGroupsBase); err != nil {
+			return err
+		}
+		return mergeBlock(doc, rulesBase)
+
 	case "full":
-		blocks = []string{ruleProvidersFull, proxyGroupsFull(cfg.Subscriptions), rulesFull}
+		// full 档位的地区组以 include-all-providers 引用全部订阅 provider（见
+		// groups_full.go），模板里没有订阅名，因此无需按订阅做任何改写。
+		//
+		// 无订阅时例外：那样的组既没有 use 也没有 proxies，内核实测直接拒绝加载
+		// （proxy group[N]: `use` or `proxies` missing）。GenerateConfig 已在无订阅时
+		// 改走基础配置，这里再兜一次，避免将来重构让该分支重新变得可达。
+		if len(cfg.Subscriptions) == 0 {
+			return fmt.Errorf("full 规则集需要至少一个订阅")
+		}
+		// 追加顺序即产物中三个块的顺序：rule-providers -> proxy-groups -> rules
+		if err := mergeBlock(doc, ruleProvidersFull); err != nil {
+			return err
+		}
+		if err := mergeBlock(doc, proxyGroupsFullTemplate); err != nil {
+			return err
+		}
+		return mergeBlock(doc, rulesFull)
+
 	default:
 		return fmt.Errorf("未知规则集: %s", cfg.RuleGroup)
 	}
-
-	for _, block := range blocks {
-		if strings.TrimSpace(block) == "" {
-			continue
-		}
-		if err := mergeBlock(doc, block); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// proxyGroupsFull 生成 full 规则集的代理组块。
-//
-// 订阅名通过 YAML 节点注入 use 列表，而非文本替换 __SUB_NAMES__：
-// 订阅名含 `,` / `]` 时，文本替换会破坏 flow sequence 语法导致内核拒绝加载。
-func proxyGroupsFull(subs []config.Subscription) string {
-	// 模板中的 use: [__SUB_NAMES__] 以单个占位标量表示，解析后用节点整体替换
-	doc := configcheck.ParseMappingDoc([]byte(
-		strings.ReplaceAll(proxyGroupsFullTemplate, "__SUB_NAMES__", "placeholder")))
-
-	groups := doc.Get("proxy-groups")
-	if groups == nil || groups.Kind != yaml.SequenceNode {
-		return proxyGroupsFullTemplate
-	}
-
-	useNode := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
-	for _, s := range subs {
-		useNode.Content = append(useNode.Content,
-			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: s.Name})
-	}
-
-	for _, group := range groups.Content {
-		if group.Kind != yaml.MappingNode {
-			continue
-		}
-		for i := 0; i+1 < len(group.Content); i += 2 {
-			if group.Content[i].Value == "use" {
-				group.Content[i+1] = useNode
-			}
-		}
-	}
-
-	out, err := doc.Bytes()
-	if err != nil {
-		return proxyGroupsFullTemplate
-	}
-	return string(out)
 }
 
 // mergeBlock 解析一个 YAML 块并合并进文档：同名顶层键以块内容覆盖。

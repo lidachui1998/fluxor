@@ -14,6 +14,7 @@
 BIN := fluxor
 GO  := go
 NPM := npm
+export PATH := /var/apps/nodejs_v24/target/bin:$(PATH)
 
 # 版本号：缺省 1.0.0（与 go build 不带 -ldflags 时的默认值一致）
 # 需要本地调试且不参与更新判断时可 make V=dev

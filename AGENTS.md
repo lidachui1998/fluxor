@@ -99,7 +99,7 @@ backend/
     │   ├── template_dns.go       #   统一注入的 DNS 块
     │   ├── groups_lite.go        #   base 规则集的代理组
     │   ├── rules_lite.go         #   base 规则集的规则
-    │   ├── groups_full.go        #   full 规则集的代理组（含 __SUB_NAMES__ 占位，按 YAML 节点注入订阅名）
+    │   ├── groups_full.go        #   full 规则集的代理组（地区组用 include-all-providers 引用全部订阅 provider，模板内不含订阅名）
     │   ├── providers_full.go     #   full 规则集的 rule-providers
     │   ├── rules_full.go         #   full 规则集的规则
     │   ├── customrules.go        #   自定义规则：校验 + 幂等注入 rules 序列（before/after 双锚点）
