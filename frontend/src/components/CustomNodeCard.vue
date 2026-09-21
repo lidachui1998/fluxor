@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // 自定义模式下的单个节点卡片（纯展示 + 两个动作事件）。
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { CreateOutline, TrashOutline } from '@vicons/ionicons5'
+import { CreateOutline, EyeOutline, EyeOffOutline, TrashOutline } from '@vicons/ionicons5'
 import type { CustomNode } from '../store/subscription'
 
 const props = defineProps<{
@@ -17,6 +17,9 @@ defineEmits<{
 }>()
 
 const { t } = useI18n()
+
+// 地址/网络名称默认以密文展示（订阅卡片链接的同一处理方式），点小眼睛才展开
+const addressVisible = ref(false)
 
 // 节点摘要：优先「服务器:端口」，组网类协议（无 server）回落到各自的标识字段
 const summary = computed(() => {
@@ -48,7 +51,16 @@ const summary = computed(() => {
     </div>
     <div class="flex items-center gap-2 flex-wrap">
       <span class="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-accent/10 text-accent">{{ protocolName }}</span>
-      <span class="text-xs text-slate-400 dark:text-slate-500 select-all break-all min-w-0">{{ summary }}</span>
+      <button
+        type="button"
+        @click="addressVisible = !addressVisible"
+        class="shrink-0 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-all focus:outline-none"
+        :title="addressVisible ? t('common.hide') : t('common.show')"
+      >
+        <EyeOutline v-if="addressVisible" class="w-3.5 h-3.5" />
+        <EyeOffOutline v-else class="w-3.5 h-3.5" />
+      </button>
+      <span class="text-xs text-slate-400 dark:text-slate-500 break-all min-w-0" :class="{ 'select-all': addressVisible }">{{ addressVisible ? summary : '••••••••' }}</span>
     </div>
   </div>
 </template>
