@@ -154,6 +154,7 @@ const mockNodeProtocols = [
   },
   {
     type: 'openvpn',
+    tunnel: true,
     name: 'OpenVPN',
     fields: [
       { key: 'server', label: 'Server', kind: 'string', required: true },

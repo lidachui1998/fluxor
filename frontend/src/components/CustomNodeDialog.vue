@@ -270,6 +270,8 @@ const handleSave = () => {
               </select>
               <!-- 过时协议仅提示，不禁用、不阻止保存：既有节点与机场仍在用的协议都要能存进去 -->
               <p v-if="selectedProtocol?.deprecated" class="text-[11px] text-danger">{{ t('subscription.node_protocol_deprecated') }}</p>
+              <!-- 隧道类协议：中性小字（不是错误），提示按目标网段引流；同样不参与任何校验 -->
+              <p v-else-if="selectedProtocol?.tunnel" class="text-[11px] text-slate-400 dark:text-slate-500">{{ t('subscription.node_protocol_tunnel_hint') }}</p>
             </div>
             <div class="flex flex-col gap-1.5">
               <label class="text-xs font-semibold text-slate-600 dark:text-slate-400"><FieldLabel :text="t('subscription.node_name')" :english="englishText('subscription.node_name')" /> <span class="text-danger">*</span></label>

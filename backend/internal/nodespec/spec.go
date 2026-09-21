@@ -101,6 +101,14 @@ type Protocol struct {
 	//   - wireguard / masque：{{ip}, {ipv6}}——本机地址 IPv4 或 IPv6 至少一个；
 	//   - openvpn：{{cert, key}, {username}}——证书认证或用户名认证二选一。
 	RequireAny [][]string `json:"require_any,omitempty"`
+	// Tunnel 隧道类协议（WireGuard / MASQUE / TrustTunnel / Tailscale / ZeroTier /
+	// EasyTier / OpenVPN）：界面在协议选择框下给出「建议搭配自定义规则」的灰色小字提示。
+	//
+	// 与 Deprecated 一样只是**界面提示**，不参与归一化与生成。之所以要提示：隧道类节点
+	// 接入的是对端虚拟网络（能到的地址是对端网段），而生成配置的模板规则第一条
+	// `GEOIP,lan,→ 当前代理组...` 实为直连私网，因此「只想访问内网」时必须自己写
+	// IP-CIDR 规则把这些网段引流到该节点，否则内网地址会被直连规则抢走。
+	Tunnel bool `json:"tunnel,omitempty"`
 	// Deprecated 已过时的协议：界面在协议选择框下给出提示，**不阻止保存**。
 	//
 	// 只作为提示信息，不参与归一化与生成——用户的既有节点、机场仍在用的协议

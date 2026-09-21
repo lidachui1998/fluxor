@@ -458,7 +458,9 @@ func (c *cancelableReadCloser) Close() error {
 
 1. **默认值只存在于后端**：前端不维护协议清单，`GET /subscribe/node-protocols` 下发字段表，`CustomNodeDialog.vue` 按声明渲染动态表单（第一项选协议，随后按「基础 → 传输层 → TLS → 高级」四段渲染，后三段可折叠）。新增协议或调整默认值**只改 `nodespec`**，不发前端版本。字段中文名走 i18n 的 `subscription.node_field.<key>`；同一键在不同协议下含义不同时用 `subscription.node_field.<协议>.<键>` 覆盖（如 vmess 的 `network` 是「传输方式」，ZeroTier 的是「网络 ID」）；再没有就回落到后端下发的英文 label。
 
-1.05 **协议级提示也由后端声明**：`Protocol.Deprecated`（目前只有 ShadowsocksR）让界面在协议选择框下给出红字提示，**不参与归一化与生成**——内核仍然支持 SSR，用户既有节点与机场仍在用的协议不该因为一句「过时」就存不进去（回归用例 `TestDeprecatedProtocolStillAccepted`）。要新增这类提示（例如某个协议需要额外编译标签），在后端加标记即可，前端不硬编码协议名。
+1.05 **协议级提示也由后端声明**：协议表上有两个纯界面标记，都**不参与归一化与生成**——要新增/调整这类提示只改 `nodespec`，前端不硬编码协议名。
+   - `Protocol.Deprecated`（目前只有 ShadowsocksR）：红字提示「该协议已过时，不建议使用」。内核仍支持 SSR，用户既有节点与机场仍在用的协议不该因为一句「过时」就存不进去（回归用例 `TestDeprecatedProtocolStillAccepted`）。
+   - `Protocol.Tunnel`（`protocol_tunnel.go` 里那 7 个：WireGuard / MASQUE / TrustTunnel / Tailscale / ZeroTier / EasyTier / OpenVPN）：**灰色**中性小字「隧道协议，建议搭配自定义规则使用（按目标网段引流）」，语气必须是建议而非错误（不是红字，也不阻止保存）。原因是隧道节点接入的是对端虚拟网络，而模板规则第一条把私网地址判给了直连，不写 `IP-CIDR` 规则的话内网流量永远进不了隧道（见 3.9 第 6 条；测试见 `TestTunnelProtocolFlag`）。两条提示互斥渲染（`v-else-if`），因为隧道协议不属于过时协议。
 
 1.1 **中文界面下的配置标题附英文小字**：内核配置项以英文为准，中文界面里光看「路径」「跳过证书校验」对不上 `path` / `skip-cert-verify`，因此该弹窗的标题统一走 `components/FieldLabel.vue`（中文 + 灰色小字英文）。英文名来自后端下发的 `label`（字段）与 en 语言包（分区标题），**纯中文标题才追加**——标题里本来就带英文的（「TLS 配置」「ECH 配置」「V2Ray HTTP Upgrade 快速打开」）不再重复，英文界面与专有名词（WebSocket / gRPC / REALITY）也不追加。仅该弹窗使用，其它页面不加。
 

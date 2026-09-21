@@ -33,8 +33,9 @@ var openvpnAuths = []string{"MD5", "SHA1", "SHA256", "SHA384", "SHA512"}
 var openvpnCompLzo = []string{"yes", "no", "adaptive"}
 
 var wireguardProtocol = Protocol{
-	Type: "wireguard",
-	Name: "WireGuard",
+	Type:   "wireguard",
+	Name:   "WireGuard",
+	Tunnel: true,
 	Fields: concat(
 		basicSection(
 			req(str("server", "Server")),
@@ -62,8 +63,9 @@ var wireguardProtocol = Protocol{
 }
 
 var masqueProtocol = Protocol{
-	Type: "masque",
-	Name: "MASQUE",
+	Type:   "masque",
+	Name:   "MASQUE",
+	Tunnel: true,
 	Fields: concat(
 		basicSection(
 			req(str("server", "Server")),
@@ -99,8 +101,9 @@ var masqueProtocol = Protocol{
 }
 
 var trusttunnelProtocol = Protocol{
-	Type: "trusttunnel",
-	Name: "TrustTunnel",
+	Type:   "trusttunnel",
+	Name:   "TrustTunnel",
+	Tunnel: true,
 	Fields: concat(
 		basicSection(
 			req(str("server", "Server")),
@@ -135,8 +138,9 @@ var trusttunnelProtocol = Protocol{
 }
 
 var tailscaleProtocol = Protocol{
-	Type: "tailscale",
-	Name: "Tailscale",
+	Type:   "tailscale",
+	Name:   "Tailscale",
+	Tunnel: true,
 	Fields: concat(
 		basicSection(
 			// 无 server / port：由控制面下发节点信息
@@ -157,8 +161,9 @@ var tailscaleProtocol = Protocol{
 }
 
 var zerotierProtocol = Protocol{
-	Type: "zerotier",
-	Name: "ZeroTier",
+	Type:   "zerotier",
+	Name:   "ZeroTier",
+	Tunnel: true,
 	Fields: concat(
 		basicSection(
 			// network 是 ZeroTier 网络 ID（16 位十六进制），没有 server / port
@@ -187,8 +192,9 @@ var zerotierProtocol = Protocol{
 }
 
 var easytierProtocol = Protocol{
-	Type: "easytier",
-	Name: "EasyTier",
+	Type:   "easytier",
+	Name:   "EasyTier",
+	Tunnel: true,
 	Fields: concat(
 		basicSection(
 			req(str("network-name", "Network Name")),
@@ -231,8 +237,9 @@ var easytierProtocol = Protocol{
 }
 
 var openvpnProtocol = Protocol{
-	Type: "openvpn",
-	Name: "OpenVPN",
+	Type:   "openvpn",
+	Name:   "OpenVPN",
+	Tunnel: true,
 	Fields: concat(
 		basicSection(
 			req(str("server", "Server")),

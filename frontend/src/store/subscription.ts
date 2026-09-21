@@ -106,6 +106,8 @@ export interface NodeProtocolSpec {
   require_any?: string[][]
   /** 后端标记的过时协议（如 ShadowsocksR）：界面给提示，但不阻止保存 */
   deprecated?: boolean
+  /** 后端标记的隧道类协议（WireGuard / EasyTier / OpenVPN…）：提示建议搭配自定义规则 */
+  tunnel?: boolean
 }
 
 /**

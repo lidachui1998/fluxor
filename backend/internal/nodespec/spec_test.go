@@ -142,6 +142,33 @@ func TestProtocolCount(t *testing.T) {
 	}
 }
 
+// TestTunnelProtocolFlag 隧道类协议的界面提示标记：集合固定、且不影响保存与生成。
+//
+// 这条提示的前提是「隧道节点接入的是对端虚拟网络」——只想访问内网时必须自己写
+// IP-CIDR 规则引流（模板规则把私网直连了）。标记本身只是界面文案，不参与归一化与生成。
+func TestTunnelProtocolFlag(t *testing.T) {
+	want := map[string]bool{
+		"wireguard": true, "masque": true, "trusttunnel": true, "tailscale": true,
+		"zerotier": true, "easytier": true, "openvpn": true,
+	}
+	for _, proto := range Protocols() {
+		if got := proto.Tunnel; got != want[proto.Type] {
+			t.Fatalf("协议 %s 的 Tunnel 标记应为 %v，实际 %v", proto.Type, want[proto.Type], got)
+		}
+		if !want[proto.Type] {
+			continue
+		}
+		// 标记不得成为新的校验：隧道协议照常归一化、照常写盘
+		out, err := Normalize(config.CustomNode{Name: "n", Type: proto.Type, Config: sampleConfig(proto)})
+		if err != nil {
+			t.Fatalf("隧道协议 %s 不应因提示标记被拒绝: %v", proto.Type, err)
+		}
+		if _, err := WritableOrdered(out); err != nil {
+			t.Fatalf("隧道协议 %s 应能正常写盘: %v", proto.Type, err)
+		}
+	}
+}
+
 // TestDeprecatedProtocolStillAccepted 过时协议只做界面提示，不得影响保存与生成。
 //
 // 回归价值：这条链路一旦被写成"过时即拒绝"，用户既有的 SSR 节点会在下次保存时
