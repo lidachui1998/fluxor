@@ -115,8 +115,8 @@ Fluxor 的设计核心之一是不引入复杂的数据库系统。所有的全�
 这几个字段由 TProxy 功能单独维护，通常不需要手工编辑：
 
 * **`tproxy_enabled`**：透明富强开关的持久化值。**注意**：nftables 规则不跨重启存活，因此面板每次启动都会把该值**归零**并清理残留规则，确保「面板显示的状态」与「系统实际生效的规则」一致。
-* **`tproxy_dst_exceptions`** / **`tproxy_src_exceptions`**：目的 / 源例外列表。
-* **`tproxy_proxy_local`**：是否将面板主机自身的出站流量也纳入劫持。
+* **`tproxy_dst_exceptions`** / **`tproxy_src_exceptions`**：目的 / 源绕过列表（字段名沿用历史命名，界面统一叫「绕过」）。
+* **`tproxy_proxy_local`**：是否接管面板主机自身的出站流量（界面上的「接管本机流量」开关）。
 
 > 旧版本曾使用 `tproxy_exceptions` 单一字段，现在会自动迁移到分离的源/目的两个字段。
 

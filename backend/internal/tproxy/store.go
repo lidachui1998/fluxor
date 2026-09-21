@@ -20,13 +20,66 @@ const (
 	keyTproxyExceptionsOld = "tproxy_exceptions" // 旧字段，读取时迁移
 )
 
-// 默认例外列表（文件缺失或字段不存在时使用）
+// 绕过列表的预填内容（fluxor.json 字段缺失时写入，也供前端「恢复默认」按钮取用）。
+//
+// 只预填可核实的条目：公共 DNS 的 IPv4/IPv6 地址取自厂商官方页面
+// （阿里 223.5.5.5 / 223.6.6.6 / 2400:3200::1 / 2400:3200:baba::1，
+// 百度 180.76.76.76 / 2400:da00::6666）。微信 / 支付宝 / 抖音等服务的接入 IP 由 CDN
+// 动态分配、没有官方公布的固定网段，因此**不预填具体 IP**，只在注释里给出自行查证
+// 的方式——填错网段会把本该走代理的流量静默放行，比留空更危险。
+//
+// 注释（`#` 之后的内容）解析时会被剥离（stripComment），整行注释等价于空行，
+// 因此下面的文字不会进入任何 nft 规则；但界面与文档共用这份内容，需保持可读。
+//
+// 分隔行刻意用 "#" 而不是空字符串：前端保存时会丢弃空行（见 Config.vue 的
+// saveTproxyExceptions），只有这样「预填 → 保存 → 再打开」才能逐行一致。
 func defaultDstExceptions() []string {
-	return []string{"# 公共 DNS 服务器", "223.5.5.5 #注释可单独一行也可写在规则后", "1.12.12.12", "# stun服务器", "141.101.90.1"}
+	return []string{
+		"# 目的绕过：命中这些目标的流量不进代理，直接在系统侧出站",
+		"#",
+		"# 公共 DNS（IPv4）：让解析请求直连，避免 DNS 被劫持",
+		"223.5.5.5 # 阿里公共 DNS",
+		"223.6.6.6 # 阿里公共 DNS",
+		"180.76.76.76 # 百度公共 DNS",
+		"119.29.29.29 # 腾讯 DNSPod 公共 DNS",
+		"1.12.12.12 # 腾讯 DNSPod 公共 DNS，DoH 入口",
+		"#",
+		"# 公共 DNS（IPv6）：需先开启「接管 IPv6 流量」，否则不会下发",
+		"2400:3200::1 # 阿里公共 DNS",
+		"2400:3200:baba::1 # 阿里公共 DNS",
+		"2400:da00::6666 # 百度公共 DNS",
+		"#",
+		"# STUN 与内网穿透：穿透通道必须能直连，否则开启后可能连不上中转节点",
+		"141.101.90.1 # 示例：请替换为你实际使用的 STUN 或穿透服务地址",
+		"#",
+		"# 国内常见服务：微信、支付宝、抖音等没有官方公布的固定网段，接入 IP 由 CDN 动态分配，",
+		"# 故不预填。确需按服务绕过时先查当前 IP 再填，例如 dig +short short.weixin.qq.com。",
+		"# 多数国内目标已由内核的 GEOIP 与 GEOSITE 规则判为直连，这里只用于完全不进内核的场景。",
+		"#",
+		"# 常用设备的 IPv6 网段：用 IPv6 全局地址访问 NAS、摄像头等设备时，其前缀不在内置保留",
+		"# 网段内，需按设备前缀整段放行。前缀随重新拨号变化，按 /64 整段填比填单个地址稳定",
+		"# （用 ip -6 addr 查看）。ULA 与链路本地已由内置规则绕过，无需重复填写。例如：",
+		"# 240e:3b3:xxxx:xxxx::/64",
+	}
 }
 
+// defaultSrcExceptions 源绕过的预填内容：命中这些来源的设备、容器完全不经代理。
 func defaultSrcExceptions() []string {
-	return []string{"# Docker 默认网段", "172.17.0.0/16"}
+	return []string{
+		"# 源绕过：命中这些来源的设备、容器完全不经过代理，含 DNS",
+		"# 仅支持 IP 与 CIDR，端口写法在这里无效",
+		"#",
+		"# Docker 默认 bridge 网段：填在这里意味着 Docker 容器的出站流量默认不代理，",
+		"# 容器仍按宿主机原有网络直连。要让容器也走代理，删掉本行即可；",
+		"# 自定义过 docker 网络的话，用 docker network inspect 查看实际网段后替换本行。",
+		"172.17.0.0/16",
+		"#",
+		"# 常用设备的 IPv6 网段：设备的 IPv6 全局地址由运营商前缀加设备后缀组成，前缀会随",
+		"# 重新拨号变化，按 /64 整段填比填单个地址稳定（用 ip -6 addr 查看）。例如：",
+		"# 240e:3b3:xxxx:xxxx::/64",
+		"# 注意：ULA 与链路本地已由内置保留网段绕过，无需重复填写；未开启「接管 IPv6 流量」",
+		"# 时这些 IPv6 条目不会下发。",
+	}
 }
 
 // readStringSliceField 从配置文件的顶层映射中读取一个字符串数组字段。
@@ -46,7 +99,7 @@ func readStringSliceField(full map[string]any, key string) ([]string, bool) {
 	return out, true
 }
 
-// LoadTproxyDstExceptions 加载目的例外，字段不存在时写入默认值
+// LoadTproxyDstExceptions 加载目的绕过，字段不存在时写入默认值
 func LoadTproxyDstExceptions() []string {
 	exceptionsMu.Lock()
 	defer exceptionsMu.Unlock()
@@ -62,7 +115,7 @@ func LoadTproxyDstExceptions() []string {
 		if dst, ok := readStringSliceField(full, keyTproxyExceptionsOld); ok {
 			tproxyDstExceptionsCache = dst
 			if err := saveDstExceptions(dst); err != nil {
-				log.Printf("[TProxy] 迁移目的例外失败: %v", err)
+				log.Printf("[TProxy] 迁移目的绕过失败: %v", err)
 			}
 			return dst
 		}
@@ -73,12 +126,12 @@ func LoadTproxyDstExceptions() []string {
 	dst := defaultDstExceptions()
 	tproxyDstExceptionsCache = dst
 	if err := saveDstExceptions(dst); err != nil {
-		log.Printf("[TProxy] 写入默认目的例外失败: %v", err)
+		log.Printf("[TProxy] 写入默认目的绕过失败: %v", err)
 	}
 	return dst
 }
 
-// saveDstExceptions 保存目的例外并移除旧字段。
+// saveDstExceptions 保存目的绕过并移除旧字段。
 func saveDstExceptions(dst []string) error {
 	return config.UpdateConfigFile(func(full map[string]any) {
 		full[keyTproxyDstExceptions] = dst
@@ -94,7 +147,7 @@ func SaveTproxyDstExceptions(dst []string) error {
 	return saveDstExceptions(dst)
 }
 
-// LoadTproxySrcExceptions 加载源例外，字段不存在时写入默认值
+// LoadTproxySrcExceptions 加载源绕过，字段不存在时写入默认值
 func LoadTproxySrcExceptions() []string {
 	exceptionsMu.Lock()
 	defer exceptionsMu.Unlock()
@@ -110,7 +163,7 @@ func LoadTproxySrcExceptions() []string {
 	src := defaultSrcExceptions()
 	tproxySrcExceptionsCache = src
 	if err := saveSrcExceptions(src); err != nil {
-		log.Printf("[TProxy] 写入默认源例外失败: %v", err)
+		log.Printf("[TProxy] 写入默认源绕过失败: %v", err)
 	}
 	return src
 }
@@ -121,7 +174,7 @@ func saveSrcExceptions(src []string) error {
 	})
 }
 
-// SaveTproxySrcExceptions 保存源例外列表（加锁），由 HTTP 层调用。
+// SaveTproxySrcExceptions 保存源绕过列表（加锁），由 HTTP 层调用。
 func SaveTproxySrcExceptions(src []string) error {
 	exceptionsMu.Lock()
 	defer exceptionsMu.Unlock()

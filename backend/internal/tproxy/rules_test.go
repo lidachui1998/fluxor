@@ -1,8 +1,11 @@
 package tproxy
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
-// TestParseTproxyException 覆盖例外规则的解析：IPv4/IPv6 单地址与网段、
+// TestParseTproxyException 覆盖绕过规则的解析：IPv4/IPv6 单地址与网段、
 // 端口、协议:端口，以及 v4-mapped 这类历史上会静默下发出错 CIDR 的输入。
 func TestParseTproxyException(t *testing.T) {
 	cases := []struct {
@@ -135,7 +138,7 @@ func TestFamilyDefinitions(t *testing.T) {
 	}
 }
 
-// TestStripComment 守住例外行的注释处理（前后端与文档均依赖该行为）。
+// TestStripComment 守住绕过行的注释处理（前后端与文档均依赖该行为）。
 func TestStripComment(t *testing.T) {
 	cases := map[string]string{
 		"223.5.5.5 #注释":    "223.5.5.5",
@@ -146,6 +149,55 @@ func TestStripComment(t *testing.T) {
 	for in, want := range cases {
 		if got := stripComment(in); got != want {
 			t.Errorf("stripComment(%q)=%q，期望 %q", in, got, want)
+		}
+	}
+}
+
+// TestDefaultBypassListsParsable 守住预填模板的可解析性。
+//
+// 模板里写错一个地址（多一个字符、把 v6 写成 v4 的掩码……），用户看到的会是日志里
+// 一行「跳过无效绕过规则」，而这类错误在 review 时最难用眼睛发现——故用测试兜住：
+// 预填的每一行去掉注释后，要么是空行，要么必须能被 parseTproxyException 解析。
+func TestDefaultBypassListsParsable(t *testing.T) {
+	cases := []struct {
+		name    string
+		list    []string
+		ipOnly  bool // 源绕过只支持 IP/CIDR，端口写法会被忽略
+		needles []string
+	}{
+		{
+			name:   "目的绕过",
+			list:   defaultDstExceptions(),
+			needles: []string{"223.5.5.5", "180.76.76.76", "119.29.29.29", "2400:3200::1", "2400:da00::6666"},
+		},
+		{
+			name:    "源绕过",
+			list:    defaultSrcExceptions(),
+			ipOnly:  true,
+			needles: []string{"172.17.0.0/16"},
+		},
+	}
+
+	for _, tc := range cases {
+		joined := strings.Join(tc.list, "\n")
+		for _, needle := range tc.needles {
+			if !strings.Contains(joined, needle) {
+				t.Errorf("%s 预填模板缺少 %q", tc.name, needle)
+			}
+		}
+		for _, line := range tc.list {
+			rule := stripComment(line)
+			if rule == "" {
+				continue
+			}
+			typ, _, _, _, err := parseTproxyException(rule)
+			if err != nil {
+				t.Errorf("%s 预填行 %q（解析为 %q）无法解析: %v", tc.name, line, rule, err)
+				continue
+			}
+			if tc.ipOnly && typ != "ip" {
+				t.Errorf("%s 预填行 %q 不是 IP/CIDR（该列表不支持端口写法）", tc.name, rule)
+			}
 		}
 	}
 }

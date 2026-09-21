@@ -301,7 +301,16 @@ export function handleMockFetch(path: string, options: RequestInit = {}): Respon
       mockTproxyDstExceptions = body.dst || []
       mockTproxySrcExceptions = body.src || []
     }
-    return reply({ dst: mockTproxyDstExceptions, src: mockTproxySrcExceptions })
+    // defaults 仅用于让离线开发也能走通「恢复默认」按钮，取的是缩略示例；
+    // 真正的预填清单由后端维护（backend/internal/tproxy/store.go 的 defaultDst/SrcExceptions）
+    return reply({
+      dst: mockTproxyDstExceptions,
+      src: mockTproxySrcExceptions,
+      defaults: {
+        dst: ['# 公共 DNS（IPv4）：让解析请求直连，避免 DNS 被劫持', '223.5.5.5', '# 公共 DNS（IPv6）：需先开启「接管 IPv6 流量」，否则不会下发', '2400:3200::1'],
+        src: ['# Docker 默认 bridge 网段：填在这里意味着 Docker 容器的出站流量默认不代理', '172.17.0.0/16'],
+      },
+    })
   }
   if (cleanPath.endsWith('/config/tproxy/proxy-local')) {
     if (method === 'POST') {

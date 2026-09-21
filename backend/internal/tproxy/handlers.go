@@ -88,7 +88,7 @@ func HandleTproxyState(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// HandleTproxyExceptions 处理例外列表的获取和更新
+// HandleTproxyExceptions 处理绕过列表的获取和更新
 func HandleTproxyExceptions(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -99,6 +99,13 @@ func HandleTproxyExceptions(w http.ResponseWriter, r *http.Request) {
 		httpx.RespondJSON(w, http.StatusOK, map[string]interface{}{
 			"dst": dst,
 			"src": src,
+			// 预填内容随查询一并返回：老用户 fluxor.json 里已存在该字段，改默认值对他们
+			// 不生效，前端「恢复默认」按钮靠这份数据把新预填灌回文本框。清单只在
+			// store.go 维护一份，避免前后端各写一份而漂移。
+			"defaults": map[string][]string{
+				"dst": defaultDstExceptions(),
+				"src": defaultSrcExceptions(),
+			},
 		})
 	case http.MethodPost:
 		var req struct {
@@ -111,16 +118,16 @@ func HandleTproxyExceptions(w http.ResponseWriter, r *http.Request) {
 		}
 		// 分别保存
 		if err := SaveTproxyDstExceptions(req.Dst); err != nil {
-			httpx.WriteJSONError(w, http.StatusInternalServerError, "保存目的例外失败")
+			httpx.WriteJSONError(w, http.StatusInternalServerError, "保存目的绕过失败")
 			return
 		}
 		if err := SaveTproxySrcExceptions(req.Src); err != nil {
-			httpx.WriteJSONError(w, http.StatusInternalServerError, "保存源例外失败")
+			httpx.WriteJSONError(w, http.StatusInternalServerError, "保存源绕过失败")
 			return
 		}
 		// 如果 TProxy 启用则重载
 		if err := reapplyTproxyRules(); err != nil {
-			log.Printf("[TProxy] 例外更新后重新应用规则失败: %v", err)
+			log.Printf("[TProxy] 绕过更新后重新应用规则失败: %v", err)
 			httpx.WriteJSONError(w, http.StatusInternalServerError, "重新应用规则失败（TProxy 已自动关闭）: "+err.Error())
 			return
 		}

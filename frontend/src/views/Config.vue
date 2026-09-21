@@ -65,7 +65,7 @@ const fetchInterfaces = async () => {
 // 实时修改（字段变更即写回后端），无保存按钮，仅关闭。
 const showTunAdvancedDialog = ref(false)
 
-// tproxy例外列表弹窗
+// TProxy 绕过列表弹窗
 const showTproxyExceptionsDialog = ref(false)
 
 // 视图激活态：KeepAlive 停用时必须收起 Teleport 弹窗，否则会跨页残留
@@ -74,11 +74,15 @@ const isActive = useViewActive()
 const tproxyDstExceptionsText = ref('')
 const tproxySrcExceptionsText = ref('')
 
-// 本机流量代理开关（已从弹窗移至开关行下方，故状态提升为页面级）
+// 后端预填的绕过列表（GET /config/tproxy/exceptions 的 defaults 字段）。
+// 只在 store.go 维护一份清单，前端不复制内容，「恢复默认」按钮直接用这里的值。
+const tproxyDefaults = ref<{ dst: string[], src: string[] } | null>(null)
+
+// 本机流量接管开关（已从弹窗移至开关行下方，故状态提升为页面级）
 const tproxyProxyLocal = ref(false)
 const tproxyProxyLocalLoaded = ref(false)
 
-// 接管 IPv6 开关（默认关闭）。与「同时代理本机出站流量」同为页面级状态：
+// 接管 IPv6 开关（默认关闭）。与「接管本机流量」同为页面级状态：
 // 二者都只在 TProxy 开关行下方展示，且启用 TProxy 期间均置灰不可改。
 const tproxyIPv6 = ref(false)
 const tproxyIPv6Loaded = ref(false)
@@ -92,7 +96,7 @@ const openTunAdvancedDialog = async () => {
   showTunAdvancedDialog.value = true
 }
 
-// 读取本机流量代理开关状态
+// 读取本机流量接管开关状态
 const fetchTproxyProxyLocal = async () => {
   try {
     const resp = await apiFetch('/config/tproxy/proxy-local')
@@ -102,7 +106,7 @@ const fetchTproxyProxyLocal = async () => {
       tproxyProxyLocalLoaded.value = true
     }
   } catch (e) {
-    console.error('获取本机流量代理开关失败:', e)
+    console.error('获取本机流量接管开关失败:', e)
   }
 }
 
@@ -120,7 +124,7 @@ const fetchTproxyIPv6 = async () => {
   }
 }
 
-// 在 openTproxyExceptionsDialog 中获取例外列表
+// 打开 TProxy 绕过列表弹窗：同时取回绕过列表本体与后端预填内容（供「恢复默认」用）
 const openTproxyExceptionsDialog = async () => {
   if (configStore.tproxyEnabled) {
     globalStore.showToast(t('config.tproxy_exceptions_disabled_message'), 'warning')
@@ -131,8 +135,9 @@ const openTproxyExceptionsDialog = async () => {
     if (resp.ok) {
       const data = await resp.json()
       tproxyDstExceptionsText.value = (data.dst || []).join('\n')
-      // 直接使用后端数据，不额外填充默认值
+      // 直接使用后端数据，不额外填充默认值（老配置里已有用户的列表，不能被默认值覆盖）
       tproxySrcExceptionsText.value = (data.src || []).join('\n')
+      tproxyDefaults.value = data.defaults || null
     }
     showTproxyExceptionsDialog.value = true
   } catch (e) {
@@ -140,7 +145,20 @@ const openTproxyExceptionsDialog = async () => {
   }
 }
 
-// 仅保存例外列表（本机流量代理开关已移出该弹窗）
+// 恢复默认：把后端预填内容灌回文本框。刻意不直接落盘——用户可能只想参考默认值，
+// 再按自己的网络改几行，因此仍需手动点「保存」。
+const restoreTproxyDefaults = () => {
+  const defaults = tproxyDefaults.value
+  if (!defaults) {
+    globalStore.showToast(t('config.tproxy_defaults_unavailable'), 'warning')
+    return
+  }
+  tproxyDstExceptionsText.value = (defaults.dst || []).join('\n')
+  tproxySrcExceptionsText.value = (defaults.src || []).join('\n')
+  globalStore.showToast(t('config.tproxy_defaults_filled'), 'info')
+}
+
+// 仅保存绕过列表（本机流量接管开关已移出该弹窗）
 const saveTproxyExceptions = async () => {
   const dstLines = tproxyDstExceptionsText.value.split('\n').map(s => s.trim()).filter(s => s !== '')
   const srcLines = tproxySrcExceptionsText.value.split('\n').map(s => s.trim()).filter(s => s !== '')
@@ -248,7 +266,7 @@ const saveTun = async (e?: Event) => {
   // 互斥：开启 TUN 时自动关闭 TProxy。
   //
   // 必须先关 TProxy 再开 TUN，且必须调用后端：后端仍会把 TProxy 判定为启用，
-  // 只改本地开关会让「TProxy 例外列表弹窗禁用」「端口只读」等逻辑基于错误状态
+  // 只改本地开关会让「TProxy 绕过列表弹窗禁用」「端口只读」等逻辑基于错误状态
   // 工作（此前正是如此）。先关后开也避免两者同时生效的窗口。
   if (isTunEnabled && configStore.tproxyEnabled) {
     await disableTproxyOnBackend()
@@ -591,7 +609,7 @@ const handleDNSQuery = async (e?: Event) => {
   }
 }
 
-// 处理本机流量代理开关。
+// 处理本机流量接管开关。
 //
 // 语义（与用户约定一致）：
 //   - 开启：先二次确认，确认后才写入后端持久化文件；
@@ -615,7 +633,7 @@ const onProxyLocalBlocked = () => {
   globalStore.showToast(t('config.tproxy_proxy_local_readonly_warning'), 'warning')
 }
 
-// persistProxyLocal 写入本机流量代理开关并同步本地状态
+// persistProxyLocal 写入本机流量接管开关并同步本地状态
 const persistProxyLocal = async (enabled: boolean) => {
   try {
     const resp = await apiFetch('/config/tproxy/proxy-local', {
@@ -633,7 +651,7 @@ const persistProxyLocal = async (enabled: boolean) => {
   }
 }
 
-// 处理接管 IPv6 开关。语义与「同时代理本机出站流量」一致：
+// 处理接管 IPv6 开关。语义与「接管本机流量」一致：
 //   - 开启：先二次确认（额外说明「节点无 IPv6 出口会导致原本直连可达的 IPv6 目标失败」），
 //     确认后才写入后端持久化文件；
 //   - 关闭：直接写入后端持久化，不确认。
@@ -919,7 +937,7 @@ onUnmounted(() => {
             <FormSwitch v-else v-model="configStore.tproxyEnabled" @update:model-value="toggleTProxy" />
           </div>
 
-          <!-- 同时代理本机出站流量（由弹窗移出）。
+          <!-- 接管本机流量（由弹窗移出）。
                启用 TProxy 时禁止修改：此时切换会重建 nft 规则，而 TProxy 开关
                正持有规则，故禁用——置灰原因经 disabled-hint 外露（悬停 title +
                点击 toast），避免开关无声不响应。 -->
@@ -942,7 +960,7 @@ onUnmounted(() => {
           </div>
 
           <!-- 接管 IPv6 流量（默认关闭）。
-               与「同时代理本机出站流量」同一套交互：开启先二次确认（见
+               与「接管本机流量」同一套交互：开启先二次确认（见
                handleTproxyIPv6Toggle），TProxy 启用期间置灰并在悬停/点击时说明原因。
                该开关只决定 IPv6 家族（nft ip6 表 + `ip -6` 策略路由）是否随
                TProxy 一起下发，不影响 IPv4 侧的任何行为。 -->
@@ -1166,18 +1184,27 @@ onUnmounted(() => {
     </div>
   </div>
 
-  <!-- ====== 新增 TProxy 例外列表弹窗 ====== -->
+  <!-- ====== TProxy 绕过列表弹窗 ====== -->
   <Teleport to="body">
     <div v-if="isActive && showTproxyExceptionsDialog" class="fixed inset-0 glass-mask z-[9999] flex items-center justify-center p-4" @click.self="showTproxyExceptionsDialog = false">
       <!-- 限制弹窗最大高度为视口 90%，flex 列布局 -->
       <div class="glass-heavy w-full max-w-lg max-h-[90vh] rounded-[20px] shadow-2xl border p-6 flex flex-col gap-4 animate-[zoomIn_0.15s_ease-out]">
-        <!-- 标题，固定不滚动 -->
-        <h4 class="text-lg font-bold flex-shrink-0">{{ t('config.tproxy_exceptions_title') }}</h4>
+        <!-- 标题 + 恢复默认，固定不滚动 -->
+        <div class="flex items-center justify-between gap-3 flex-shrink-0">
+          <h4 class="text-lg font-bold">{{ t('config.tproxy_exceptions_title') }}</h4>
+          <button
+            @click="restoreTproxyDefaults"
+            class="px-2.5 py-1 text-xs font-semibold rounded-lg text-accent hover:bg-accent/10 border border-accent/30 transition-all shrink-0"
+            :title="t('config.tproxy_restore_defaults_hint')"
+          >
+            {{ t('config.tproxy_restore_defaults') }}
+          </button>
+        </div>
 
         <!-- 可滚动内容区域：占据剩余空间，超出时滚动 -->
         <div class="flex-1 min-h-0 overflow-y-auto">
           <div class="space-y-4">
-            <!-- 目的例外 -->
+            <!-- 目的绕过 -->
             <div>
               <label class="text-xs font-semibold text-slate-600 dark:text-slate-400">
                 {{ t('config.tproxy_dst_exceptions_label') }}
@@ -1191,7 +1218,7 @@ onUnmounted(() => {
               ></textarea>
             </div>
 
-            <!-- 源例外 -->
+            <!-- 源绕过 -->
             <div class="pt-2 border-t border-slate-100 dark:border-slate-800/60">
               <label class="text-xs font-semibold text-slate-600 dark:text-slate-400">
                 {{ t('config.tproxy_src_exceptions_label') }}

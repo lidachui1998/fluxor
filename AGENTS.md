@@ -121,12 +121,12 @@ backend/
     │   │                         #     + CleanupStaleTempCores：启动清理残留临时内核
     │   └── handlers.go           #   /core/* HTTP 接口
     ├── tproxy/                   # TProxy 防火墙与策略路由（IPv4 恒接管，IPv6 由开关控制）
-    │   ├── state.go              #   启用状态、IPv6 接管开关、例外缓存、读写锁
+    │   ├── state.go              #   启用状态、IPv6 接管开关、绕过列表缓存、读写锁
     │   │                         #     （读一律走 GetTproxyState / ipv6Enabled / proxyLocalEnabled）
-    │   ├── store.go              #   开关状态/例外列表/本机代理开关/IPv6 接管开关的持久化
+    │   ├── store.go              #   开关状态/绕过列表（含预填模板）/本机流量接管/IPv6 接管开关的持久化
     │   │                         #     + ResetOnStartup：冷启动归零开关并清理残留规则
     │   ├── rules.go              #   规则解析 + nftables 应用/清理（IPv4/IPv6 同构：tproxyFamily）
-    │   ├── rules_test.go         #   例外解析/策略路由探测/家族定义的纯函数单测
+    │   ├── rules_test.go         #   绕过规则解析/策略路由探测/家族定义的纯函数单测
     │   └── handlers.go           #   /config/tproxy* HTTP 接口
     ├── subscription/             # 订阅中心
     │   ├── doc.go                #   包说明
@@ -292,8 +292,8 @@ func (c *cancelableReadCloser) Close() error {
 | `/dns/query` | GET | `dashapi.HandleDNSQuery` | DNS 查询（?name=&type=） |
 | `/restart` | POST | `dashapi.HandleRestart` | 内核远端重启 |
 | `/config/tproxy` | GET/POST | `tproxy.HandleTproxyState` | 获取或切换 TProxy 防火墙状态 |
-| `/config/tproxy/exceptions` | GET/POST | `tproxy.HandleTproxyExceptions` | 获取或配置 TProxy 源/目的例外过滤规则 |
-| `/config/tproxy/proxy-local` | GET/POST | `tproxy.HandleTproxyProxyLocal` | 获取或切换本机出站流量代理开关 |
+| `/config/tproxy/exceptions` | GET/POST | `tproxy.HandleTproxyExceptions` | 获取或配置 TProxy 源/目的绕过列表（GET 一并返回 `defaults` 预填模板，供前端「恢复默认」） |
+| `/config/tproxy/proxy-local` | GET/POST | `tproxy.HandleTproxyProxyLocal` | 获取或切换本机流量接管开关（界面文案「接管本机流量」） |
 | `/config/tproxy/proxy-ipv6` | GET/POST | `tproxy.HandleTproxyProxyIPv6` | 获取或切换「接管 IPv6 流量」开关（默认关闭；启用 TProxy 期间前端置灰） |
 | `/ipinfo/local/v4` | GET | `netinfo.HandleLocalIPv4` | 查询本地出站 IPv4 归属信息 |
 | `/ipinfo/local/v6` | GET | `netinfo.HandleLocalIPv6` | 查询本地出站 IPv6 归属信息 |
@@ -314,20 +314,20 @@ func (c *cancelableReadCloser) Close() error {
 ### 3.4 TProxy 防火墙安全操作与退避规约 (`backend/internal/tproxy/`)
 
 为了保障系统网络安全，在调用系统防火墙（如 `nft`）时必须遵循以下规则：
-1. **防止命令注入**：严禁采用拼接 shell 字符串并使用 `sh -c` 的方式执行。必须使用 `exec.Command` 原生多参数切片传参，并在后台通过 `runCmd` 限制外部参数注入（特别是针对例外 IP/CIDR 等由用户表单输入的配置项）。
+1. **防止命令注入**：严禁采用拼接 shell 字符串并使用 `sh -c` 的方式执行。必须使用 `exec.Command` 原生多参数切片传参，并在后台通过 `runCmd` 限制外部参数注入（特别是针对绕过 IP/CIDR 等由用户表单输入的配置项）。
 2. **退出彻底清退**：在面板退出时（通过监听 `syscall.SIGINT` 和 `syscall.SIGTERM` 信号），必须在退出前调用 `tproxy.DisableTProxyRules` 以清除所有已应用的网络重定向规则，以避免断网残留。
 3. **冷启动收敛**：nft 规则不跨重启存活，而开关状态是持久化的。启动时必须调用 `tproxy.ResetOnStartup()`：把开关无条件归零并清除任何残留规则，让内存态、磁盘态与内核态三者一致。否则上次非优雅退出（kill -9 / 崩溃）会留下「面板显示关闭、流量仍被劫持」的静默错配。
 4. **清理：各项独立探测、存在才删**：`DisableTProxyRules` 不得把策略路由的清理绑在「nft 表存在」的判定之后。`EnableTProxyRules` 先写策略路由（`ip rule` / `ip route`）再建 nft 表，若建表失败就会留下「有策略路由、无 nft 表」的状态；此时若因表不存在而提前返回，策略路由将永远清不掉，把流量导入空路由表 → 持续断网。正确做法是对 nft 表、`fwmark` 规则、`local` 路由**各自探测**（`hasNftTable` / `hasFwmarkRule` / `hasLocalRoute`），**有残留才执行对应删除**——既不漏删，也不对不存在的对象执行 del 而徒增错误。
-5. **状态读写的单一入口**：读取 TProxy 开关状态一律走 `GetTproxyState()`，写入走 `SetTproxyEnabled()`（内存 + 持久化）。禁止直接访问 `tproxyEnableState`——无锁读会构成数据竞争。同理，「接管 IPv6 流量」与「同时代理本机出站流量」两个开关的读取分别走 `ipv6Enabled()` / `proxyLocalEnabled()`，禁止在 `rules.go` 里直接读变量。
+5. **状态读写的单一入口**：读取 TProxy 开关状态一律走 `GetTproxyState()`，写入走 `SetTproxyEnabled()`（内存 + 持久化）。禁止直接访问 `tproxyEnableState`——无锁读会构成数据竞争。同理，「接管 IPv6 流量」与「接管本机流量」两个开关的读取分别走 `ipv6Enabled()` / `proxyLocalEnabled()`，禁止在 `rules.go` 里直接读变量。
 6. **失败必须回滚且如实上报**：`EnableTProxyRules` 对每个已启用家族校验三件关键产物是否真实存在——nft 表、`fwmark` 策略路由、策略路由表里的 `local` 路由（缺策略路由会把被标记流量导入黑洞，因此不能只看 nft 表），任一缺失即返回 error；Handler 在失败时回滚开关状态并返回错误，绝不回报 `enabled: true`。同理，改 `tproxy-port` 时只有在开关处于启用态才能重建规则，否则会在开关为「关闭」时被静默装上系统级透明代理规则。
-7. **IPv4 / IPv6 是同构的两套规则，必须同生共死**：两套规则由 `tproxyFamily` 参数化（家族/表名/地址关键字/集合类型/`ip` 家族参数/默认路由/绕过网段），启用时按 `ipv6Enabled()` 裁剪，**清理时必须两个家族都探测**（不按开关裁剪，否则关掉开关后再也清不掉上一次遗留的 ip6 规则）。IPv6 绕过网段必须含 `ff00::/8`——DHCPv6 的 UDP 547 目的地址是 `ff02::1:2`，漏掉会把它劫持。例外条目按家族分流下发（网段例外进对应家族，端口例外两个家族都下发），未开启 IPv6 时 IPv6 例外必须逐条记日志说明「未下发」，不得静默丢弃。`ip6` 家族 nat 链（NAT66）在老内核/老 nft 上可能不可用，此时只跳过该家族的 DNS 重定向并记日志，不让整次启用失败。
+7. **IPv4 / IPv6 是同构的两套规则，必须同生共死**：两套规则由 `tproxyFamily` 参数化（家族/表名/地址关键字/集合类型/`ip` 家族参数/默认路由/绕过网段），启用时按 `ipv6Enabled()` 裁剪，**清理时必须两个家族都探测**（不按开关裁剪，否则关掉开关后再也清不掉上一次遗留的 ip6 规则）。IPv6 绕过网段必须含 `ff00::/8`——DHCPv6 的 UDP 547 目的地址是 `ff02::1:2`，漏掉会把它劫持。绕过条目按家族分流下发（网段绕过进对应家族，端口绕过两个家族都下发），未开启 IPv6 时 IPv6 绕过条目必须逐条记日志说明「未下发」，不得静默丢弃。`ip6` 家族 nat 链（NAT66）在老内核/老 nft 上可能不可用，此时只跳过该家族的 DNS 重定向并记日志，不让整次启用失败。
 
 ### 3.5 配置文件并发写入规约（`fluxor.json`）
 
 `fluxor.json` **同时承载订阅配置**（`config.SubscribeConfig`）**与 TProxy 旁路字段**（`tproxy_enabled` / `tproxy_dst_exceptions` / `tproxy_src_exceptions` / `tproxy_proxy_local` / `tproxy_ipv6`），由 `config` 与 `tproxy` 两个包分别写入。因此：
 
 1. **必须共用同一把文件锁**：所有对该文件的读写都要经 `config.FileMu`（经 `config.UpdateConfigFile` / `config.ReadConfigFile`）。
-2. **必须用「读—改—写」**：严禁任何一方整文件覆写。`SaveSubscribeConfig` 只合并 `SubscribeConfig` 自身的键，未触碰的键一律保留——否则保存一次订阅配置就会把 TProxy 例外列表静默清空。
+2. **必须用「读—改—写」**：严禁任何一方整文件覆写。`SaveSubscribeConfig` 只合并 `SubscribeConfig` 自身的键，未触碰的键一律保留——否则保存一次订阅配置就会把 TProxy 绕过列表静默清空。
 3. **锁序**：`FileMu` 永远是最内层。持有 `config.Mu` 或 `exceptionsMu` 时可以再取 `FileMu`，反之不可。
 4. **不要在持锁期间做网络 IO**：`config.Mu` 只用于内存字段赋值；抓取订阅元数据等耗时操作必须在锁外完成，锁内仅做写回。
 

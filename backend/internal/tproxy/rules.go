@@ -136,7 +136,7 @@ func (f tproxyFamily) hasNftTable() bool {
 	return cmd.Run() == nil
 }
 
-// parseTproxyException 解析单条例外规则，返回 (ruleType, ipNet, proto, port)
+// parseTproxyException 解析单条绕过规则，返回 (ruleType, ipNet, proto, port)
 // 支持：
 //   - IP/CIDR: 192.168.1.0/24、2001:db8::/32
 //   - 单个IP: 192.168.1.1、2001:db8::1（IPv6 按 /128 处理）
@@ -197,13 +197,13 @@ func isV6Net(n *net.IPNet) bool {
 	return n != nil && strings.Contains(n.String(), ":")
 }
 
-// warnSkippedV6Exceptions 在未开启 IPv6 接管时，逐条说明哪些 IPv6 例外未下发。
+// warnSkippedV6Exceptions 在未开启 IPv6 接管时，逐条说明哪些 IPv6 绕过未下发。
 //
 // 历史上这些规则会被当成 IPv4 规则塞进 ip 家族的表里、必然失败，而错误只留一行
-// 通用日志，用户根本看不出「例外没生效」——静默失效正是必须消除的行为。
+// 通用日志，用户根本看不出「绕过没生效」——静默失效正是必须消除的行为。
 func warnSkippedV6Exceptions(dst, src []string) {
 	logSkipped := func(kind, rule string) {
-		log.Printf("[TProxy] %s例外 %q 属于 IPv6，当前未开启「接管 IPv6 流量」，该规则未下发", kind, rule)
+		log.Printf("[TProxy] %s绕过 %q 属于 IPv6，当前未开启「接管 IPv6 流量」，该规则未下发", kind, rule)
 	}
 	for _, rule := range dst {
 		rule = stripComment(rule)
@@ -272,7 +272,7 @@ func EnableTProxyRules(port int) error {
 		return fmt.Errorf("%s", strings.Join(errs, "；"))
 	}
 
-	log.Printf("[TProxy] 规则应用成功（%s，含目的/源例外及本机代理开关）", strings.Join(applied, " + "))
+	log.Printf("[TProxy] 规则应用成功（%s，含目的/源绕过及本机流量接管开关）", strings.Join(applied, " + "))
 	return nil
 }
 
@@ -321,7 +321,7 @@ func (f tproxyFamily) enable(port int, dstExceptions, srcExceptions []string) er
 	runCmd("nft", "add", "rule", f.nftFamily, f.nftTable, "prerouting", f.addrKw, "daddr", "@private_ips", "return")
 	runCmd("nft", "add", "rule", f.nftFamily, f.nftTable, "output", f.addrKw, "daddr", "@private_ips", "return")
 
-	// 7a. 目的例外
+	// 7a. 目的绕过
 	for _, rule := range dstExceptions {
 		rule = stripComment(rule)
 		if rule == "" {
@@ -329,12 +329,12 @@ func (f tproxyFamily) enable(port int, dstExceptions, srcExceptions []string) er
 		}
 		typ, ipNet, proto, portVal, err := parseTproxyException(rule)
 		if err != nil {
-			log.Printf("[TProxy] 跳过无效目的例外规则 %q: %v", rule, err)
+			log.Printf("[TProxy] 跳过无效目的绕过规则 %q: %v", rule, err)
 			continue
 		}
 
 		if typ == "ip" {
-			// 网段例外只作用于同家族：IPv6 例外进 ip6 表，IPv4 例外进 ip 表。
+			// 网段绕过只作用于同家族：IPv6 绕过进 ip6 表，IPv4 绕过进 ip 表。
 			if isV6Net(ipNet) != f.isV6 {
 				continue
 			}
@@ -350,7 +350,7 @@ func (f tproxyFamily) enable(port int, dstExceptions, srcExceptions []string) er
 				runCmd("nft", "add", "rule", f.nftFamily, f.nftTable, "nat_output", f.addrKw, "daddr", cidr, "return")
 			}
 		} else if typ == "port" {
-			// 端口例外与家族无关，两个家族都要下发
+			// 端口绕过与家族无关，两个家族都要下发
 			// 将集合作为一个完整的字符串参数
 			protoExpr := "{tcp, udp}"
 			if proto != "" {
@@ -369,7 +369,7 @@ func (f tproxyFamily) enable(port int, dstExceptions, srcExceptions []string) er
 		}
 	}
 
-	// 7b. 源例外（仅支持 IP/CIDR，复用同一套解析以统一 IPv4/IPv6 处理）
+	// 7b. 源绕过（仅支持 IP/CIDR，复用同一套解析以统一 IPv4/IPv6 处理）
 	for _, rule := range srcExceptions {
 		rule = stripComment(rule)
 		if rule == "" {
@@ -377,7 +377,7 @@ func (f tproxyFamily) enable(port int, dstExceptions, srcExceptions []string) er
 		}
 		typ, ipNet, _, _, err := parseTproxyException(rule)
 		if err != nil || typ != "ip" {
-			log.Printf("[TProxy] 源例外仅支持 IP/CIDR，忽略无效规则: %s", rule)
+			log.Printf("[TProxy] 源绕过仅支持 IP/CIDR，忽略无效规则: %s", rule)
 			continue
 		}
 		if isV6Net(ipNet) != f.isV6 {

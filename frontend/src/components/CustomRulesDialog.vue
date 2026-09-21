@@ -537,19 +537,19 @@ defineExpose({ takeMutatedScopes })
                 <div class="flex bg-slate-100 dark:bg-slate-800 rounded-lg p-0.5 transition-all">
                   <button
                     type="button"
-                    @click="ruleForm.position = 'after'"
-                    class="flex-1 px-3 py-1.5 text-xs font-semibold rounded-md transition-all duration-200"
-                    :class="ruleForm.position === 'after' ? 'bg-accent text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'"
-                  >
-                    {{ t('subscription.custom_rule_position_after') }}
-                  </button>
-                  <button
-                    type="button"
                     @click="ruleForm.position = 'before'"
                     class="flex-1 px-3 py-1.5 text-xs font-semibold rounded-md transition-all duration-200"
                     :class="ruleForm.position === 'before' ? 'bg-accent text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'"
                   >
                     {{ t('subscription.custom_rule_position_before') }}
+                  </button>
+                  <button
+                    type="button"
+                    @click="ruleForm.position = 'after'"
+                    class="flex-1 px-3 py-1.5 text-xs font-semibold rounded-md transition-all duration-200"
+                    :class="ruleForm.position === 'after' ? 'bg-accent text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'"
+                  >
+                    {{ t('subscription.custom_rule_position_after') }}
                   </button>
                 </div>
               </div>

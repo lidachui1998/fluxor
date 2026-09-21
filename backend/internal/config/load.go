@@ -14,7 +14,7 @@ import (
 // （tproxy_enabled / tproxy_dst_exceptions / tproxy_src_exceptions 等）。
 // 二者由 config 与 tproxy 两个包分别写入同一个文件，因此必须共用同一把锁，
 // 并统一采用「读—改—写」：任何一方若整文件覆写，都会把对方的字段抹掉
-// （曾导致「保存一次订阅配置，TProxy 例外列表被静默清空」）。
+// （曾导致「保存一次订阅配置，TProxy 绕过列表被静默清空」）。
 //
 // 锁序约定：FileMu 永远是最内层——持有 config.Mu 或 tproxy 的 exceptionsMu
 // 时可以再取 FileMu，反之不可。
