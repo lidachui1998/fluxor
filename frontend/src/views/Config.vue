@@ -893,6 +893,7 @@ onUnmounted(() => {
               <option value="gVisor">gVisor</option>
               <option value="System">System</option>
               <option value="Mixed">Mixed</option>
+              <option value="Mips">Mips</option>
             </select>
           </div>
 

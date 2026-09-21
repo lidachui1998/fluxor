@@ -108,6 +108,7 @@ export const useConfigStore = defineStore('config', () => {
             const s = tunData.stack.toLowerCase()
             if (s === 'gvisor') normalizedStack = 'gVisor'
             else if (s === 'mixed') normalizedStack = 'Mixed'
+            else if (s === 'mips') normalizedStack = 'Mips'
           }
 
           const next = {
