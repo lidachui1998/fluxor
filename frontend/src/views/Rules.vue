@@ -186,9 +186,9 @@ onMounted(async () => {
   }
 })
 
-// 订阅页改动过激活订阅的自定义规则后会留下「列表已过期」标记（见 rules store）：
-// 只有真正切到本页（KeepAlive 的 onActivated）才消费它并静默补拉一次规则，
-// 用户不切过来就不产生任何请求。
+// 订阅页改动过激活订阅的自定义规则、或配置页重建过内核运行态（重载 / 启动 / 重启 /
+// 升级内核）之后，都会留下「本页数据已过期」标记（见 rules store）：只有真正切到本页
+// （KeepAlive 的 onActivated）才消费它并静默补拉一次，用户不切过来就不产生任何请求。
 let rulesActivatedOnce = false
 onActivated(async () => {
   const stale = rulesStore.consumeNeedsRefresh()
@@ -198,8 +198,17 @@ onActivated(async () => {
     return
   }
   if (!stale) return
-  // 静默刷新：沿用页面已有的快照，避免切页瞬间闪出加载态
-  await rulesStore.fetchRules(true)
+  // 静默刷新：沿用页面已有的快照，避免切页瞬间闪出加载态。
+  // 规则列表与规则提供商一并补拉——重建运行态会让内核按 config.yaml 重载 rule-providers，
+  // 只刷列表会让「规则提供商」页签的计数与更新时间停在重载前。
+  const [rulesOk, providersOk] = await Promise.all([
+    rulesStore.fetchRules(true),
+    rulesStore.fetchProviders(true),
+  ])
+  // 任一失败即把标记放回去：内核可能仍在启动/重启/升级中（请求拿不到数据，
+  // store 会保留旧快照）。放回标记让用户下次切入本页时自动重试，
+  // 而不是把这份旧快照一直挂到刷新整个页面为止。
+  if (!rulesOk || !providersOk) rulesStore.markNeedsRefresh()
 })
 
 onUnmounted(() => {

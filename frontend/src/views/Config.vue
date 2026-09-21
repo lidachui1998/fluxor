@@ -7,6 +7,8 @@ import { useGlobalStore } from '../store/global'
 import { storeToRefs } from 'pinia'
 import { useConfigStore, type ConfigData } from '../store/config'
 import { useOverviewStore, CORE_VERSION_LOADING, CORE_VERSION_UNKNOWN } from '../store/overview'
+import { useProxyStore } from '../store/proxies'
+import { useRulesStore } from '../store/rules'
 import FormSwitch from '../components/FormSwitch.vue'
 import { useViewActive } from '../composables/useViewActive'
 
@@ -14,6 +16,8 @@ const { t, locale } = useI18n()
 const globalStore = useGlobalStore()
 const configStore = useConfigStore()
 const overviewStore = useOverviewStore()
+const proxyStore = useProxyStore()
+const rulesStore = useRulesStore()
 const { configs, configsLoading, coreStatus } = storeToRefs(configStore)
 const { stats } = storeToRefs(overviewStore)
 const fetchConfigs = configStore.fetchConfigs
@@ -337,6 +341,17 @@ const toggleTProxy = async (enable: boolean) => {
   }
 }
 
+// 登记「代理页 / 规则页数据已过期」（机制见 utils/staleFlag）。
+//
+// 内核的每一次运行态重建都发生在本页：启动、重启、重载、升级内核都会让内核按磁盘上的
+// config.yaml 重新加载（升级还会换掉二进制），代理组/节点/当前选择与规则集合都可能与
+// 前端快照不同。此处不替那两个页面发请求——它们可能根本没挂载，也无从判断用户接下来
+// 会不会看——只留下待办，等用户真正切过去时由它们消费并静默补拉。
+const markKernelDataStale = () => {
+  proxyStore.markNeedsRefresh()
+  rulesStore.markNeedsRefresh()
+}
+
 // 内核进程管理
 const handleStartCore = async () => {
   coreStatus.value.loading = true
@@ -346,9 +361,14 @@ const handleStartCore = async () => {
     if (resp.ok && data.status === 'ok') {
       globalStore.showToast(t('config.core_start_success'), 'success')
       configStore.refreshCoreStatus()
+      // 立即登记一次：覆盖「用户在下面的等待窗口内就切到代理/规则页」的情形
+      // （那一刻内核多半还没起来，请求会失败，消费方会把标记放回去，下次切入重试）
+      markKernelDataStale()
       setTimeout(() => {
         fetchConfigs(true)
         overviewStore.fetchVersionAndStatus()
+        // 内核此刻才真正回来，运行态以这一次为准，再登记一次
+        markKernelDataStale()
       }, 1500)
     } else {
       globalStore.showToast(t('config.core_start_failed') + ': ' + (data.message || ''), 'error')
@@ -408,9 +428,12 @@ const handleRestartCore = async () => {
     const resp = await apiFetch('/restart', { method: 'POST' })
     if (resp.ok) {
       globalStore.showToast(t('config.restart_sent'), 'success')
+      // 与启动内核同理：立即登记一次以覆盖等待窗口内的切页，延迟再登记一次为准
+      markKernelDataStale()
       setTimeout(() => {
         fetchConfigs(true)
         overviewStore.fetchVersionAndStatus()
+        markKernelDataStale()
       }, 1500)
     } else {
       globalStore.showToast(t('config.restart_failed'), 'error')
@@ -430,6 +453,10 @@ const handleReloadConfig = async () => {
       globalStore.showToast(t('config.reload_success'), 'success')
       // 重载属于配置同步，同样静默刷新，避免卡片标题闪烁
       fetchConfigs(false, true)
+      // 重载会让内核按磁盘上的 config.yaml 重建整个运行态：代理组/节点与规则集合
+      // 都可能与前端快照不同。此处不替代理页/规则页发请求（它们可能根本没挂载，
+      // 也无法判断用户接下来会不会看），只登记过期标记；对应页面在切入时消费并静默补拉。
+      markKernelDataStale()
     } else {
       globalStore.showToast(t('config.reload_failed'), 'error')
     }
@@ -504,6 +531,9 @@ const handleUpgradeCore = async (channel?: string) => {
       // **** 关键修复：强制重置版本号为 loading 哨兵，使下次请求重新获取 ****
       overviewStore.stats.coreVersion = CORE_VERSION_LOADING
       globalStore.showToast(t('config.upgrade_success'), 'success')
+      // 升级完成后内核会自行重启并重新加载 config.yaml，运行态随之重建。
+      // 立即登记一次，覆盖「升级/重启尚未完成、用户已切到代理/规则页」的情形
+      markKernelDataStale()
       // 延迟刷新，等待内核完成更新
       setTimeout(async () => {
         let attempts = 0
@@ -522,6 +552,8 @@ const handleUpgradeCore = async (channel?: string) => {
           await new Promise(resolve => setTimeout(resolve, 1000))
         }
         fetchConfigs(true)
+        // 版本已能取到＝内核已回来且已按 config.yaml 重建运行态，以这次登记为准
+        markKernelDataStale()
       }, 2000) // 初始延迟 2 秒
     } else {
       // 错误处理（保持不变）

@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { apiFetch } from '../utils/api'
 import { useSubscriptionStore } from './subscription'
+import { createStaleFlag } from '../utils/staleFlag'
 
 export interface ProxyGroup {
   name: string
@@ -18,6 +19,16 @@ export const useProxyStore = defineStore('proxies', () => {
   const isLoading = ref(false)
   const expandedState = ref<Record<string, boolean>>({})
   const providerInfos = ref<Record<string, any>>({})
+
+  // needsRefresh：代理数据（代理组、节点、各组的当前选择）可能已过期。
+  // 来源是配置页对内核运行态的任何一次重建——重载 config.yaml、启动 / 重启 / 升级内核，
+  // 内核都会按磁盘上的配置重新加载，代理组与节点集合随之变化，
+  // 而本 store 里还留着那次操作之前的快照。
+  //
+  // 与规则页同构：重建方只登记标记，由代理页在 KeepAlive 的 onActivated 里消费并静默补拉，
+  // 用户不切到代理页就绝不产生请求（标记只存在于内存，刷新页面即清除）。
+  // 消费方在补拉失败时会把标记放回去（内核可能尚未就绪），下次切入即自动重试。
+  const { markNeedsRefresh, consumeNeedsRefresh } = createStaleFlag()
 
   // === 策略组链式解析（AGENTS §4.9：解析下沉至 Store 并缓存） ===
   //
@@ -413,5 +424,8 @@ export const useProxyStore = defineStore('proxies', () => {
     autoCloseConnections,
     setAutoCloseConnections,
     providerInfos,
+    // 跨页「代理数据已过期」标记：登记方为配置页的内核运行态操作，消费方为代理页 onActivated
+    markNeedsRefresh,
+    consumeNeedsRefresh,
   }
 })

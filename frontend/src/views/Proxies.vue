@@ -206,7 +206,21 @@ onMounted(async () => {
 // 兜底：按质量排序依赖质量分数，而它是内存态（见 store/ensureQualityScores）。
 // 启动阶段若内核尚未就绪，首次拉取会落空；本页每次被 KeepAlive 激活时补一次，
 // 已有分数则不发请求，因此正常切页不会产生额外内核调用。
-onActivated(() => {
+//
+// 另一个来源是配置页对内核运行态的重建（重载 / 启动 / 重启 / 升级内核）留下的过期标记
+// （见 store/proxies）：只有真正切到本页（KeepAlive 的 onActivated）才消费它并静默补拉
+// 一次代理，用户不切过来就不产生任何请求。此处刻意不加「首次激活跳过」的守卫——
+// 本页首次挂载时并不自己拉代理（启动那次由 App.vue 发起），若那次运行态重建发生在其之前，
+// 快照确实已过期，必须补拉；此时多一次请求好过留下一份陈旧的代理列表。
+onActivated(async () => {
+  if (proxyStore.consumeNeedsRefresh()) {
+    // 静默刷新：沿用已有快照，避免切页瞬间闪出加载态
+    const ok = await proxyStore.fetchProxies(true)
+    // 失败即把标记放回去：内核可能仍在启动/重启/升级中（此时请求拿不到数据，
+    // store 也会保留旧快照）。放回标记让用户下次切入本页时自动重试，
+    // 而不是把这份旧快照一直挂到刷新整个页面为止。
+    if (!ok) proxyStore.markNeedsRefresh()
+  }
   proxyStore.ensureQualityScores()
 })
 
