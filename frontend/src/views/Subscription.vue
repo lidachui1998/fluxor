@@ -402,10 +402,15 @@ const saveAndApply = async () => {
     globalStore.showToast(t('config.port_duplicate_hint'), 'error')
     return
   }
-  // 规则组必填（不能为 'none'）
-  if (!currentConfig.value.rule_group || currentConfig.value.rule_group === 'none') {
-    globalStore.showToast(t('subscription.rule_group') + ' ' + t('common.required'), 'error')
-    return
+  // 规则集档位：控件只在融合模式下渲染（切换模式用订阅自带规则），因此「必填」校验也只在融合模式下生效。
+  // 切换模式遇到缺失/非法档位时归一化为 base 而不是拦截：用户看不到该控件，报必填等于把保存永久卡死；
+  // 归一化同时保证之后切回融合模式时生成链路拿到的是合法档位（后者遇到未知档位会拒绝生成配置）。
+  if (currentConfig.value.rule_group !== 'base' && currentConfig.value.rule_group !== 'full') {
+    if (currentConfig.value.mode === 'merge') {
+      globalStore.showToast(t('subscription.rule_group') + ' ' + t('common.required'), 'error')
+      return
+    }
+    currentConfig.value.rule_group = 'base'
   }
 
   isApplying.value = true
@@ -566,9 +571,12 @@ onUnmounted(() => {
             />
           </div>
         </div>
-        <!-- 规则集 / 外置面板：窄窗口下同一行；md 起 md:contents 让这两个字段回到外层两列网格 -->
-        <div class="grid grid-cols-2 gap-2 md:contents">
-          <div class="flex flex-col gap-2 md:order-5">
+        <!-- 规则集 / 外置面板：窄窗口下同一行；md 起 md:contents 让这两个字段回到外层两列网格。
+             规则集档位只在融合模式下参与生成（切换模式的 config.yaml 是订阅文件副本，用订阅自带规则），
+             故切换模式下整块不渲染；隐藏的只是控件本身，currentConfig.rule_group 原值始终留在配置对象里，
+             「保存并应用」用 ...currentConfig 展开提交，档位照常落盘，切回融合模式仍按原档位生成。 -->
+        <div :class="currentConfig.mode === 'merge' ? 'grid grid-cols-2 gap-2 md:contents' : 'md:contents'">
+          <div v-if="currentConfig.mode === 'merge'" class="flex flex-col gap-2 md:order-5">
             <label class="text-xs font-medium text-slate-600 dark:text-slate-400">{{ t('subscription.rule_group') }}</label>
             <select v-model="currentConfig.rule_group" class="px-4 py-2.5 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:ring-2 focus:ring-accent outline-none">
               <option value="base">{{ t('subscription.rule_group_base') }}</option>
