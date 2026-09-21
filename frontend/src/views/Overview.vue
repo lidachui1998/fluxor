@@ -822,10 +822,13 @@ const getDelayDisplay = (result: DelayTestResult) => {
   }
 }
 
-// 格式化当前订阅名称
+// 格式化当前订阅名称（融合 / 自定义模式没有「当前订阅」，显示模式名）
 const currentSubscriptionDisplay = computed(() => {
   if (currentConfig.value.mode === 'merge') {
     return t('subscription.mode_merge') || 'Merge'
+  }
+  if (currentConfig.value.mode === 'custom') {
+    return t('subscription.mode_custom') || 'Custom'
   }
   return currentConfig.value.active_subscription || '--'
 })

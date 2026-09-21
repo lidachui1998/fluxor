@@ -43,7 +43,10 @@ fluxor/
         ├── i18n.ts        # 全站国际化（zh/en），从 localStorage 读取语言偏好，禁止硬编码中文
         ├── index.css      # Tailwind v4 入口（@import/@source/@custom-variant/@theme/@utility，取代原 tailwind.config.js）
         │                  #   + CSS 变量亮暗主题（data-theme 选择器）+ 自定义滚动条
-        ├── components/    # 公共及细粒度组件 (ProxyGroupCard, FormSwitch, CustomRulesDialog)
+        ├── components/    # 公共及细粒度组件 (ProxyGroupCard, FormSwitch, CustomRulesDialog,
+        │                  #   CustomNodeDialog（基础/传输层/TLS/高级四个分区 + 按 visible_when 条件显示）
+        │                  #   + NodeFieldInput（含 map 与嵌套 group 递归渲染）：自定义模式的动态协议表单,
+        │                  #   CustomNodeCard：自定义模式的节点卡片)
         ├── composables/   # 全局解耦组合式函数 (useTheme, useLanguage)
         ├── utils/
         │   ├── api.ts     # withBase()、apiFetch() HTTP 封装、wsConnect() WebSocket 封装、sseConnect() SSE 封装
@@ -51,7 +54,8 @@ fluxor/
         ├── store/
         │   ├── global.ts   # 标签页激活状态、侧边栏折叠、亮暗/跟随系统主题、Toast 队列（3s 自动消失）、Promise 驱动确认框
         │   ├── config.ts   # 内核常规配置参数（allow-lan/ipv6/mode/log-level/tun/端口等，由 app.vue 统一订阅，与订阅解耦）
-        │   ├── subscription.ts # 订阅管理 Pinia Store：负责订阅配置 CRUD、解析及状态更新，由 config.ts 中拆分解耦而来
+        │   ├── subscription.ts # 订阅管理 Pinia Store：订阅/节点配置 CRUD、解析及状态更新，由 config.ts 中拆分解耦而来
+        │   │                   #   + 自定义模式：custom_nodes 列表、节点协议字段表（/subscribe/node-protocols 懒加载缓存）
         │   ├── overview.ts # 仪表盘实时统计（速度/流量/内存/连接数/版本/当前节点）、60 点流量历史、3 路 WS + 1 路 SSE
         │   ├── proxies.ts  # 代理组列表、节点延迟字典、手风琴展开状态、并发受限（10）批量测速
         │   ├── connections.ts # 活跃/已关闭连接列表、汇总统计、排序/搜索、WS 瞬时速率计算（快照差分）
@@ -64,10 +68,16 @@ fluxor/
             ├── Connections.vue  # 连接：活跃/已关闭双标签、多列排序、搜索过滤、单条/全部断开（乐观更新移入 closed）、清空已关闭
             ├── Logs.vue         # 日志：暗色终端风格、级别过滤（Debug/Info/Warning/Error）、搜索、暂停/继续、智能自动滚动
             ├── Config.vue       # 配置：内核状态卡（启动/停止/升级）、常规参数、端口校验（1025-65535+重复检测）、TUN（gVisor/System/Mixed）、高级运维（重载/清缓存/GEO）、内置 DNS 查询
-            └── Subscription.vue # 订阅：代理/面板端口、密钥显隐切换、规则集（lite/base/full）、UI 面板选择、订阅 CRUD 模态框（zoomIn 动画，支持订阅名称、链接、检测间隔、节点前缀）、流量/健康度/有效期卡片、「保存并应用」
+            └── Subscription.vue # 订阅中心：三模式（融合/切换/自定义）分段控件、代理/面板/TProxy 端口、密钥显隐切换、
+                                 #   规则集档位（仅融合模式渲染）、UI 面板选择、「保存并应用」。
+                                 #   融合/切换模式 = 订阅 CRUD 模态框 + 流量/健康度/有效期卡片 + 卡片选中；
+                                 #   自定义模式 = 「节点列表」+「添加节点」弹窗（协议下拉 → 基础/传输层/TLS/高级四段动态渲染，
+                                 #     默认值预填、按 network 条件显示传输选项块、嵌套块递归渲染），
+                                 #     节点改动先落在本地列表，保存并应用时才落库并重生成配置。
                                  #   「自定义规则」弹窗（components/CustomRulesDialog.vue，多作用域 + 页签）：
                                  #   切换模式由订阅卡片按钮打开（作用域=该订阅，单页签）；
-                                 #   融合模式由标题行「添加订阅」左侧按钮打开（作用域=base/full 两个页签，各读各的代理组与规则集），
+                                 #   融合模式与自定义模式由标题行「添加订阅/添加节点」左侧按钮打开
+                                 #   （融合=base/full 两页签；自定义=固定标准档位单页签，与「融合 · 标准」共用同一份列表），
                                  #   并传入 hint 文案说明作用域与切换模式的入口（文案由父组件按模式给定，组件内不判模式）
 ```
 
@@ -86,10 +96,12 @@ backend/
     ├── config/                   # 【叶子】全局配置与持久化状态
     │   ├── doc.go                #   包说明
     │   ├── model.go              #   SubscribeConfig / Subscription / CustomRule（订阅级自定义规则）
+    │   │                         #     + CustomNode（自定义模式的手工节点）+ 三种模式常量 ModeMerge/ModeSwitch/ModeCustom
     │   ├── state.go              #   Current（当前配置快照）+ Mu（读写锁）
     │   ├── paths.go              #   全部运行路径（Socket/PID/内核/面板/日志等）
     │   ├── modes.go              #   fnos / openwrt 两套默认路径
     │   ├── name.go               #   订阅名校验与节点文件名清洗（防路径穿越）
+    │   ├── nodes.go              #   CustomNode 名校验（非空/长度/无控制字符/重名）
     │   ├── rules.go              #   CustomRule 列表操作：同组内上/下移动、按生效顺序重排
     │   └── load.go               #   配置加载、默认值补齐、持久化
     │                             #     + FileMu / UpdateConfigFile：fluxor.json 的共用文件锁与「读—改—写」
@@ -103,8 +115,18 @@ backend/
     │   ├── providers_full.go     #   full 规则集的 rule-providers
     │   ├── rules_full.go         #   full 规则集的规则
     │   ├── customrules.go        #   自定义规则：校验 + 幂等注入 rules 序列（before/after 双锚点）
-    │   ├── mergerules.go         #   融合模式：按规则集档位构建目标/规则集环境（复用生成模板）+ 注入
+    │   ├── mergerules.go         #   按规则集档位构建目标/规则集环境（复用生成模板）+ 注入（融合模式与自定义模式共用）
+    │   ├── customconfig.go       #   GenerateCustomConfig：自定义模式产物 = 模板骨架 + dns + proxies 块 + 标准规则集
     │   └── doc.go                #   包说明
+    ├── nodespec/                 # 【叶子】出站代理协议字段表（自定义模式的「默认模板」唯一来源）
+    │   ├── spec.go               #   字段类型（string/text/int/bool/select/list/map/group）+ 分区与条件显示 + 默认值补齐、归一化（类型转换/必填/组合要求/未知键/剔除默认值）
+    │   ├── fields.go             #   字段构造函数（str/secret/num/flag/sel/list/pairs/group/on/req/always）与分区包装（basicSection/transportSection/tlsSection/advancedSection）
+    │   ├── blocks.go             #   可复用配置块：network + ws-opts/h2-opts/grpc-opts/http-opts/xhttp-opts/mkcp-opts，TLS 标量与 reality-opts/ech-opts/shadow-tls-opts/restls-opts/jls-opts
+    │   ├── protocol_core.go      #   HTTP / SOCKS5 / Shadowsocks / SSR / Snell
+    │   ├── protocol_v2ray.go     #   VMess / VLESS / Trojan / AnyTLS / SSH
+    │   ├── protocol_quic.go      #   Mieru / Sudoku / Hysteria / Hysteria2 / TUIC / ShadowQUIC
+    │   ├── protocol_tunnel.go    #   WireGuard / MASQUE / TrustTunnel / Tailscale / ZeroTier / EasyTier / OpenVPN
+    │   └── doc.go                #   包说明：字段来源（mihomo v1.19.31 struct tag + wiki 的通用字段/TLS配置/传输层配置三页）与刻意不下的部分（tlsmirror/mekya、xhttp 调优项、smux/ip-stack/dialer-proxy 等）
     ├── httpx/                    # 【叶子】HTTP 通用工具
     │   ├── response.go           #   WriteJSONError / RespondJSON
     │   └── regex.go              #   外部面板后端地址校验正则
@@ -132,11 +154,15 @@ backend/
     │   ├── doc.go                #   包说明
     │   ├── active.go             #   校验 active_subscription 是否为列表真实成员
     │   ├── api.go                #   /subscribe/config 读写
-    │   ├── api_generate.go       #   /subscribe/generate
+    │   ├── api_generate.go       #   /subscribe/generate（按 mode 分派到切换 / 融合 / 自定义三条生成链路）
+    │   ├── api_generate_custom.go#   自定义模式的「保存并应用」：归一化节点 → 落库 → GenerateCustomConfig → 重载内核
     │   ├── api_update.go         #   /subscribe/update/{name}
     │   ├── api_updateinfo.go     #   /subscribe/update-info/{name}
+    │   ├── nodesapi.go           #   /subscribe/node-protocols：下发协议字段表（前端动态表单的唯一来源）
+    │   ├── customnodes.go        #   自定义节点归一化：名称/重名/与模板组名与内置目标冲突校验 + 补 ID
     │   ├── customrules.go        #   /subscribe/custom-rules/{name}：切换模式 订阅级自定义规则 读/增/改/排序/删
-    │   ├── mergecustomrules.go   #   /subscribe/merge-custom-rules/{ruleGroup}：融合模式 按规则集档位的自定义规则
+    │   ├── mergecustomrules.go   #   /subscribe/merge-custom-rules/{ruleGroup}：模板级（按规则集档位）自定义规则
+    │   │                         #     （融合模式两档皆可；自定义模式仅标准档位，见 mergeRuleGroupAllowed）
     │   ├── runtimeconfig.go      #   writeRuntimeConfig：订阅文件 → config.yaml 副本 + 自定义规则叠加
     │   ├── patch.go              #   向节点文件注入端口/密钥/DNS（YAML 结构化改写；并归一化顶层键序）
     │   ├── ensure.go             #   切换模式下确保订阅文件就绪
@@ -201,8 +227,9 @@ main ──> 所有 internal 包
            httpx      （无 internal 依赖）
            configcheck（无 internal 依赖，仅依赖 yaml.v3）
            buildinfo  （无 internal 依赖，版本号由 -ldflags 注入）
+           nodespec   ──> config（协议字段表与取值归一化，不依赖其它 internal 包）
 
-【基础层】 configgen  ──> config, configcheck
+【基础层】 configgen  ──> config, configcheck, nodespec
            tproxy     ──> config, httpx
            web        ──> buildinfo, config
            wsproxy    ──> config
@@ -214,7 +241,7 @@ main ──> 所有 internal 包
            quality    ──> config, core, httpx
            delaytest  ──> netinfo, httpx
            appupdate  ──> buildinfo, config, httpx, netinfo
-           subscription        ──> config, configcheck, configgen, core, dashapi, httpx, subscription/download
+           subscription        ──> config, configcheck, configgen, core, dashapi, httpx, nodespec, subscription/download
            subscription/download ──> config, configcheck, core
 ```
 
@@ -266,8 +293,9 @@ func (c *cancelableReadCloser) Close() error {
 | `/subscribe/generate` | POST | `subscription.HandleGenerateConfig` | 保存配置 + 生成 config.yaml + 重载内核 |
 | `/subscribe/update/{name}` | GET/POST | `subscription.HandleSubscribeUpdate` | 手动更新指定订阅节点数据 |
 | `/subscribe/update-info/{name}` | POST | `subscription.HandleUpdateSubscriptionInfo` | 更新订阅元信息（名称、链接、检测间隔等） |
+| `/subscribe/node-protocols` | GET | `subscription.HandleNodeProtocolsAPI` | 自定义模式可添加的协议与字段表（类型/默认值/可选值/必填/高级），前端据此渲染动态表单；字段表由后端 `nodespec` 单点维护 |
 | `/subscribe/custom-rules/{name}` | GET/POST/PUT/PATCH/DELETE | `subscription.HandleCustomRulesAPI` | 切换模式下该订阅的自定义规则：查询 / 新增 / 修改（body 带 `id`）/ 排序（`{id,direction:up\|down}`）/ 删除（`?id=`）；所有写操作即时持久化，激活订阅改动后重写 config.yaml 并重载内核 |
-| `/subscribe/merge-custom-rules/{ruleGroup}` | GET/POST/PUT/PATCH/DELETE | `subscription.HandleMergeCustomRulesAPI` | 融合模式下按规则集档位（`base`/`full`）分开存放的自定义规则，方法与语义同上；改动当前生效档位时重新生成 config.yaml 并重载内核 |
+| `/subscribe/merge-custom-rules/{ruleGroup}` | GET/POST/PUT/PATCH/DELETE | `subscription.HandleMergeCustomRulesAPI` | 按规则集档位（`base`/`full`）分开存放的模板级自定义规则，方法与语义同上。可用模式：融合模式（两档皆可）与自定义模式（仅 `base`——自定义模式固定使用标准规则集，两处共用同一份列表）；改动当前生效档位时重新生成 config.yaml 并重载内核 |
 | `/traffic` | WS | `wsproxy.WsProxyHandler("/traffic")` | 实时流量数据 WebSocket 代理 |
 | `/memory` | WS | `wsproxy.WsProxyHandler("/memory")` | 实时内存数据 WebSocket 代理 |
 | `/logs` | WS | `wsproxy.WsProxyHandler("/logs")` | 实时日志流 WebSocket 代理 |
@@ -373,6 +401,7 @@ func (c *cancelableReadCloser) Close() error {
 |------|--------------------|----------|--------|
 | 切换 | 订阅（`subscriptions[].custom_rules`） | 该订阅是 `active_subscription` | `writeRuntimeConfig`：订阅文件 → config.yaml 副本 → 叠加 |
 | 融合 | 规则集档位（`merge_custom_rules.{base,full}`） | 该档位是 `rule_group` | `GenerateConfig`：`appendRuleSet` 之后、写盘之前注入 |
+| 自定义 | 标准档位（`merge_custom_rules.base`，与融合模式共用） | 恒生效（该模式固定用标准规则集） | `GenerateCustomConfig`：`appendRuleSet` 之后、写盘之前注入 |
 
 切换模式的 `config.yaml` 是「订阅文件副本」，自定义规则只能在**复制之后**叠加，必须遵守：
 
@@ -389,7 +418,7 @@ func (c *cancelableReadCloser) Close() error {
 
 10. **规则字段归规则接口所有，「保存并应用」不得清空它们**：`/subscribe/generate` 会把请求体整体写回 `config.Current`，而请求体由前端拼装——只要它没带上 `merge_custom_rules` / `subscriptions[].custom_rules`，配置生成就会读到空规则集，产出不含自定义规则的 `config.yaml`；内存态规则被清空后，下一次规则编辑还会把「只剩本次编辑」的列表写回文件。因此两个整体覆盖写接口（`/subscribe/generate`、`/subscribe/config`）都必须调用 `config.SubscribeConfig.InheritRuleOwnedFields(prev)`：**键缺失就沿用上一份状态，显式传空则尊重调用方**（判据是「键是否出现」而非「是否为空」），继承时深拷贝切片以免与规则接口的就地改写竞争。前端 `loadConfig` 也必须把后端原始字段铺开带回（`...cfg`），不主动丢字段。
 
-> 规则写操作（增/改/排序/删）的事务顺序统一为：锁内改 `config.Current` → `SaveSubscribeConfig()` 持久化 → 若命中的作用域当前生效（切换：激活订阅；融合：当前档位）则同步运行配置（切换走 `writeRuntimeConfig`，融合走 `configgen.GenerateConfig`）+ `ReloadCore()`。内核未运行时只更新 `config.yaml`（下次启动生效），并把「已保存但未同步」的情况作为 warning 如实回给前端。
+> 规则写操作（增/改/排序/删）的事务顺序统一为：锁内改 `config.Current` → `SaveSubscribeConfig()` 持久化 → 若命中的作用域当前生效（切换：激活订阅；融合：当前档位；自定义：恒为标准档位）则同步运行配置（切换走 `writeRuntimeConfig`，融合走 `configgen.GenerateConfig`，自定义走 `configgen.GenerateCustomConfig`）+ `ReloadCore()`。内核未运行时只更新 `config.yaml`（下次启动生效），并把「已保存但未同步」的情况作为 warning 如实回给前端。
 > 「修改」是就地替换（保持列表位置），「排序」是同组内相邻交换（`config/rules.go` 的 `MoveCustomRule`），两者都不改变其他规则的相对顺序。
 
 ### 3.10 内核链路不携带认证头（Unix Socket 免密钥）
@@ -401,6 +430,34 @@ func (c *cancelableReadCloser) Close() error {
 3. **安全边界依赖文件系统权限**：unix socket 的访问控制由 socket 文件权限（及其父目录）承担，不依赖密钥。新写内核客户端代码时不要「顺手补一个认证头」。
 
 > 历史遗留：`core/client.go` 与 `wsproxy/handler.go` 曾各自读取 `config.Current.PanelSecret` 并附加 `Bearer` 头，已按要求全部移除。
+
+### 3.11 自定义模式（手工节点）生成规约（`nodespec` + `configgen` + `subscription`）
+
+第三种模式：完全不使用订阅，节点由用户在「节点列表」里手工添加，配置由**模板骨架 + dns + 标准规则集 + 手工节点**拼出。涉及四个包：
+
+| 关注点 | 归属 | 说明 |
+|--------|------|------|
+| 协议字段表与默认值 | `nodespec`（叶子包） | 每个协议的字段（键/类型/默认值/可选值/是否必填/所属分区/条件显示/嵌套子字段）与取值归一化，是「后端给协议加默认模板」的唯一入口 |
+| 持久化模型 | `config.CustomNode` | `{id, name, type, config}`；`config` **只存与协议默认值不同的字段** |
+| 生成产物 | `configgen.GenerateCustomConfig` | 模板骨架 + `applyFluxorFields` + `proxies` 块 + 标准规则集 + dns，最后 `writeConfigTarget` 归一化键序 |
+| 接口与校验 | `subscription`（`customnodes.go` / `nodesapi.go` / `api_generate_custom.go`） | 下发字段表、归一化节点、按模式分派生成并重载 |
+
+关键约定：
+
+1. **默认值只存在于后端**：前端不维护协议清单，`GET /subscribe/node-protocols` 下发字段表，`CustomNodeDialog.vue` 按声明渲染动态表单（第一项选协议，随后按「基础 → 传输层 → TLS → 高级」四段渲染，后三段可折叠）。新增协议或调整默认值**只改 `nodespec`**，不发前端版本。字段中文名走 i18n 的 `subscription.node_field.<key>`；同一键在不同协议下含义不同时用 `subscription.node_field.<协议>.<键>` 覆盖（如 vmess 的 `network` 是「传输方式」，ZeroTier 的是「网络 ID」）；再没有就回落到后端下发的英文 label。
+
+1.1 **传输层与 TLS 的建模**：`Section` 决定字段落在哪个折叠区；`VisibleWhen` 让传输选项块按 `network` 条件显示（五个块共几十个子字段不可能同时铺开）；`Kind` 里的 `map`（键值对，界面按「键: 值」每行一条）与 `group`（嵌套块，子字段递归渲染）负责表达 `ws-opts.headers`、`reality-opts` 这类结构。三者都由后端声明驱动，前端只做映射。
+2. **「只存差异」由后端归一化保证**：保存时 `nodespec.Normalize` 把取值按声明类型转换、剔除与默认值相同的项（空值一律视为未填写）；读取（`GET /subscribe/config`）与写盘（`buildProxiesNode`）时再补齐默认值。因此默认值调整能自动作用到历史数据，`fluxor.json` 也不会被零值塞满。前端的表单既可以发完整取值，也可以发逗号分隔文本（列表字段），归一化在服务端统一完成。
+3. **落库前必须过三道校验**（缺失任何一道都会产出内核拒绝加载的配置）：协议与字段取值（`nodespec.Normalize`：未知协议/未知字段/取值类型/下拉选项/必填/`RequireAny` 组合）→ 节点名（非空、长度、无控制字符、列表内不重名，实测 `proxy A is the duplicate name`）→ **名字占用**（不得与标准规则集模板的代理组或内置目标同名，实测 `proxy group X: the duplicate name`）。占用集合直接取 `configgen.MergeRuleSetEnv(base).Targets`，与自定义规则的目标下拉同源，模板一改自动跟随。
+4. **嵌套块「要么不出现、要么填齐」**：块内必填项只在「块真的被填写」时校验。判据是 `blockFilled`（块内至少有一个子字段拿到非空取值），**不是「请求里有没有这个块的键」**——读取接口会把块的每个子字段补齐默认值下发，前端原样带回时整块必然非空，按「键存在」判定会让正常节点的保存对着空气报错（曾实测拦下正常保存）。未知子键则无论块是否为空都要拒绝，否则写错键名会被静默忽略。写盘同理分两套判据：顶层字段只按「是否为空」剔除（必填项取默认值也要写出来），嵌套块内的子项额外按「是否等于默认值」剔除——因为**块的存在本身就是内核眼中的「启用该传输」**，把未使用的块 materialize 出来会平白多出 `h2-opts: {path: /}` 这类噪音。
+
+5. **`RequireAny` 是「或 + 与」**：外层数组是「或」、内层是「与」（组内字段需同时填写），用来表达内核的真实约束：hysteria/hysteria2 的 `port` 与 `ports` 二选一、mieru 的 `port` 与 `port-range` 二选一、wireguard/masque/trusttunnel 的本机地址 `ip` 或 `ipv6` 至少一个、openvpn 的「`cert`+`key`」或 `username`、easytier 的 `peers` 或 `listeners`。另有一个 `Always` 标记：内核解码器要求该键必须存在（struct 上没有 omitempty，如 vmess 的 `alterId`），即使取零值也要写进 YAML。
+6. **节点名与订阅名规则不同**：节点名不是文件名、不是映射键，只作为 `proxies[].name` 与规则目标，因此允许空格、标点与 emoji（上限 64 字符），仅拒绝空名与控制字符——不要顺手套用 `ValidateSubscriptionName`。
+7. **`proxies` 块由 yaml.Node 逐项编码，不拼字符串**：整数保持整数、布尔保持布尔、列表保持序列、键值对与嵌套块保持映射（子块内按字段顺序落键，键值对按字典序）、PEM 多行文本用字面块（`|-`）。字段顺序固定为「name、type、协议字段声明顺序」，便于逐字节比对。
+8. **规则集固定标准档位**：界面上自定义模式隐藏规则集选择，生成时也无视 `rule_group` 里残留的档位（`ruleGroup = RuleGroupBase` 后再走 `appendRuleSet`），避免「界面不显示、实际按 full 生成」。其自定义规则与「融合模式 · 标准」**共用** `merge_custom_rules.base`：两者的代理组与内置规则集合完全相同，规则在两边都成立，因此复用同一个接口与弹窗（`mergeRuleGroupAllowed` / `applyMergeRulesToActiveConfig` 里对自定义模式只放通 `base`）。
+9. **定时器与订阅无关**：自定义模式不下载订阅、不抓取元数据，`StartAllTimers` 因 `mode != switch` 全部不启动；`/subscribe/update/{name}` 一类的订阅操作在自定义模式下没有意义。
+10. **首启按模式生成**：`main.go` 在 `config.yaml` 缺失时按 `config.Current.Mode` 分派（自定义模式走 `GenerateCustomConfig`），否则首启会得到一份没有节点的骨架配置，用户保存过的节点在重启后不生效。
+11. **端到端验证手段**：`configgen` 里有一个可选的内核校验用例（`FLUXOR_CORE_BIN=/path/to/mihomo go test ./internal/configgen/ -run TestAllProtocolsAcceptedByCore -v`），它为每个协议生成一个节点并要求真实内核 `-t` 通过——给某协议增补字段/默认值后跑它，能直接发现「字段写错、必填漏填、类型不符」这类只有内核才知道的问题。
 
 ---
 

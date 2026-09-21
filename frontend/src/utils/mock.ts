@@ -24,6 +24,10 @@ const mockSubConfig = {
   ui_panel: 'metacubexd',
   meta_backend_url: '',
   tproxy_port: 7893,
+  mode: 'merge',
+  // 自定义模式的手工节点（后端按「只存与协议默认值不同的字段」持久化，
+  // mock 里直接给出补齐后的取值即可，前端表单按此预填）
+  custom_nodes: [],
   subscriptions: [
     {
       name: 'Sub-Mock-01',
@@ -41,6 +45,112 @@ const mockSubConfig = {
     }
   ]
 }
+
+// 自定义模式可添加的协议与字段表。
+//
+// 权威来源是后端 backend/internal/nodespec（新增协议只改后端），此处只保留覆盖
+// 各种字段形态（文本/整数/布尔/下拉/列表/多行文本/高级项/必填/二选一）的一小撮协议，
+// 供前端离线联调表单渲染用。
+const mockNodeProtocols = [
+  {
+    type: 'http',
+    name: 'HTTP',
+    fields: [
+      { key: 'server', label: 'Server', kind: 'string', required: true },
+      { key: 'port', label: 'Port', kind: 'int', required: true },
+      { key: 'username', label: 'Username', kind: 'string' },
+      { key: 'password', label: 'Password', kind: 'string', secret: true },
+      { key: 'tls', label: 'TLS', kind: 'bool' },
+      { key: 'headers', label: 'Headers', kind: 'map', section: 'transport' },
+      { key: 'sni', label: 'SNI', kind: 'string', section: 'tls' },
+      { key: 'skip-cert-verify', label: 'Skip Cert Verify', kind: 'bool', section: 'tls' },
+      { key: 'certificate', label: 'Certificate', kind: 'text', section: 'tls' },
+      { key: 'ip-version', label: 'IP Version', kind: 'select', default: 'dual', options: ['dual', 'ipv4', 'ipv6'], section: 'advanced' }
+    ]
+  },
+  {
+    type: 'ss',
+    name: 'Shadowsocks',
+    fields: [
+      { key: 'server', label: 'Server', kind: 'string', required: true },
+      { key: 'port', label: 'Port', kind: 'int', required: true },
+      { key: 'cipher', label: 'Cipher', kind: 'select', default: 'aes-256-gcm', options: ['aes-256-gcm', 'chacha20-ietf-poly1305'], required: true },
+      { key: 'password', label: 'Password', kind: 'string', secret: true, required: true },
+      { key: 'udp', label: 'UDP Relay', kind: 'bool' },
+      { key: 'plugin', label: 'Plugin', kind: 'select', options: ['obfs', 'v2ray-plugin', 'shadow-tls'], section: 'transport' },
+      { key: 'plugin-opts', label: 'Plugin Options', kind: 'map', section: 'transport' },
+      { key: 'client-fingerprint', label: 'Client Fingerprint', kind: 'select', options: ['chrome', 'firefox'], section: 'tls' }
+    ]
+  },
+  {
+    type: 'vmess',
+    name: 'VMess',
+    fields: [
+      { key: 'server', label: 'Server', kind: 'string', required: true },
+      { key: 'port', label: 'Port', kind: 'int', required: true },
+      { key: 'uuid', label: 'UUID', kind: 'string', required: true },
+      { key: 'cipher', label: 'Cipher', kind: 'select', default: 'auto', options: ['auto', 'none', 'aes-128-gcm'], required: true },
+      { key: 'tls', label: 'TLS', kind: 'bool' },
+      { key: 'udp', label: 'UDP Relay', kind: 'bool' },
+      { key: 'network', label: 'Network', kind: 'select', options: ['tcp', 'ws', 'h2', 'grpc'], section: 'transport' },
+      {
+        key: 'ws-opts', label: 'WebSocket', kind: 'group', section: 'transport',
+        visible_when: { key: 'network', values: ['ws'] },
+        children: [
+          { key: 'path', label: 'Path', kind: 'string', default: '/' },
+          { key: 'headers', label: 'Headers', kind: 'map' },
+          { key: 'max-early-data', label: 'Max Early Data', kind: 'int' },
+          { key: 'v2ray-http-upgrade', label: 'V2Ray HTTP Upgrade', kind: 'bool' }
+        ]
+      },
+      {
+        key: 'grpc-opts', label: 'gRPC', kind: 'group', section: 'transport',
+        visible_when: { key: 'network', values: ['grpc'] },
+        children: [
+          { key: 'grpc-service-name', label: 'Service Name', kind: 'string' },
+          { key: 'max-connections', label: 'Max Connections', kind: 'int' }
+        ]
+      },
+      { key: 'servername', label: 'Server Name', kind: 'string', section: 'tls' },
+      { key: 'alpn', label: 'ALPN', kind: 'list', section: 'tls' },
+      { key: 'skip-cert-verify', label: 'Skip Cert Verify', kind: 'bool', section: 'tls' },
+      { key: 'reality-opts', label: 'REALITY', kind: 'group', section: 'tls', children: [
+          { key: 'public-key', label: 'Public Key', kind: 'string', required: true },
+          { key: 'short-id', label: 'Short ID', kind: 'string' }
+      ] },
+      { key: 'alterId', label: 'Alter ID', kind: 'int', section: 'advanced', always: true },
+      { key: 'ip-version', label: 'IP Version', kind: 'select', default: 'dual', options: ['dual', 'ipv4', 'ipv6'], section: 'advanced' }
+    ]
+  },
+  {
+    type: 'hysteria2',
+    name: 'Hysteria2',
+    fields: [
+      { key: 'server', label: 'Server', kind: 'string', required: true },
+      { key: 'port', label: 'Port', kind: 'int' },
+      { key: 'ports', label: 'Ports', kind: 'string' },
+      { key: 'password', label: 'Password', kind: 'string', secret: true },
+      { key: 'obfs', label: 'Obfs', kind: 'select', options: ['salamander', 'gecko'] },
+      { key: 'sni', label: 'SNI', kind: 'string', section: 'tls' },
+      { key: 'alpn', label: 'ALPN', kind: 'list', section: 'tls' },
+      { key: 'cwnd', label: 'CWND', kind: 'int', section: 'advanced' }
+    ],
+    require_any: [['port'], ['ports']]
+  },
+  {
+    type: 'openvpn',
+    name: 'OpenVPN',
+    fields: [
+      { key: 'server', label: 'Server', kind: 'string', required: true },
+      { key: 'port', label: 'Port', kind: 'int', required: true },
+      { key: 'proto', label: 'Proto', kind: 'select', default: 'udp', options: ['udp', 'tcp'] },
+      { key: 'ca', label: 'CA Certificate', kind: 'text', required: true },
+      { key: 'username', label: 'Username', kind: 'string' },
+      { key: 'cert', label: 'Client Certificate', kind: 'text', section: 'tls' },
+      { key: 'key', label: 'Client Key', kind: 'text', secret: true, section: 'tls' }
+    ]
+  }
+]
 
 const mockProxies: any = {
   GLOBAL: {
@@ -347,6 +457,9 @@ export function handleMockFetch(path: string, options: RequestInit = {}): Respon
     return reply(mockConfigs)
   }
 
+  if (cleanPath.endsWith('/subscribe/node-protocols')) {
+    return reply({ protocols: mockNodeProtocols })
+  }
   if (cleanPath.endsWith('/subscribe/config')) {
     if (method === 'POST') {
       Object.assign(mockSubConfig, JSON.parse(options.body as string || '{}'))
@@ -355,12 +468,14 @@ export function handleMockFetch(path: string, options: RequestInit = {}): Respon
     return reply(mockSubConfig)
   }
   if (cleanPath.endsWith('/subscribe/generate')) {
-    // 与后端一致：保存订阅配置并落库，使随后的 /subscribe/config 能读到最新订阅列表
+    // 与后端一致：保存订阅配置并落库，使随后的 /subscribe/config 能读到最新订阅列表；
+    // 自定义模式还会把节点列表一起落库（custom_nodes 由本页面整体覆盖提交）
     if (method === 'POST') {
       const payload = JSON.parse(options.body as string || '{}')
       // delete_physical 是临时字段，后端不会持久化
       delete payload.delete_physical
       Object.assign(mockSubConfig, payload)
+      return reply({ status: 'ok', message: payload.mode === 'custom' ? '自定义节点配置已生成并成功重载内核' : '配置文件已生成并成功重载内核' })
     }
     return reply({ status: 'ok' })
   }

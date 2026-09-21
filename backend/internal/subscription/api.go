@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fluxor/internal/config"
 	"fluxor/internal/httpx"
+	"fluxor/internal/nodespec"
 	"log"
 	"net/http"
 )
@@ -15,8 +16,14 @@ func HandleSubscribeConfigAPI(w http.ResponseWriter, r *http.Request) {
 		config.Mu.RLock()
 		defer config.Mu.RUnlock()
 
+		// 自定义节点在磁盘上只存「与协议默认值不同的字段」，界面需要完整取值才能
+		// 正确预填表单，因此在读取路径上补齐（内存与磁盘仍保持精简）。
+		// 复制一份结构体再替换切片：不能就地改写 config.Current。
+		view := config.Current
+		view.CustomNodes = nodespec.MaterializeAll(view.CustomNodes)
+
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(config.Current); err != nil {
+		if err := json.NewEncoder(w).Encode(view); err != nil {
 			log.Printf("编码订阅配置失败: %v", err)
 		}
 
@@ -42,6 +49,15 @@ func HandleSubscribeConfigAPI(w http.ResponseWriter, r *http.Request) {
 		prev := config.Current
 		config.Mu.RUnlock()
 		newConfig.InheritRuleOwnedFields(prev)
+
+		// 自定义节点列表与订阅列表一样由本接口整体覆盖：落库前先校验并归一化
+		// （节点名、字段类型与必填、与模板组名冲突），否则内核会拒绝加载整份配置。
+		nodes, err := normalizeCustomNodes(newConfig.CustomNodes)
+		if err != nil {
+			httpx.WriteJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		newConfig.CustomNodes = nodes
 
 		config.Mu.Lock()
 		config.Current = newConfig

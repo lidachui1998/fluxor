@@ -8,8 +8,11 @@ import { storeToRefs } from 'pinia'
 import {
   useSubscriptionStore,
   type SubscriptionItem,
+  type CustomNode,
 } from '../store/subscription'
 import CustomRulesDialog from '../components/CustomRulesDialog.vue'
+import CustomNodeDialog from '../components/CustomNodeDialog.vue'
+import CustomNodeCard from '../components/CustomNodeCard.vue'
 import { useRulesStore } from '../store/rules'
 import { useProxyStore } from '../store/proxies'
 import { useConfigStore } from '../store/config'
@@ -35,6 +38,13 @@ const showBackendUrl = ref(false)
 const showHelpModal = ref(false)
 // 视图激活态：KeepAlive 停用时必须收起 Teleport 浮层，否则会跨页残留
 const isActive = useViewActive()
+
+// ------- 自定义模式：节点列表与添加/编辑节点弹窗 -------
+// 节点列表由本页面整体维护（与订阅列表同构）：改动先落在本地列表，
+// 点「保存并应用」才随配置一起落库并重新生成 config.yaml。
+const showNodeModal = ref(false)
+const editingNodeIndex = ref(-1)
+const editingNode = ref<CustomNode | null>(null)
 
 // 弹窗编辑项
 const editingIndex = ref(-1)
@@ -68,6 +78,23 @@ const openSubRulesDialog = (name: string) => {
   showRulesModal.value = true
 }
 
+// 打开自定义规则弹窗（标题行按钮）：
+//   - 融合模式：base / full 两档各自独立，用页签切换；
+//   - 自定义模式：模板固定使用标准规则集，只开一个作用域（base），
+//     与「融合模式 + 标准档位」共用同一份规则列表——两者的代理组与内置规则集合相同，
+//     规则在两边都成立，因此复用同一个接口与同一份存储。
+const openRulesDialog = () => {
+  if (currentConfig.value.mode === 'custom') {
+    rulesEndpoint.value = '/subscribe/merge-custom-rules'
+    rulesScopes.value = [{ key: 'base', label: t('subscription.rule_group_base'), effective: true }]
+    rulesTitle.value = t('subscription.custom_rules_custom_title')
+    rulesHint.value = t('subscription.custom_rules_custom_hint')
+    showRulesModal.value = true
+    return
+  }
+  openMergeRulesDialog()
+}
+
 // 打开规则集档位级（融合模式）自定义规则：base/full 两档各自独立，用页签切换
 const openMergeRulesDialog = () => {
   rulesEndpoint.value = '/subscribe/merge-custom-rules'
@@ -89,9 +116,10 @@ const openMergeRulesDialog = () => {
 // 标记由规则页切入时消费——用户一直不切过去就不会产生请求。
 const flushRulesStaleMark = (mutatedKeys: string[] = []) => {
   if (mutatedKeys.length === 0) return
+  // 自定义模式固定使用标准规则集，其规则改动同样会改变运行中的规则集合
   const effectiveKey = currentConfig.value.mode === 'switch'
     ? currentConfig.value.active_subscription
-    : currentConfig.value.rule_group
+    : (currentConfig.value.mode === 'custom' ? 'base' : currentConfig.value.rule_group)
   if (!effectiveKey || !mutatedKeys.includes(effectiveKey)) return
   rulesStore.markNeedsRefresh()
 }
@@ -127,7 +155,69 @@ const selectSubscription = (name: string) => {
 
 const rulesStore = useRulesStore()
 const subscriptionStore = useSubscriptionStore()
-const { currentConfig, savedSubNames } = storeToRefs(subscriptionStore)
+const { currentConfig, savedSubNames, nodeProtocols } = storeToRefs(subscriptionStore)
+
+// 是否处于自定义模式：自定义模式用「节点列表」替代「订阅列表」
+const isCustomMode = computed(() => currentConfig.value.mode === 'custom')
+const customNodes = computed<CustomNode[]>(() => currentConfig.value.custom_nodes || [])
+
+// 节点卡片数据：协议展示名在此解析，卡片组件保持纯展示
+const nodeCards = computed(() =>
+  customNodes.value.map(node => ({
+    node,
+    protocolName: nodeProtocols.value.find(p => p.type === node.type)?.name || node.type,
+  }))
+)
+
+// 打开「添加 / 编辑节点」弹窗（index < 0 表示新增）。
+// 协议字段表懒加载：首次打开时拉取，失败则不开弹窗（空协议表无从渲染表单）。
+const openNodeModal = async (index: number = -1) => {
+  try {
+    await subscriptionStore.loadNodeProtocols()
+  } catch (e) {
+    globalStore.showToast(`${t('subscription.operation_failed')}: ${(e as Error).message}`, 'error')
+    return
+  }
+  editingNodeIndex.value = index
+  editingNode.value = index >= 0 ? customNodes.value[index] : null
+  showNodeModal.value = true
+}
+
+const closeNodeModal = () => {
+  showNodeModal.value = false
+}
+
+// 保存到节点列表：重名先在本地拦一道（后端也有兜底校验，且会拒绝生成配置）
+const saveNodeToList = (node: CustomNode) => {
+  const duplicated = customNodes.value.some((item, idx) => idx !== editingNodeIndex.value && item.name === node.name)
+  if (duplicated) {
+    globalStore.showToast(t('subscription.node_duplicate_name'), 'error')
+    return
+  }
+  if (!currentConfig.value.custom_nodes) {
+    currentConfig.value.custom_nodes = []
+  }
+  if (editingNodeIndex.value >= 0) {
+    currentConfig.value.custom_nodes[editingNodeIndex.value] = node
+  } else {
+    currentConfig.value.custom_nodes.push(node)
+  }
+  showNodeModal.value = false
+}
+
+// 从列表移除节点：只改本地列表，落库同样依赖「保存并应用」
+const deleteNode = async (index: number) => {
+  const node = customNodes.value[index]
+  if (!node) return
+  const confirmed = await globalStore.showConfirm({
+    title: t('common.confirm_delete'),
+    message: `${t('common.confirm_delete')} ${node.name}?`,
+    type: 'danger',
+  })
+  if (confirmed) {
+    currentConfig.value.custom_nodes.splice(index, 1)
+  }
+}
 
 // 从后端重新拉取真实配置（force=true）。store 在已加载时会直接 return 旧快照，
 // 因此任何「改完后要看到最新状态」的场景都必须走这里，不能用 loadConfig()。
@@ -360,6 +450,17 @@ const handleDeleteSub = async (index: number) => {
 
 // 保存并应用
 const saveAndApply = async () => {
+  // 自定义模式：节点列表为空时配置里将没有任何代理（规则与代理组仍在），先确认一次，
+  // 避免用户误以为「保存成功 = 有节点可用」。
+  if (isCustomMode.value && customNodes.value.length === 0) {
+    const confirmed = await globalStore.showConfirm({
+      title: t('subscription.save_and_apply'),
+      message: t('subscription.custom_no_nodes_confirm'),
+      type: 'warning',
+    })
+    if (!confirmed) return
+  }
+
   // 切换模式下的选中校验：
   // 有订阅时必须选中其中之一，且选中名必须真实存在——改名/删除后可能残留旧名
   // （后端只判空字符串），若不拦截，后端会按旧名复制旧订阅文件，而前端既不选中
@@ -627,7 +728,7 @@ onUnmounted(() => {
       </div>
 
       <div class="relative flex flex-wrap gap-y-3 gap-x-4 items-center justify-between mt-8 mb-4">
-        <h4 class="font-semibold text-base shrink-0 order-1">{{ t('subscription.subscription_list') }}</h4>
+        <h4 class="font-semibold text-base shrink-0 order-1">{{ isCustomMode ? t('subscription.node_list') : t('subscription.subscription_list') }}</h4>
         <!-- 分段控件居中：
              · 窄窗口（<lg）：order-3 + w-full 折行独占第二行，按钮组留在第一行右对齐；
              · 桌面端（lg+）：脱离文档流绝对定位在整行水平/垂直中点（left-1/2 + 双向 -translate-1/2），
@@ -635,41 +736,67 @@ onUnmounted(() => {
                按钮组宽度不同而偏左偏右。
              居中定位从 lg 起才生效：绝对定位的滑块不占布局空间，行内剩余宽度必须同时容得下
              滑块与按钮组。滑块加宽后，1024px 以下（尤其侧边栏展开时）两者会互相压字，
-             故该档位退回折行布局——滑块独占一行，任何宽度下都不会重叠。 -->
+             故该档位退回折行布局——滑块独占一行，任何宽度下都不会重叠。
+             三档模式下内边距从 lg:px-10 收到 lg:px-6：窄屏仍靠折行布局避免重叠。 -->
         <div class="w-full flex justify-center order-3 lg:order-2 lg:w-auto lg:absolute lg:left-1/2 lg:top-1/2 lg:-translate-x-1/2 lg:-translate-y-1/2">
           <div class="flex bg-slate-100 dark:bg-slate-800 rounded-lg p-0.5 transition-all w-full lg:w-auto">
             <button
               @click="currentConfig.mode = 'merge'"
-              class="flex-1 lg:flex-none px-4 lg:px-10 py-1.5 text-xs font-semibold rounded-md transition-all duration-200"
+              class="flex-1 lg:flex-none px-4 lg:px-6 py-1.5 text-xs font-semibold rounded-md transition-all duration-200"
               :class="currentConfig.mode === 'merge' ? 'bg-accent text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'"
             >
               {{ t('subscription.mode_merge') }}
             </button>
             <button
               @click="currentConfig.mode = 'switch'"
-              class="flex-1 lg:flex-none px-4 lg:px-10 py-1.5 text-xs font-semibold rounded-md transition-all duration-200"
+              class="flex-1 lg:flex-none px-4 lg:px-6 py-1.5 text-xs font-semibold rounded-md transition-all duration-200"
               :class="currentConfig.mode === 'switch' ? 'bg-accent text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'"
             >
               {{ t('subscription.mode_switch') }}
+            </button>
+            <button
+              @click="currentConfig.mode = 'custom'"
+              class="flex-1 lg:flex-none px-4 lg:px-6 py-1.5 text-xs font-semibold rounded-md transition-all duration-200"
+              :class="currentConfig.mode === 'custom' ? 'bg-accent text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'"
+            >
+              {{ t('subscription.mode_custom') }}
             </button>
           </div>
         </div>
         <!-- 操作按钮组：ml-auto 让它在第一行贴右，紧邻标题（窄窗口下滑块折到第二行后仍如此） -->
         <div class="flex items-center gap-2 ml-auto shrink-0 order-2 lg:order-3">
+          <!-- 自定义规则：融合模式与自定义模式共用同一按钮与同一弹窗（自定义模式固定标准档位） -->
           <button
-            v-if="currentConfig.mode === 'merge'"
-            @click="openMergeRulesDialog"
+            v-if="currentConfig.mode === 'merge' || isCustomMode"
+            @click="openRulesDialog"
             class="px-3.5 py-1.5 bg-accent hover:bg-accent-hover text-white text-xs font-semibold rounded-lg shadow-sm transition-all flex items-center gap-1.5"
           >
             <OptionsOutline class="w-4 h-4" /> {{ t('subscription.custom_rules') }}
           </button>
-          <button @click="openSubModal(-1)" class="px-3.5 py-1.5 bg-accent hover:bg-accent-hover text-white text-xs font-semibold rounded-lg shadow-sm transition-all flex items-center gap-1.5">
-            <AddOutline class="w-4 h-4" /> {{ t('subscription.add_subscription') }}
+          <button @click="isCustomMode ? openNodeModal(-1) : openSubModal(-1)" class="px-3.5 py-1.5 bg-accent hover:bg-accent-hover text-white text-xs font-semibold rounded-lg shadow-sm transition-all flex items-center gap-1.5">
+            <AddOutline class="w-4 h-4" /> {{ isCustomMode ? t('subscription.add_node') : t('subscription.add_subscription') }}
           </button>
         </div>
       </div>
 
       <div id="subList" class="space-y-4">
+        <!-- 自定义模式：节点列表（订阅列表不参与生成，故整块替换为节点卡片） -->
+        <template v-if="isCustomMode">
+          <div v-if="nodeCards.length === 0" class="text-slate-400 dark:text-slate-600 text-sm py-4 text-center">
+            {{ t('subscription.no_nodes') }}
+          </div>
+          <template v-else>
+            <CustomNodeCard
+              v-for="(card, idx) in nodeCards"
+              :key="card.node.id || idx"
+              :node="card.node"
+              :protocol-name="card.protocolName"
+              @edit="openNodeModal(idx)"
+              @delete="deleteNode(idx)"
+            />
+          </template>
+        </template>
+        <template v-else>
         <div v-if="!currentConfig.subscriptions || currentConfig.subscriptions.length === 0" class="text-slate-400 dark:text-slate-600 text-sm py-4 text-center">
           {{ t('subscription.no_subscriptions') }}
         </div>
@@ -745,6 +872,7 @@ onUnmounted(() => {
             </template>
           </div>
         </div>
+        </template>
       </div>
     </div>
 
@@ -831,7 +959,8 @@ onUnmounted(() => {
       </div>
     </Teleport>
 
-    <!-- 自定义规则弹窗：切换模式（作用域=订阅）与融合模式（作用域=base/full 两档）共用同一组件。
+    <!-- 自定义规则弹窗：切换模式（作用域=订阅）、融合模式（作用域=base/full 两档）、
+         自定义模式（作用域=标准档位）共用同一组件。
          写一条保存一条，没有整体保存按钮；关闭时由组件回报「改动过的作用域」，父组件据此登记规则页的过期标记 -->
     <CustomRulesDialog
       ref="rulesDialogRef"
@@ -842,6 +971,17 @@ onUnmounted(() => {
       :endpoint="rulesEndpoint"
       :scopes="rulesScopes"
       @close="closeRulesDialog"
+    />
+
+    <!-- 添加 / 编辑节点弹窗（自定义模式）：表单由后端下发的协议字段表驱动 -->
+    <CustomNodeDialog
+      :visible="showNodeModal"
+      :is-active="isActive"
+      :protocols="nodeProtocols"
+      :node="editingNode"
+      :taken-names="customNodes.filter((_, idx) => idx !== editingNodeIndex).map(node => node.name)"
+      @save="saveNodeToList"
+      @close="closeNodeModal"
     />
   </div>
 

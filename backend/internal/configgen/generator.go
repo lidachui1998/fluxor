@@ -103,6 +103,18 @@ func buildBaseDocument(cfg config.SubscribeConfig, providers *yaml.Node) (*confi
 		return nil, fmt.Errorf("解析配置模板失败: %w", err)
 	}
 
+	if err := applyFluxorFields(doc, cfg); err != nil {
+		return nil, err
+	}
+
+	if providers != nil {
+		doc.SetNode("proxy-providers", providers)
+	}
+	return doc, nil
+}
+
+// applyFluxorFields 把 Fluxor 的监听与运行参数写进文档（融合模式与自定义模式共用）。
+func applyFluxorFields(doc *configcheck.Doc, cfg config.SubscribeConfig) error {
 	fields := []struct {
 		key   string
 		value any
@@ -110,6 +122,10 @@ func buildBaseDocument(cfg config.SubscribeConfig, providers *yaml.Node) (*confi
 		{"mixed-port", cfg.ProxyPort},
 		{"tproxy-port", cfg.TproxyPort},
 		{"external-controller", fmt.Sprintf("0.0.0.0:%d", cfg.PanelPort)},
+		// 内核的 Unix Socket 是 Fluxor 与内核之间的唯一 HTTP 通道（见 config.CoreSocket），
+		// 必须按运行时实际路径下发：模板里的字面量只是 fnos 默认值，openwrt 模式或
+		// 用环境变量改过路径时，照抄模板会让内核把 socket 建在别处，面板与内核彻底失联。
+		{"external-controller-unix", config.CoreSocket},
 		{"secret", cfg.PanelSecret},
 		{"external-ui", uiPath(cfg.UIPanel)},
 	}
@@ -122,14 +138,10 @@ func buildBaseDocument(cfg config.SubscribeConfig, providers *yaml.Node) (*confi
 
 	for _, f := range fields {
 		if err := doc.Set(f.key, f.value); err != nil {
-			return nil, fmt.Errorf("写入字段 %s 失败: %w", f.key, err)
+			return fmt.Errorf("写入字段 %s 失败: %w", f.key, err)
 		}
 	}
-
-	if providers != nil {
-		doc.SetNode("proxy-providers", providers)
-	}
-	return doc, nil
+	return nil
 }
 
 // buildProviders 构建 proxy-providers 映射节点。无订阅时返回 nil。

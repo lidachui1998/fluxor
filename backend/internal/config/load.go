@@ -127,10 +127,14 @@ func LoadSubscribeConfig() {
 		tmp.UIPanel = defaultCfg.UIPanel
 	}
 	if tmp.Mode == "" {
-		tmp.Mode = "merge"
+		tmp.Mode = ModeMerge
 	}
 	if tmp.Subscriptions == nil {
 		tmp.Subscriptions = []Subscription{}
+	}
+	// 自定义模式的手工节点：nil 与空切片对前端是两种状态（前者会让列表读到 undefined）
+	if tmp.CustomNodes == nil {
+		tmp.CustomNodes = []CustomNode{}
 	}
 	// 融合模式的自定义规则按规则集档位存放：map 必须非 nil，否则首次写入会 panic
 	if tmp.MergeCustomRules == nil {
@@ -138,7 +142,7 @@ func LoadSubscribeConfig() {
 	}
 
 	Current = tmp
-	log.Printf("成功加载订阅配置：%d 个订阅", len(Current.Subscriptions))
+	log.Printf("成功加载订阅配置：%d 个订阅，%d 个自定义节点", len(Current.Subscriptions), len(Current.CustomNodes))
 }
 
 // SaveSubscribeConfig 保存订阅配置到文件。

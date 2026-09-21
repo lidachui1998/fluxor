@@ -17,7 +17,7 @@ import (
 // mergeCustomRulesRoutePath 是融合模式自定义规则接口的路径前缀。
 const mergeCustomRulesRoutePath = "/subscribe/merge-custom-rules/"
 
-// HandleMergeCustomRulesAPI 处理融合模式下的自定义规则：
+// HandleMergeCustomRulesAPI 处理模板级（按规则集档位存放）的自定义规则：
 //
 //	GET    /subscribe/merge-custom-rules/{ruleGroup}        查询该规则集的规则与可选目标
 //	POST   /subscribe/merge-custom-rules/{ruleGroup}        新增一条规则
@@ -27,6 +27,9 @@ const mergeCustomRulesRoutePath = "/subscribe/merge-custom-rules/"
 //
 // {ruleGroup} 取 base（标准）或 full（详细）——两档的代理组、规则集与内置规则都不同，
 // 因此规则分别存放在 cfg.MergeCustomRules[ruleGroup]，互不影响。
+//
+// 可用模式：融合模式（两档皆可）与自定义模式（仅标准档位，其模板固定使用标准规则集，
+// 见 mergeRuleGroupAllowed）。
 //
 // 所有写操作即时持久化到 fluxor.json；若该档位正是当前生效的 rule_group，
 // 则重新生成 config.yaml 并热重载内核。弹窗本身不需要「保存」动作。
@@ -65,8 +68,8 @@ func HandleMergeCustomRulesAPI(w http.ResponseWriter, r *http.Request) {
 // handleAddMergeRule 新增一条规则，追加到该档位列表末尾（同分组内优先级最低）。
 func handleAddMergeRule(w http.ResponseWriter, r *http.Request, ruleGroup string) {
 	cfg := mergeConfigSnapshot()
-	if cfg.Mode != "merge" {
-		httpx.WriteJSONError(w, http.StatusBadRequest, "自定义规则仅在融合模式下可用（切换模式请用订阅卡片上的入口）")
+	if !mergeRuleGroupAllowed(cfg, ruleGroup) {
+		httpx.WriteJSONError(w, http.StatusBadRequest, "该规则集在当前模式下不可编辑（切换模式请用订阅卡片上的入口）")
 		return
 	}
 
@@ -100,8 +103,8 @@ func handleAddMergeRule(w http.ResponseWriter, r *http.Request, ruleGroup string
 // handleUpdateMergeRule 修改一条已存在的规则（就地替换，保持其在列表中的位置）。
 func handleUpdateMergeRule(w http.ResponseWriter, r *http.Request, ruleGroup string) {
 	cfg := mergeConfigSnapshot()
-	if cfg.Mode != "merge" {
-		httpx.WriteJSONError(w, http.StatusBadRequest, "自定义规则仅在融合模式下可用（切换模式请用订阅卡片上的入口）")
+	if !mergeRuleGroupAllowed(cfg, ruleGroup) {
+		httpx.WriteJSONError(w, http.StatusBadRequest, "该规则集在当前模式下不可编辑（切换模式请用订阅卡片上的入口）")
 		return
 	}
 
@@ -151,8 +154,8 @@ func handleUpdateMergeRule(w http.ResponseWriter, r *http.Request, ruleGroup str
 // handleMoveMergeRule 在列表内上移/下移一条规则（只在同一插入位置分组内交换）。
 func handleMoveMergeRule(w http.ResponseWriter, r *http.Request, ruleGroup string) {
 	cfg := mergeConfigSnapshot()
-	if cfg.Mode != "merge" {
-		httpx.WriteJSONError(w, http.StatusBadRequest, "自定义规则仅在融合模式下可用（切换模式请用订阅卡片上的入口）")
+	if !mergeRuleGroupAllowed(cfg, ruleGroup) {
+		httpx.WriteJSONError(w, http.StatusBadRequest, "该规则集在当前模式下不可编辑（切换模式请用订阅卡片上的入口）")
 		return
 	}
 
@@ -228,29 +231,56 @@ func respondAfterMergeMutation(w http.ResponseWriter, ruleGroup string) {
 	httpx.RespondJSON(w, http.StatusOK, payload)
 }
 
+// mergeRuleGroupAllowed 判定当前模式下能否读写某档位的模板级自定义规则。
+//
+//   - 融合模式：base 与 full 两档都可编辑（各自对应一套模板）；
+//   - 自定义模式：只开放标准档位——自定义模式的模板固定使用标准规则集，其自定义规则
+//     与「融合模式 + 标准档位」共用同一份列表（代理组与内置规则集合完全相同，
+//     规则在两边都成立）；
+//   - 切换模式：规则挂在订阅上，走 /subscribe/custom-rules/{name}。
+func mergeRuleGroupAllowed(cfg config.SubscribeConfig, ruleGroup string) bool {
+	switch cfg.Mode {
+	case config.ModeMerge:
+		return true
+	case config.ModeCustom:
+		return ruleGroup == config.RuleGroupBase
+	default:
+		return false
+	}
+}
+
 // applyMergeRulesToActiveConfig 在改动规则后同步运行配置。
 //
-// 仅当「融合模式 + 该档位正是当前生效的 rule_group」时才需要动作：
-// 融合模式的 config.yaml 由模板重新生成，其余档位的规则不会进入当前配置。
+// 仅当该档位的规则真的进入运行配置时才需要动作：
+//   - 融合模式：该档位正是当前生效的 rule_group；
+//   - 自定义模式：标准档位（自定义模式固定使用标准规则集）。
+//
+// 其余情况（另一档位，或订阅级规则）都不会改变当前 config.yaml。
 func applyMergeRulesToActiveConfig(ruleGroup string) (string, string) {
 	config.Mu.RLock()
 	cfg := config.Current
-	active := cfg.Mode == "merge" && cfg.RuleGroup == ruleGroup
 	config.Mu.RUnlock()
 
+	custom := cfg.Mode == config.ModeCustom && ruleGroup == config.RuleGroupBase
+	active := custom || (cfg.Mode == config.ModeMerge && cfg.RuleGroup == ruleGroup)
 	if !active {
 		return "ok", ""
 	}
 
-	if err := configgen.GenerateConfig(cfg); err != nil {
-		log.Printf("[CUSTOM-RULE] 融合模式（%s）重新生成配置失败: %v", ruleGroup, err)
+	// 两种模式的产物不同：融合模式带 proxy-providers，自定义模式拼 proxies 块
+	generate := configgen.GenerateConfig
+	if custom {
+		generate = configgen.GenerateCustomConfig
+	}
+	if err := generate(cfg); err != nil {
+		log.Printf("[CUSTOM-RULE] %s（%s）重新生成配置失败: %v", cfg.Mode, ruleGroup, err)
 		return "warning", "规则已保存，但重新生成配置文件失败: " + err.Error()
 	}
 
 	warning := ""
 	if skipped := configgen.MergeRuleSkips(cfg, ruleGroup); len(skipped) > 0 {
 		warning = "有 " + strconv.Itoa(len(skipped)) + " 条规则因目标不存在未写入配置"
-		log.Printf("[CUSTOM-RULE] 融合模式（%s）有 %d 条规则未写入配置", ruleGroup, len(skipped))
+		log.Printf("[CUSTOM-RULE] %s（%s）有 %d 条规则未写入配置", cfg.Mode, ruleGroup, len(skipped))
 	}
 
 	// 内核未运行时只更新 config.yaml（下次启动即生效），不做重载

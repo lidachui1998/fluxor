@@ -14,12 +14,35 @@ type SubscribeConfig struct {
 	Mode               string         `json:"mode"`
 	ActiveSubscription string         `json:"active_subscription"`
 	Subscriptions      []Subscription `json:"subscriptions"`
+	// CustomNodes 自定义模式下手工添加的节点。
+	//
+	// 只在 Mode == ModeCustom 时参与配置生成：节点被拼成 config.yaml 的 proxies 块，
+	// 与订阅（proxy-providers）无关，因此自定义模式下「订阅列表」不参与生成、只是历史数据。
+	CustomNodes []CustomNode `json:"custom_nodes"`
 	// MergeCustomRules 融合模式的自定义规则，按规则集档位（base / full）分开存放。
 	//
 	// 必须按档位分开：两个档位的代理组、规则集与内置规则完全不同，同一条规则
 	// 在 base 下可能指向不存在的组；分开存放后切换档位即切换各自的规则列表。
+	// 自定义模式固定使用标准档位，其自定义规则也寄存在本表的 base 档下（见 ModeCustom）。
 	MergeCustomRules map[string][]CustomRule `json:"merge_custom_rules,omitempty"`
 	DeletePhysical   []string                `json:"delete_physical,omitempty"`
+}
+
+// 订阅中心支持的三种模式（SubscribeConfig.Mode 的取值）。
+const (
+	// ModeMerge 融合模式：合并全部订阅（proxy-providers），按规则集档位生成配置。
+	ModeMerge = "merge"
+	// ModeSwitch 切换模式：config.yaml 是所选订阅原始文件的副本，用订阅自带的规则与代理组。
+	ModeSwitch = "switch"
+	// ModeCustom 自定义模式：完全不使用订阅，节点由用户在界面上手工添加；节点被拼成
+	// proxies 块写进配置模板，规则集固定使用标准档位（RuleGroupBase），
+	// 其自定义规则与「融合模式 + 标准档位」共用同一份列表（两者的代理组与内置规则集合相同）。
+	ModeCustom = "custom"
+)
+
+// IsValidMode 判定模式是否受支持。
+func IsValidMode(mode string) bool {
+	return mode == ModeMerge || mode == ModeSwitch || mode == ModeCustom
 }
 
 // 融合模式的规则集档位（与 SubscribeConfig.RuleGroup 的取值一致）。
@@ -53,6 +76,22 @@ type Subscription struct {
 	CustomRules      []CustomRule           `json:"custom_rules,omitempty"`
 	UpdatedAt        string                 `json:"updated_at,omitempty"`
 	SubscriptionInfo map[string]interface{} `json:"subscription_info,omitempty"`
+}
+
+// CustomNode 描述自定义模式下用户手工添加的一个出站代理节点。
+//
+// Config 只保存「与该协议默认值不同」的字段：每个协议的字段表与默认模板由
+// nodespec 包提供（后端可为协议单独增补默认值），读取时补齐、保存时剔除差异，
+// 因此默认值调整能自动作用到历史数据，也不会把一堆零值写进 fluxor.json。
+type CustomNode struct {
+	// ID 由后端生成的稳定标识，供前端编辑/删除单个节点使用。
+	ID string `json:"id"`
+	// Name 节点名，写入 config.yaml 的 proxies[].name，同时是规则可引用的目标名。
+	Name string `json:"name"`
+	// Type 协议类型（nodespec 支持的取值，如 ss / vmess / vless）。
+	Type string `json:"type"`
+	// Config 协议字段表里「非默认值」的字段，键为内核配置键（如 server / cipher / ws-path 无）。
+	Config map[string]any `json:"config,omitempty"`
 }
 
 // CustomRule 描述切换模式下挂在某个订阅上的单条自定义规则。

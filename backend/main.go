@@ -150,7 +150,16 @@ func main() {
 	core.CleanupStaleTempCores()
 
 	if _, err := os.Stat(config.ConfigTarget); os.IsNotExist(err) {
-		if err := configgen.GenerateConfig(config.Current); err != nil {
+		// 按当前模式生成首份配置：
+		//   - 自定义模式：模板 + 手工节点 + 标准规则集（否则首启会得到一份没有节点的
+		//     基础配置，用户保存过的节点在重启后不生效）；
+		//   - 其余模式沿用融合式生成（无订阅时其内部会退化为基础配置）。
+		// 切换模式的首启仍走这条：此时订阅文件可能尚未下载，只能先生成骨架。
+		generate := configgen.GenerateConfig
+		if config.Current.Mode == config.ModeCustom {
+			generate = configgen.GenerateCustomConfig
+		}
+		if err := generate(config.Current); err != nil {
 			fmt.Printf("生成基本配置文件失败: %v\n", err)
 		} else {
 			fmt.Println("已生成基本配置文件 (config.yaml)")
@@ -286,9 +295,11 @@ func main() {
 	mux.HandleFunc(config.BaseURL+"/subscribe/generate", subscription.HandleGenerateConfig)
 	mux.HandleFunc(config.BaseURL+"/subscribe/update/", subscription.HandleSubscribeUpdate)
 	mux.HandleFunc(config.BaseURL+"/subscribe/update-info/", subscription.HandleUpdateSubscriptionInfo)
+	// 自定义模式：可添加的协议与字段表（前端按此渲染动态表单，默认模板由后端单点维护）
+	mux.HandleFunc(config.BaseURL+"/subscribe/node-protocols", subscription.HandleNodeProtocolsAPI)
 	// 切换模式：订阅级自定义规则（查询 / 新增 / 修改 / 排序 / 删除，即时持久化并同步运行配置）
 	mux.HandleFunc(config.BaseURL+"/subscribe/custom-rules/", subscription.HandleCustomRulesAPI)
-	// 融合模式：按规则集档位（base / full）分开存放的自定义规则，接口语义与切换模式一致
+	// 融合模式（及自定义模式的标准档位）：按规则集档位分开存放的自定义规则，接口语义与切换模式一致
 	mux.HandleFunc(config.BaseURL+"/subscribe/merge-custom-rules/", subscription.HandleMergeCustomRulesAPI)
 
 	// 获取所有订阅的代理信息（融合模式使用）

@@ -65,6 +65,12 @@ func HandleGenerateConfig(w http.ResponseWriter, r *http.Request) {
 	config.Mu.RUnlock()
 	cfg.InheritRuleOwnedFields(prev)
 
+	// 自定义模式：不使用订阅，配置由模板 + 手工节点 + 标准规则集生成
+	if cfg.Mode == config.ModeCustom {
+		generateCustomConfig(w, cfg)
+		return
+	}
+
 	// 切换模式
 	if cfg.Mode == "switch" {
 		// 如果订阅列表为空，生成基础配置，清除选中状态，保存并重载
