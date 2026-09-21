@@ -540,6 +540,10 @@ defineExpose({ takeMutatedScopes })
                     <option v-for="node in ruleNodes" :key="node" :value="node">{{ node }}</option>
                   </optgroup>
                 </select>
+                <!-- 选中的目标已不在可选列表（典型场景：节点改名后旧名残留在表单里）：
+                     不自动改写该值（历史目标要原样保留，用户也可能把节点名改回去），但必须点出来，
+                     否则用户只会反复撞后端的 400 而不知道要改哪里 -->
+                <p v-if="ruleTargetExtra.length" class="text-[11px] text-danger">{{ t('subscription.custom_rule_target_unknown') }}</p>
               </div>
 
               <div class="flex flex-col gap-1.5">

@@ -79,60 +79,53 @@ func SortCustomRulesForDisplay(rules []CustomRule) []CustomRule {
 	return out
 }
 
-// InheritRuleOwnedFields 让 dst 继承 prev 中「由规则接口维护、调用方可能未携带」的字段。
+// AdoptServerOwnedRuleFields 让「整份配置覆盖写」以**服务端已存的规则**为准。
 //
-// 背景：「保存并应用」（/subscribe/generate）会把请求体整体当作新配置写回
-// config.Current，而请求体由前端拼装——只要它没有带上这些字段，配置生成就会
-// 读到一份空规则集，产出不含自定义规则的 config.yaml；更糟的是内存态的规则被清空，
-// 之后任何一次规则编辑都会把「只剩本次编辑」的列表写回文件，静默丢掉此前的规则。
+// 三种作用域的自定义规则（`subscriptions[].custom_rules`、`merge_custom_rules`、
+// `custom_mode_rules`）都只由专用规则接口维护；而 /subscribe/config 与 /subscribe/generate
+// 是整份覆盖写，请求体由调用方把「上次读到的配置」铺开拼成——规则一旦在弹窗里改过，
+// 这份快照就是**过期**的。若按「调用方带了就用调用方」处理，实测会出现：
+// 刚删掉的规则在「保存并应用」后复活，刚新增的规则被旧列表覆盖丢失。
 //
-// 归属规则接口的字段因此按「请求没带就沿用上一份状态」处理：
-//   - 融合模式：整份 MergeCustomRules（按规则集档位）
-//   - 切换模式：按订阅名逐条的 CustomRules
+// 因此这里一律取服务端状态：键存在与否、是否为空都不影响——**规则接口是唯一的修改入口**。
+// 唯一例外：服务端没有的**全新订阅**（按名字匹配不到）没有旧值可取，保留请求体里的规则，
+// 免得「带规则创建订阅」这类调用被静默丢数据（改名也走这条路，规则随之带过去）。
 //
-// 判据是「键是否出现」而不是「是否为空」：JSON 里没这个键 → nil → 继承；
-// 显式传了 [] → 非 nil 空切片 → 尊重调用方（例如清空后的状态）。
-//
-// 继承时逐条复制切片，避免把 prev 的底层数组交给新配置共享——规则接口会用写锁
-// 就地改动这些切片，共享底层数组会构成数据竞争。
-func (c *SubscribeConfig) InheritRuleOwnedFields(prev SubscribeConfig) {
-	// 自定义模式的自定义规则同理：请求体没带该键（nil）就沿用上一份状态
-	if c.CustomModeRules == nil && prev.CustomModeRules != nil {
-		copied := make([]CustomRule, len(prev.CustomModeRules))
-		copy(copied, prev.CustomModeRules)
-		c.CustomModeRules = copied
-	}
+// 调用方必须传入写锁内的上一份状态；本函数只做深拷贝，不触碰 c 的其它字段。
+func (c *SubscribeConfig) AdoptServerOwnedRuleFields(prev SubscribeConfig) {
+	// 自定义模式：不按档位分表，整份以服务端为准
+	c.CustomModeRules = copyRules(prev.CustomModeRules)
 
-	if c.MergeCustomRules == nil && prev.MergeCustomRules != nil {
+	// 融合模式：两个档位都按服务端为准（另一档本就惰性，也不该被请求体改写）
+	if prev.MergeCustomRules == nil {
+		c.MergeCustomRules = nil
+	} else {
 		c.MergeCustomRules = make(map[string][]CustomRule, len(prev.MergeCustomRules))
 		for group, rules := range prev.MergeCustomRules {
-			if len(rules) == 0 {
-				c.MergeCustomRules[group] = []CustomRule{}
-				continue
-			}
-			copied := make([]CustomRule, len(rules))
-			copy(copied, rules)
-			c.MergeCustomRules[group] = copied
+			c.MergeCustomRules[group] = copyRules(rules)
 		}
 	}
 
+	// 切换模式：按订阅名取服务端那一份；服务端不认识的名字（新建/改名）保留请求体
 	for i := range c.Subscriptions {
-		if c.Subscriptions[i].CustomRules != nil {
-			continue
-		}
+		name := c.Subscriptions[i].Name
 		for j := range prev.Subscriptions {
-			if prev.Subscriptions[j].Name != c.Subscriptions[i].Name {
+			if prev.Subscriptions[j].Name != name {
 				continue
 			}
-			rules := prev.Subscriptions[j].CustomRules
-			if len(rules) == 0 {
-				// 无规则可继承：保持 nil，避免把「空」写成显式空切片
-				break
-			}
-			copied := make([]CustomRule, len(rules))
-			copy(copied, rules)
-			c.Subscriptions[i].CustomRules = copied
+			c.Subscriptions[i].CustomRules = copyRules(prev.Subscriptions[j].CustomRules)
 			break
 		}
 	}
+}
+
+// copyRules 深拷贝规则切片：nil 保持 nil（避免把「没有规则」写成显式空切片），
+// 其余情况返回独立底层数组，防止与全局状态共享后被就地改写。
+func copyRules(rules []CustomRule) []CustomRule {
+	if rules == nil {
+		return nil
+	}
+	out := make([]CustomRule, len(rules))
+	copy(out, rules)
+	return out
 }

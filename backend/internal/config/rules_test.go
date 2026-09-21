@@ -145,44 +145,89 @@ func TestSortCustomRulesForDisplay(t *testing.T) {
 	assertOrder(t, SortCustomRulesForDisplay(rules), "b1", "b2", "legacy-unknown", "a1", "a2")
 }
 
-// TestInheritRuleOwnedFieldsMerge 融合模式：请求体没带规则集字段时沿用上一份状态。
-func TestInheritRuleOwnedFieldsMerge(t *testing.T) {
+// TestAdoptServerOwnedRuleFields 规则字段以服务端为准：过期快照不得覆盖已删/已改的规则。
+//
+// 这是「规则字段归规则接口所有」的完整版：以前只在调用方**没带**该键时才沿用服务端，
+// 于是「保存并应用」提交的前端快照（规则弹窗改过之后就是过期的）会把删掉的规则写回来、
+// 把新增的规则覆盖掉——实测复现过，因此改成一律取服务端状态。
+func TestAdoptServerOwnedRuleFields(t *testing.T) {
 	prev := SubscribeConfig{
 		MergeCustomRules: map[string][]CustomRule{
-			RuleGroupBase: {{ID: "m1", Payload: "a.example.com"}},
-			RuleGroupFull: {{ID: "m2", Payload: "b.example.com"}},
+			RuleGroupBase: {{ID: "b1", Payload: "base.test"}},
+			RuleGroupFull: {},
+		},
+		CustomModeRules: []CustomRule{{ID: "c1", Payload: "custom.test"}},
+		Subscriptions: []Subscription{
+			{Name: "机场A", CustomRules: []CustomRule{{ID: "s1", Payload: "sub.test"}}},
 		},
 	}
 
-	// 请求体完全没带该字段（旧前端/精简请求体）→ 整套继承
-	dst := SubscribeConfig{}
-	dst.InheritRuleOwnedFields(prev)
-	if len(dst.MergeCustomRulesFor(RuleGroupBase)) != 1 || len(dst.MergeCustomRulesFor(RuleGroupFull)) != 1 {
-		t.Fatalf("应继承两档规则，实际: %+v", dst.MergeCustomRules)
+	stale := CustomRule{ID: "stale", Payload: "deleted.test"}
+	// 请求体来自过期快照：三个作用域都塞了一条服务端已经没有的规则
+	dst := SubscribeConfig{
+		MergeCustomRules: map[string][]CustomRule{
+			RuleGroupBase: {{ID: "stale", Payload: "deleted.test"}},
+			RuleGroupFull: {{ID: "stale", Payload: "deleted.test"}},
+		},
+		CustomModeRules: []CustomRule{stale},
+		Subscriptions: []Subscription{
+			{Name: "机场A", CustomRules: []CustomRule{stale}},                              // 旧规则复活
+			{Name: "机场B", CustomRules: []CustomRule{{ID: "new1", Payload: "kept.test"}}}, // 服务端没有 → 保留
+		},
 	}
 
-	// 继承必须是深拷贝：规则接口会在写锁内就地改动切片，共享底层数组会构成数据竞争
-	dst.MergeCustomRules[RuleGroupBase][0].Payload = "changed"
-	if prev.MergeCustomRules[RuleGroupBase][0].Payload != "a.example.com" {
-		t.Fatal("继承后修改不应影响上一份状态（需要深拷贝）")
+	dst.AdoptServerOwnedRuleFields(prev)
+
+	if got := dst.MergeCustomRules[RuleGroupBase]; len(got) != 1 || got[0].ID != "b1" {
+		t.Fatalf("融合 base 档位应取服务端状态，实际: %+v", got)
+	}
+	if got := dst.MergeCustomRules[RuleGroupFull]; len(got) != 0 {
+		t.Fatalf("融合 full 档位应取服务端状态（空），实际: %+v", got)
+	}
+	if len(dst.CustomModeRules) != 1 || dst.CustomModeRules[0].ID != "c1" {
+		t.Fatalf("自定义模式应取服务端状态，实际: %+v", dst.CustomModeRules)
+	}
+	if got := dst.Subscriptions[0].CustomRules; len(got) != 1 || got[0].ID != "s1" {
+		t.Fatalf("切换模式应按订阅名取服务端状态，实际: %+v", got)
+	}
+	if got := dst.Subscriptions[1].CustomRules; len(got) != 1 || got[0].ID != "new1" {
+		t.Fatalf("服务端没有的新订阅应保留请求体里的规则，实际: %+v", got)
 	}
 
-	// 显式传了空 map 视为「调用方明确给出」→ 不继承
-	explicit := SubscribeConfig{MergeCustomRules: map[string][]CustomRule{}}
-	explicit.InheritRuleOwnedFields(prev)
-	if len(explicit.MergeCustomRules) != 0 {
-		t.Fatal("显式给出的空 map 不应被继承覆盖")
+	// 深拷贝：改继承结果不能影响上一份状态
+	dst.CustomModeRules[0].Payload = "changed"
+	if prev.CustomModeRules[0].Payload != "custom.test" {
+		t.Fatal("取服务端状态时必须深拷贝，不能与全局状态共享底层数组")
 	}
-
-	// 上一份也没有规则 → 保持 nil，不凭空造 map
-	plain := SubscribeConfig{}
-	plain.InheritRuleOwnedFields(SubscribeConfig{})
-	if plain.MergeCustomRules != nil {
-		t.Fatal("无可继承内容时应保持 nil")
+	dst.Subscriptions[0].CustomRules[0].Payload = "changed"
+	if prev.Subscriptions[0].CustomRules[0].Payload != "sub.test" {
+		t.Fatal("订阅规则同样要深拷贝")
 	}
 }
 
-// TestInheritRuleOwnedFieldsSubscriptions 切换模式：按订阅名逐条继承 custom_rules。
+// TestAdoptServerOwnedRuleFieldsEmptyServer 服务端本来就没有规则时，请求体也不能凭空造规则。
+//
+// 关键场景：用户删光规则后落盘会省略该键（omitempty），下次读到的是 nil；此时若「服务端为空
+// 就采纳调用方」，过期快照里的规则同样会复活。
+func TestAdoptServerOwnedRuleFieldsEmptyServer(t *testing.T) {
+	dst := SubscribeConfig{
+		CustomModeRules:  []CustomRule{{ID: "stale"}},
+		MergeCustomRules: map[string][]CustomRule{RuleGroupBase: {{ID: "stale"}}},
+		Subscriptions:    []Subscription{{Name: "机场A", CustomRules: []CustomRule{{ID: "stale"}}}},
+	}
+	dst.AdoptServerOwnedRuleFields(SubscribeConfig{Subscriptions: []Subscription{{Name: "机场A"}}})
+
+	if dst.CustomModeRules != nil {
+		t.Fatalf("服务端无规则时不应采纳请求体，实际: %+v", dst.CustomModeRules)
+	}
+	if dst.MergeCustomRules != nil {
+		t.Fatalf("服务端无融合规则时不应采纳请求体，实际: %+v", dst.MergeCustomRules)
+	}
+	if got := dst.Subscriptions[0].CustomRules; got != nil {
+		t.Fatalf("服务端该订阅无规则时不应采纳请求体，实际: %+v", got)
+	}
+}
+
 // TestTemplateRulesFor 模板级作用域取规则：融合档位读 map，自定义模式读独立字段。
 func TestTemplateRulesFor(t *testing.T) {
 	cfg := SubscribeConfig{
@@ -208,74 +253,5 @@ func TestTemplateRulesFor(t *testing.T) {
 	}
 	if !IsValidRuleScope(RuleScopeCustom) || !IsValidRuleScope(RuleGroupBase) || IsValidRuleScope("nope") {
 		t.Fatal("IsValidRuleScope 判定不正确")
-	}
-}
-
-// TestInheritRuleOwnedFieldsCustomModeRules 自定义模式的自定义规则同样按「键缺失就继承」处理。
-//
-// 两个整体覆盖写接口（/subscribe/generate、/subscribe/config）都会把请求体整体写回，
-// 漏继承会让「保存并应用」把自定义模式的规则静默清空。
-func TestInheritRuleOwnedFieldsCustomModeRules(t *testing.T) {
-	prev := SubscribeConfig{CustomModeRules: []CustomRule{{ID: "c1", Payload: "a.com"}}}
-
-	// 请求体没带该键 → 继承
-	dst := SubscribeConfig{}
-	dst.InheritRuleOwnedFields(prev)
-	if len(dst.CustomModeRules) != 1 || dst.CustomModeRules[0].ID != "c1" {
-		t.Fatalf("应继承自定义模式规则，实际: %+v", dst.CustomModeRules)
-	}
-	// 必须是深拷贝：规则接口会在写锁内就地改动切片
-	dst.CustomModeRules[0].Payload = "changed"
-	if prev.CustomModeRules[0].Payload != "a.com" {
-		t.Fatal("继承后修改不应影响上一份状态")
-	}
-
-	// 显式传空 → 尊重调用方
-	explicit := SubscribeConfig{CustomModeRules: []CustomRule{}}
-	explicit.InheritRuleOwnedFields(prev)
-	if len(explicit.CustomModeRules) != 0 {
-		t.Fatalf("显式空切片应被尊重，实际: %+v", explicit.CustomModeRules)
-	}
-
-	// 与融合模式的规则互不影响
-	mixed := SubscribeConfig{}
-	mixed.InheritRuleOwnedFields(SubscribeConfig{
-		MergeCustomRules: map[string][]CustomRule{RuleGroupBase: {{ID: "m1"}}},
-	})
-	if len(mixed.CustomModeRules) != 0 || len(mixed.MergeCustomRulesFor(RuleGroupBase)) != 1 {
-		t.Fatalf("两种作用域的继承互不干扰: %+v / %+v", mixed.CustomModeRules, mixed.MergeCustomRules)
-	}
-}
-
-func TestInheritRuleOwnedFieldsSubscriptions(t *testing.T) {
-	prev := SubscribeConfig{Subscriptions: []Subscription{
-		{Name: "机场A", CustomRules: []CustomRule{{ID: "r1", Payload: "a.com"}}},
-		{Name: "机场B"},
-	}}
-
-	dst := SubscribeConfig{Subscriptions: []Subscription{
-		{Name: "机场A"}, // 没带 → 继承
-		{Name: "机场B"}, // 上一份也没有 → 保持 nil
-		{Name: "机场C"}, // 新订阅 → 无从继承
-		{Name: "机场D", CustomRules: []CustomRule{}}, // 显式空 → 保持空
-	}}
-
-	dst.InheritRuleOwnedFields(prev)
-	if len(dst.Subscriptions[0].CustomRules) != 1 || dst.Subscriptions[0].CustomRules[0].ID != "r1" {
-		t.Fatalf("机场A 应继承规则，实际: %+v", dst.Subscriptions[0].CustomRules)
-	}
-	if dst.Subscriptions[1].CustomRules != nil {
-		t.Fatal("机场B 无可继承内容时应保持 nil")
-	}
-	if dst.Subscriptions[2].CustomRules != nil {
-		t.Fatal("新订阅不应凭空获得规则")
-	}
-	if dst.Subscriptions[3].CustomRules == nil {
-		t.Fatal("显式空切片应被尊重（不继承）")
-	}
-
-	dst.Subscriptions[0].CustomRules[0].Payload = "changed"
-	if prev.Subscriptions[0].CustomRules[0].Payload != "a.com" {
-		t.Fatal("继承后修改不应影响上一份状态（需要深拷贝）")
 	}
 }

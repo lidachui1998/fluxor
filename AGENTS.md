@@ -421,14 +421,19 @@ func (c *cancelableReadCloser) Close() error {
 4. **目标解析失败必须跳过而不是写进去**：内核遇到无法解析的目标会拒绝加载**整份**配置（实测 `rules[0] [DOMAIN,x.com,G] error: proxy [G] not found`）。机场更新后代理组改名属常态，此时静默跳过该条（日志 + 返回 `ApplyResult.Skipped`，前端在列表中标注原因）远优于让配置整体不可用。同理，`RULE-SET` 的取值必须存在于该订阅的 `rule-providers`。
 5. **规则类型走白名单**：`configcheck/rulespec.go` 的清单以实测 `-t` 通过为准（该内核版本不支持 `PROTOCOL`），只收录「单载荷 + 单目标」类型；`AND/OR/NOT/SUB-RULE`（需嵌套语法）与 `MATCH`（会截断其后全部规则）不开放给表单。
 6. **合法目标随模式而异，且「可选目标」与「校验目标」不是同一集合**：前端目标下拉列**代理组**——切换模式取自订阅文件的 `proxy-groups`，融合/自定义模式取自**该模板**的代理组（`configgen.MergeRuleSetEnv` 直接解析生成用的同一批模板常量，模板一改、界面与校验自动跟随，不另维护清单）。节点名按模式区分：
-   - **自定义模式**（`configgen.CustomModeRuleContext`）：手工节点写死在 `config.yaml` 的 `proxies` 里，规则指向节点名内核能解析，因此节点名**既是可选目标也是校验目标**，在目标下拉里单列一个「节点」分组（接口 `nodes` 字段，来自已保存的 `CustomNodes`，新增节点要先「保存并应用」）；
+   - **自定义模式**（`configgen.CustomModeRuleContext`）：手工节点写死在 `config.yaml` 的 `proxies` 里，规则指向节点名内核能解析，因此节点名**既是可选目标也是校验目标**，在目标下拉里单列一个「节点」分组（接口 `nodes` 字段，来自已保存的 `CustomNodes`，新增节点要先「保存并应用」）。节点改名后旧目标会**留在下拉里**（`ruleTargetExtra`：不自动改写历史目标，用户也可能把名字改回去），但表单里选着它时必须在下方给出红字提示（`custom_rule_target_unknown`）——否则用户只会反复撞后端的 400 而不知道该改哪里；
    - **融合模式**（`configgen.MergeRuleSetContext`）：节点来自 `proxy-providers`、运行时才加载，静态校验看不到，引用节点名会让内核拒绝加载整份配置，因此节点名不进下拉、也不算合法目标；
    - **切换模式**：节点名不进下拉，但**校验**集合保留它——内核确实接受指向订阅节点的规则，把节点排除会让用户既有规则被判为失效并静默跳过。
 7. **融合模式两档必须分开存放与生效**：`base` 与 `full` 的代理组、规则集、内置规则都不同（`base` 没有 `rule-providers`，因此该档位下 `RULE-SET` 不可用），同一份列表放在两档下必然有一半规则指向不存在的目标。生成时只取 `cfg.MergeCustomRulesFor(cfg.RuleGroup)` 那一份——另一档保持惰性，等切档后再生效。判重也要带上该档位的内置模板规则（`MergeRuleSetRuleLines`），否则自定义规则与模板同形时会被幂等注入静默跳过。
 8. **排序只在同插入位置分组内进行**：`before` 与 `after` 在 `config.yaml` 中的落点相差甚远（最前 vs MATCH 之前），跨组交换会让「界面顺序」与「生效顺序」不一致，因此 `config.MoveCustomRule` 只在同组内与相邻规则交换，到边界时返回 `moved=false`（接口回 400，而不是假装成功）。
 9. **写盘顺序**：`writeRuntimeConfig` 是「复制 → 解析 → 注入 → 写回」，注入失败不落盘，避免留下内核加载不了的半成品 `config.yaml`；无自定义规则时完全跳过读写，保持副本的逐字节一致。
 
-10. **规则字段归规则接口所有，「保存并应用」不得清空它们**：`/subscribe/generate` 会把请求体整体写回 `config.Current`，而请求体由前端拼装——只要它没带上 `merge_custom_rules` / `subscriptions[].custom_rules`，配置生成就会读到空规则集，产出不含自定义规则的 `config.yaml`；内存态规则被清空后，下一次规则编辑还会把「只剩本次编辑」的列表写回文件。因此两个整体覆盖写接口（`/subscribe/generate`、`/subscribe/config`）都必须调用 `config.SubscribeConfig.InheritRuleOwnedFields(prev)`：**键缺失就沿用上一份状态，显式传空则尊重调用方**（判据是「键是否出现」而非「是否为空」），继承时深拷贝切片以免与规则接口的就地改写竞争。前端 `loadConfig` 也必须把后端原始字段铺开带回（`...cfg`），不主动丢字段。
+10. **规则字段归规则接口所有，「保存并应用」既不能清空也不能覆盖它们**：`/subscribe/generate` 与 `/subscribe/config` 都是**整份配置覆盖写**，请求体由前端把上次读到的配置铺开拼成（`{...currentConfig}`），而三种作用域的规则只由专用规则接口维护。于是有两个方向的坑：
+    - 请求体**没带**规则字段（如精简的 API 调用）→ 配置生成读到空规则集，产出不含自定义规则的 `config.yaml`；
+    - 请求体**带了过期的规则字段**（前端在规则弹窗里改过之后就是过期的）→ 实测：刚删掉的规则在「保存并应用」后复活、刚新增的规则被旧列表覆盖丢失。
+
+    因此两个接口一律调用 `config.SubscribeConfig.AdoptServerOwnedRuleFields(prev)`：**规则字段以服务端状态为准，键存在与否、是否为空都不影响**——规则接口是唯一的修改入口。唯一例外是服务端不认识的**全新订阅名**（新建或改名）：没有旧值可取，保留请求体里的规则，免得「带规则创建订阅」被静默丢数据。取服务端状态时按值深拷贝（nil 保持 nil），避免与规则接口的就地改写竞争。
+    > 教训：同一个字段有两个写入者、其中一个还持有快照，就是「删了又回来」这类 bug 的温床。**不要再把判据退回「键是否出现」**——它只挡得住漏带，挡不住过期。前端 `loadConfig` 仍需把后端原始字段铺开带回（`...cfg`），但那只是「别丢字段」，不构成正确性保证。
 
 > 规则写操作（增/改/排序/删）的事务顺序统一为：锁内改 `config.Current` → `SaveSubscribeConfig()` 持久化 → 若命中的作用域当前生效（切换：激活订阅；融合：当前档位；自定义：恒为标准档位）则同步运行配置（切换走 `writeRuntimeConfig`，融合走 `configgen.GenerateConfig`，自定义走 `configgen.GenerateCustomConfig`）+ `ReloadCore()`。内核未运行时只更新 `config.yaml`（下次启动生效），并把「已保存但未同步」的情况作为 warning 如实回给前端。
 > 「修改」是就地替换（保持列表位置），「排序」是同组内相邻交换（`config/rules.go` 的 `MoveCustomRule`），两者都不改变其他规则的相对顺序。

@@ -160,7 +160,9 @@ func ValidateRulePayload(spec RuleSpec, payload string, ruleProviders map[string
 		}
 	case PayloadRuleSet:
 		if _, ok := ruleProviders[payload]; !ok {
-			return fmt.Errorf("规则集 %q 不存在于该订阅的 rule-providers 中", payload)
+			// 文案不写「该订阅」：融合/自定义模式用的是模板自带的 rule-providers，
+			// 压根没有订阅参与，说成订阅会把用户引到错误的地方去查
+			return fmt.Errorf("规则集 %q 不在当前可选规则集里（该作用域没有这个 rule-provider）", payload)
 		}
 	}
 	return nil
@@ -180,7 +182,8 @@ func ValidateRuleTarget(target string, knownTargets map[string]struct{}) error {
 		return fmt.Errorf("规则目标不能包含逗号或换行")
 	}
 	if _, ok := knownTargets[target]; !ok {
-		return fmt.Errorf("规则目标 %q 不存在于该订阅的代理组/代理节点中", target)
+		// 同上：作用域可能是订阅、档位模板或自定义模式，文案不绑定某一种
+		return fmt.Errorf("规则目标 %q 不在当前可选目标里（节点可能已改名，请重新选择）", target)
 	}
 	return nil
 }

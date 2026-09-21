@@ -59,11 +59,11 @@ func HandleGenerateConfig(w http.ResponseWriter, r *http.Request) {
 	// 自定义规则归各自的规则接口维护（切换模式按订阅、融合模式按规则集档位）：
 	// 本接口只负责生成配置文件，不能在请求体缺少这些字段时把它们清空——否则
 	// GenerateConfig 会生成一份不含自定义规则的 config.yaml，且内存态规则被清空后，
-	// 下一次规则编辑会把「只剩本次编辑」的列表写回文件。详见 config.InheritRuleOwnedFields。
+	// 下一次规则编辑会把「只剩本次编辑」的列表写回文件。详见 config.AdoptServerOwnedRuleFields。
 	config.Mu.RLock()
 	prev := config.Current
 	config.Mu.RUnlock()
-	cfg.InheritRuleOwnedFields(prev)
+	cfg.AdoptServerOwnedRuleFields(prev)
 
 	// 自定义模式：不使用订阅，配置由模板 + 手工节点 + 标准规则集生成
 	if cfg.Mode == config.ModeCustom {

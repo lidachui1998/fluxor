@@ -44,11 +44,11 @@ func HandleSubscribeConfigAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		// 与 /subscribe/generate 同一道理：自定义规则由规则接口维护，
 		// 这个整体覆盖写接口若在请求体缺少这些字段时把它们清空，
-		// 会导致运行配置与磁盘状态双双丢规则（详见 config.InheritRuleOwnedFields）。
+		// 会导致运行配置与磁盘状态双双丢规则（详见 config.AdoptServerOwnedRuleFields）。
 		config.Mu.RLock()
 		prev := config.Current
 		config.Mu.RUnlock()
-		newConfig.InheritRuleOwnedFields(prev)
+		newConfig.AdoptServerOwnedRuleFields(prev)
 
 		// 自定义节点列表与订阅列表一样由本接口整体覆盖：落库前先校验并归一化
 		// （节点名、字段类型与必填、与模板组名冲突），否则内核会拒绝加载整份配置。
