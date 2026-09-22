@@ -21,18 +21,43 @@ const { getEffectiveDelay, getEffectiveNode } = proxyStore
 
 const isTesting = ref(false)
 
-// 卡片容器引用（用于折叠后滚动）
 const cardRef = ref<HTMLElement | null>(null)
+const headerRef = ref<HTMLElement | null>(null)
 
-// 折叠时滚动到顶部
+// 就近的可滚动祖先：各视图在容器内部滚动（body 恒为 overflow:hidden），
+// 组头 sticky top-0 贴的就是这个容器的顶边。
+const findScrollParent = (el: HTMLElement): HTMLElement | null => {
+  let node: HTMLElement | null = el.parentElement
+  while (node) {
+    const overflowY = getComputedStyle(node).overflowY
+    if (overflowY === 'auto' || overflowY === 'scroll') return node
+    node = node.parentElement
+  }
+  return null
+}
+
+// 折叠时保持「组头相对容器顶边的偏移」不变，而不是把卡片甩到列表某个地方：
+// 展开期间组头 sticky top-0，滚动时钉在容器顶边下方 stickyGap 处（容器 padding + 边框，
+// 实测 25px）；折叠会让组体消失、滚动位置被浏览器夹紧，卡片可能落到容器顶边之上
+// （刚折叠的组当场看不见）。因此折叠前先量下组头当时的偏移，折叠后把卡片对回同一偏移：
+//   - 组头正钉住时 → 对回粘性位置，与容器顶边保留同样的距离；
+//   - 卡片本就没钉住（组头偏移 = 卡片自身偏移）→ 需要移动的量恰好为 0，原位不动。
+// 对齐用瞬时 scrollTop 修正（不走平滑滚动），避免出现“滑过去”的观感。
 watch(
   () => expandedState.value[props.group.name],
   (newVal, oldVal) => {
-    if (oldVal === true && newVal === false) {
-      nextTick(() => {
-        cardRef.value?.scrollIntoView({ block: 'start', inline: 'nearest', behavior: 'smooth' })
-      })
-    }
+    if (oldVal !== true || newVal !== false) return
+    const card = cardRef.value
+    const header = headerRef.value
+    const scroller = card ? findScrollParent(card) : null
+    if (!card || !header || !scroller) return
+    // 此刻 DOM 仍是展开态，组头若被钉住则此处量到的就是粘性偏移
+    const gap = header.getBoundingClientRect().top - scroller.getBoundingClientRect().top
+    nextTick(() => {
+      const delta = card.getBoundingClientRect().top - scroller.getBoundingClientRect().top
+      const shift = delta - gap
+      if (shift !== 0) scroller.scrollTop += shift
+    })
   }
 )
 
@@ -150,7 +175,8 @@ const nodeRows = computed(() =>
 )
 
 const gridRef = ref<HTMLElement | null>(null)
-// 监听展开状态，当展开且节点数 > 10 时，滚动到选中节点
+// 展开时若节点数 > 10 且当前选中节点不在视口内，滚动到该节点（仅展开方向；
+// 折叠一律原位进行，不触发任何滚动）
 watch(
   () => expandedState.value[props.group.name],
   (isExpanded) => {
@@ -286,8 +312,9 @@ const getDelayText = (delay?: number) => {
 
 <template>
   <div ref="cardRef" class="bg-slate-50/50 dark:bg-slate-900/30 rounded-xl border border-slate-200/40 dark:border-slate-800/40 transition-all relative">
-    <!-- 头部：展开时粘性 -->
+    <!-- 头部：展开时粘性（折叠后按它的偏移对齐，见上方 watcher） -->
     <div
+      ref="headerRef"
       class="px-4 sm:px-5 pt-4 sm:pt-5 pb-2 rounded-t-xl cursor-pointer select-none transition-shadow duration-200"
       :class="[
         expandedState[group.name]
@@ -350,7 +377,7 @@ const getDelayText = (delay?: number) => {
       </div>
     </div>
 
-    <!-- 主体（节点网格）：展开时显示 -->
+    <!-- 主体（节点网格）：展开时显示（展开可滚动到当前选中节点，折叠不触发滚动） -->
     <div v-if="expandedState[group.name]" ref="gridRef" class="grid grid-cols-2 gap-2.5 px-4 sm:px-5 pb-4 sm:pb-5 pt-4 border-t border-slate-100 dark:border-slate-800/80">
       <div
         v-for="row in nodeRows"

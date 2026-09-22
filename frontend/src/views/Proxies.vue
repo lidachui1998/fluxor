@@ -239,16 +239,16 @@ onUnmounted(() => {
           <h3 class="text-base font-semibold flex items-center gap-2">
             <GlobeOutline class="w-5 h-5 text-accent" />
             {{ t('proxies.title') }}
-          </h3>
-          <div class="flex items-center gap-2">
-            <!-- 齿轮按钮 -->
+            <!-- 齿轮按钮：代理设置入口，紧贴标题右侧 -->
             <button
               @click="openSettingsDialog"
-              class="p-2 text-slate-500 hover:text-accent rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+              class="-my-1 p-1.5 text-slate-500 hover:text-accent rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
               :title="t('proxies.settings_title')"
             >
-              <SettingsOutline class="w-5 h-5" />
+              <SettingsOutline class="w-4 h-4" />
             </button>
+          </h3>
+          <div class="flex items-center gap-2">
             <!-- 全部测速按钮 -->
             <button
               @click="handleTestAll"
@@ -281,6 +281,14 @@ onUnmounted(() => {
         <h3 class="text-base font-semibold flex items-center gap-2">
           <GlobeOutline class="w-5 h-5 text-accent" />
           {{ t('proxies.title') }}
+          <!-- 齿轮按钮：代理设置入口，紧贴标题右侧 -->
+          <button
+            @click="openSettingsDialog"
+            class="-my-1 p-1.5 text-slate-500 hover:text-accent rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+            :title="t('proxies.settings_title')"
+          >
+            <SettingsOutline class="w-4 h-4" />
+          </button>
         </h3>
         <div class="flex-1 flex justify-center">
           <div class="flex bg-slate-100 dark:bg-slate-800 rounded-lg p-0.5 transition-all">
@@ -297,13 +305,6 @@ onUnmounted(() => {
           </div>
         </div>
         <div class="flex items-center gap-2">
-          <button
-            @click="openSettingsDialog"
-            class="p-2 text-slate-500 hover:text-accent rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-            :title="t('proxies.settings_title')"
-          >
-            <SettingsOutline class="w-5 h-5" />
-          </button>
           <button
             @click="handleTestAll"
             :disabled="isTestingAll"
