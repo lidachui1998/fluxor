@@ -560,7 +560,7 @@ onUnmounted(() => {
 
     <!-- 移动端主工作区容器 -->
     <div class="flex-1 flex flex-col min-w-0">
-      <main class="flex-1 my-3 mx-3 md:my-4 md:mx-4 h-[calc(100vh-24px)] md:h-[calc(100vh-32px)] flex flex-col min-h-0 select-none overflow-hidden pb-14 md:pb-0">
+      <main class="flex-1 my-3 mx-3 md:my-4 md:mx-4 h-[calc(100vh-24px)] md:h-[calc(100vh-32px)] flex flex-col min-h-0 select-none overflow-hidden pb-[calc(3.5rem+var(--safe-bottom))] md:pb-0">
         <div class="max-w-7xl mx-auto w-full flex flex-col flex-1 min-h-0">
           <KeepAlive :max="7">
             <component :is="activeComponent" :key="globalStore.activeTab" class="flex flex-col flex-1 min-h-0" />
@@ -568,8 +568,8 @@ onUnmounted(() => {
         </div>
       </main>
 
-      <!-- 移动端底部选项卡 Bar -->
-      <nav class="md:hidden fixed bottom-0 inset-x-0 h-14 glass-heavy border-t flex items-center justify-around z-40 shadow-lg">
+      <!-- 移动端底部选项卡 Bar：高度 = 按钮行 3.5rem + 底部安全区，按钮行始终在安全区之上 -->
+      <nav class="md:hidden fixed bottom-0 inset-x-0 h-[calc(3.5rem+var(--safe-bottom))] pb-[var(--safe-bottom)] glass-heavy border-t flex items-center justify-around z-40 shadow-lg">
         <!-- 概览 -->
         <button @click="selectTab('overview')" class="flex flex-col items-center gap-0.5 transition-all duration-200 active:scale-95" :class="globalStore.activeTab === 'overview' ? 'text-accent font-semibold scale-105' : 'text-slate-500 dark:text-slate-400'">
           <GridOutline class="w-5 h-5" />

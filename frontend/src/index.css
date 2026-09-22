@@ -83,6 +83,12 @@
 /* 1. 主题变量 */
 
 :root {
+  /* 移动端底部安全区：底部 Tab 栏与主内容区共用同一取值。
+     大圆角/手势条机型需给 env(safe-area-inset-bottom) 留白，否则「概览」「配置」
+     等底部按钮会被屏幕圆角或系统手势条压住；桌面与不支持的机型 env() 为 0，
+     此时兜底 0.5rem 作为一点点余量。 */
+  --safe-bottom: max(env(safe-area-inset-bottom), 0.5rem);
+
   /* 默认暗色 */
   --bg-primary: #0f172a;
   --bg-secondary: #1e293b;
