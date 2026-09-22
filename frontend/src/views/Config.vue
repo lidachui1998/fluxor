@@ -1157,8 +1157,10 @@ onMounted(async () => {
               </div>
             </div>
 
+            <!-- 结果容器：高度有上下限（下限保证空态/少行时不下塌，上限保证行数再多也不撑大卡片），
+                 超出上限的内容在容器内纵向滚动 -->
             <pre
-              class="p-4 bg-slate-50 dark:bg-slate-900/50 font-mono text-xs rounded-xl overflow-y-auto whitespace-pre-wrap break-all h-28 border border-slate-200 dark:border-slate-800 transition-all flex-1"
+              class="p-4 bg-slate-50 dark:bg-slate-900/50 font-mono text-xs rounded-xl overflow-y-auto whitespace-pre-wrap break-all flex-1 min-h-28 max-h-56 border border-slate-200 dark:border-slate-800 transition-all"
               :class="dnsQuery.result ? 'text-emerald-700 dark:text-emerald-400' : 'text-slate-400 dark:text-slate-500 italic flex items-center justify-center select-none'">{{ dnsQuery.result || t('config.dns_result_default') }}</pre>
           </div>
         </div>
