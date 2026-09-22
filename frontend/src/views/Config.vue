@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { apiFetch } from '../utils/api'
-import { OptionsOutline, HardwareChipOutline, ShieldCheckmarkOutline, BuildOutline, SearchOutline, SyncOutline, ColorPaletteOutline, SettingsOutline, InformationCircleOutline, DocumentTextOutline, ChevronDownOutline } from '@vicons/ionicons5'
+import { OptionsOutline, HardwareChipOutline, ShieldCheckmarkOutline, BuildOutline, SearchOutline, SyncOutline, ColorPaletteOutline, SettingsOutline, InformationCircleOutline, DocumentTextOutline } from '@vicons/ionicons5'
 import { useGlobalStore } from '../store/global'
 import { storeToRefs } from 'pinia'
 import { useConfigStore, type ConfigData } from '../store/config'
@@ -518,22 +518,16 @@ const handleUpdateGeo = async () => {
   }
 }
 
-// 新增响应式状态
-const showUpgradeMenu = ref(false)
-const upgradeMenuRef = ref<HTMLElement | null>(null)
+// 内核更新通道：由原生下拉选择，供「更新」按钮使用
+const selectedChannel = ref<'release' | 'alpha'>('release')
 
-// 切换下拉菜单
-const toggleUpgradeMenu = () => {
-  showUpgradeMenu.value = !showUpgradeMenu.value
-}
-
-// 升级核心（支持通道参数）
-const handleUpgradeCore = async (channel?: string) => {
+// 升级核心（通道取自下拉选择：release=稳定版 / alpha=预览版）
+const handleUpgradeCore = async () => {
   if (isUpgrading.value) return
+  const channel = selectedChannel.value
   isUpgrading.value = true
   try {
-    let url = '/upgrade'
-    if (channel) url += `?channel=${channel}`
+    const url = `/upgrade?channel=${channel}`
     const resp = await apiFetch(url, { method: 'POST' })
     if (resp.ok) {
       // **** 关键修复：强制重置版本号为 loading 哨兵，使下次请求重新获取 ****
@@ -575,12 +569,9 @@ const handleUpgradeCore = async (channel?: string) => {
         } catch (_) {}
       }
       if (errorMsg.includes('already using latest version')) {
-        const channelName = channel === 'alpha' ? t('config.upgrade_alpha') : (channel === 'release' ? t('config.upgrade_stable') : '')
-        if (channelName) {
-          globalStore.showToast(t('config.upgrade_already_latest_channel', { channel: channelName }), 'warning')
-        } else {
-          globalStore.showToast(t('config.upgrade_already_latest'), 'warning')
-        }
+        globalStore.showToast(t('config.upgrade_already_latest_channel', {
+          channel: channel === 'alpha' ? t('config.upgrade_alpha') : t('config.upgrade_stable'),
+        }), 'warning')
       } else {
         globalStore.showToast(`${t('config.upgrade_failed')}${errorMsg ? ': ' + errorMsg : ''}`, 'error')
       }
@@ -589,35 +580,8 @@ const handleUpgradeCore = async (channel?: string) => {
     globalStore.showToast(t('config.upgrade_network_error'), 'error')
   } finally {
     isUpgrading.value = false
-    showUpgradeMenu.value = false
   }
 }
-
-// Alpha 通道升级
-const handleUpgradeAlpha = () => {
-  handleUpgradeCore('alpha')
-}
-
-// 稳定版通道升级
-const handleUpgradeStable = () => {
-  handleUpgradeCore('release')
-}
-
-// 点击菜单外部自动关闭
-const handleClickOutside = (event: MouseEvent) => {
-  if (upgradeMenuRef.value && !upgradeMenuRef.value.contains(event.target as Node)) {
-    showUpgradeMenu.value = false
-  }
-}
-
-// 监听菜单显示状态，添加/移除全局点击监听
-watch(showUpgradeMenu, (val) => {
-  if (val) {
-    document.addEventListener('click', handleClickOutside)
-  } else {
-    document.removeEventListener('click', handleClickOutside)
-  }
-})
 
 const handleDNSQuery = async (e?: Event) => {
   if (!dnsQuery.value.name.trim()) return
@@ -767,10 +731,6 @@ onMounted(async () => {
   fetchInterfaces()
   fetchTproxyProxyLocal()
   fetchTproxyIPv6()
-})
-
-onUnmounted(() => {
-  document.removeEventListener('click', handleClickOutside)
 })
 
 </script>
@@ -1053,7 +1013,7 @@ onUnmounted(() => {
 
             <!-- 内核核心控制 -->
             <div class="grid gap-3 w-full"
-              :class="coreStatus.running ? 'grid-cols-3' : 'grid-cols-2'">
+              :class="coreStatus.running ? 'grid-cols-2' : 'grid-cols-1'">
               <button v-if="!coreStatus.running" @click="handleStartCore" :disabled="coreStatus.loading"
                 class="py-2 bg-success hover:bg-success-hover text-white text-xs font-semibold rounded-xl shadow-md shadow-success/15 hover:shadow-success/25 transition-all flex items-center justify-center gap-1.5 w-full">
                 <SyncOutline v-if="coreStatus.loading" class="w-3.5 h-3.5 animate-spin inline-block" />
@@ -1070,42 +1030,24 @@ onUnmounted(() => {
                   {{ t('config.restart') }}
                 </button>
               </template>
-              <!-- 拆分更新按钮 -->
-              <div ref="upgradeMenuRef" class="relative flex w-full">
+              <!-- 更新按钮 + 通道选择：通道用浏览器原生 select（保留系统自带下拉样式）。
+                   两列等宽、等高、彼此独立，间隔正好落在这一行正中。 -->
+              <div class="col-span-full grid grid-cols-2 gap-2">
                 <button
-                  @click="handleUpgradeCore()"
+                  @click="handleUpgradeCore"
                   :disabled="isUpgrading || !coreStatus.running"
-                  class="flex-1 py-2 bg-accent hover:bg-accent-hover text-white text-xs font-semibold rounded-l-xl shadow-md shadow-accent/15 hover:shadow-accent/25 transition-all flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed"
+                  class="w-full h-9 bg-accent hover:bg-accent-hover text-white text-xs font-semibold rounded-xl shadow-md shadow-accent/15 hover:shadow-accent/25 transition-all flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {{ isUpgrading ? t('config.upgrading_core') : t('config.upgrade_core') }}
                 </button>
-                <button
-                  @click="toggleUpgradeMenu"
+                <select
+                  v-model="selectedChannel"
                   :disabled="isUpgrading || !coreStatus.running"
-                  class="py-2 px-2 bg-accent hover:bg-accent-hover text-white rounded-r-xl shadow-md shadow-accent/15 hover:shadow-accent/25 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center border-l border-white/20"
+                  class="w-full min-w-0 h-9 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 px-2 text-xs font-semibold text-slate-700 dark:text-slate-200 focus:ring-2 focus:ring-accent outline-none disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  <ChevronDownOutline class="h-4 w-4" />
-                </button>
-                <!-- 下拉菜单 -->
-                <div
-                  v-if="showUpgradeMenu"
-                  class="absolute top-full left-0 mt-1 w-full bg-white dark:bg-slate-800 rounded-xl shadow-lg border border-slate-200 dark:border-slate-700 py-1 z-50"
-                >
-                  <button
-                    @click="handleUpgradeStable"
-                    :disabled="isUpgrading || !coreStatus.running"
-                    class="w-full text-left px-4 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
-                  >
-                    {{ t('config.upgrade_stable') }}
-                  </button>
-                  <button
-                    @click="handleUpgradeAlpha"
-                    :disabled="isUpgrading || !coreStatus.running"
-                    class="w-full text-left px-4 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
-                  >
-                    {{ t('config.upgrade_alpha') }}
-                  </button>
-                </div>
+                  <option value="release">{{ t('config.upgrade_stable') }}</option>
+                  <option value="alpha">{{ t('config.upgrade_alpha') }}</option>
+                </select>
               </div>
             </div>
    

@@ -53,7 +53,7 @@ jobs:
           echo "构建版本号: $V"
 
       - name: 清理旧构建产物
-        run: rm -rf frontend/dist backend/dist fluxor-${{ matrix.arch }}
+        run: rm -rf frontend/dist backend/dist dist-pkg fluxor-${{ matrix.arch }} fluxor-${{ matrix.arch }}.tar.gz
 
       - name: 构建前端 (frontend → frontend/dist)
         working-directory: ./frontend
@@ -73,11 +73,23 @@ jobs:
             go build -ldflags="-s -w -X fluxor/internal/buildinfo.Version=${{ steps.version.outputs.VERSION }}" \
             -o ../fluxor-${{ matrix.arch }}
 
-      - name: 上传 fluxor-${{ matrix.arch }} 作为 Artifact
+      # 压缩包内二进制统一命名为 fluxor：Fluxor 自更新按该名字优先提取。
+      - name: 打包 tar.gz（${{ matrix.arch }}）
+        run: |
+          mkdir -p dist-pkg
+          cp fluxor-${{ matrix.arch }} dist-pkg/fluxor
+          tar -czf fluxor-${{ matrix.arch }}.tar.gz -C dist-pkg fluxor
+          tar -tzf fluxor-${{ matrix.arch }}.tar.gz
+          ls -lh fluxor-${{ matrix.arch }} fluxor-${{ matrix.arch }}.tar.gz
+
+      # 裸二进制与 tar.gz 同时上传：新版本优先取压缩包，老版本仍按原名取裸二进制，兼容不破。
+      - name: 上传 fluxor-${{ matrix.arch }} 与压缩包作为 Artifact
         uses: actions/upload-artifact@v7
         with:
           name: fluxor-${{ matrix.arch }}
-          path: fluxor-${{ matrix.arch }}
+          path: |
+            fluxor-${{ matrix.arch }}
+            fluxor-${{ matrix.arch }}.tar.gz
 
   release:
     needs: build

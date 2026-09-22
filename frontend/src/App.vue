@@ -196,7 +196,9 @@ const handleSelfUpdate = async () => {
         window.location.reload()
       }, 2000)
     } else {
-      let msg = t('update.update_failed')
+      // 后端的失败信息已按下载链路给出具体原因（自身代理 / 直连各 2 次）；
+      // 只有在拿不到 message 时才补上通用的代理/网络提示，避免重复。
+      let msg = t('update.update_failed') + t('common.list_sep') + t('update.check_proxy_hint')
       try {
         const data = await resp.json()
         if (data.message) msg = data.message
@@ -204,7 +206,10 @@ const handleSelfUpdate = async () => {
       globalStore.showToast(msg, 'error')
     }
   } catch (e) {
-    globalStore.showToast(t('update.update_failed') + ': ' + (e as Error).message, 'error')
+    globalStore.showToast(
+      t('update.update_failed') + ': ' + (e as Error).message + t('common.list_sep') + t('update.check_proxy_hint'),
+      'error'
+    )
   } finally {
     isUpdatingSelf.value = false
   }
@@ -216,15 +221,9 @@ const handleCheckUpdate = async () => {
   if (isCheckingUpdate.value) return
   isCheckingUpdate.value = true
 
-  const checkingToastId = globalStore.showToast(t('update.checking'), 'info')
-
   try {
     // 当前版本由后端自行获知（编译期注入），无需再传 ?current=
     const resp = await apiFetch('/check-update')
-
-    setTimeout(() => {
-      globalStore.removeToast(checkingToastId)
-    }, 200)
 
     if (resp.ok) {
       const data = await resp.json()
@@ -240,7 +239,6 @@ const handleCheckUpdate = async () => {
       globalStore.showToast(t('common.network_error'), 'error')
     }
   } catch (e) {
-    globalStore.removeToast(checkingToastId)
     globalStore.showToast(t('common.network_error'), 'error')
   } finally {
     isCheckingUpdate.value = false
@@ -631,14 +629,13 @@ onUnmounted(() => {
             <div class="flex items-center justify-between text-xs">
               <span class="font-bold text-slate-500 dark:text-slate-400">{{ t('about.version') }}</span>
               <div class="flex items-center gap-2">
-                <!-- 常驻按钮：检查更新 / 更新版本 -->
+                <!-- 常驻按钮：检查更新 / 更新版本；检查期间不切换文案，结果由 Toast 通知 -->
                 <button
                   @click="handleButtonClick"
-                  :disabled="isUpdatingSelf || isCheckingUpdate"
+                  :disabled="isUpdatingSelf"
                   class="px-2 py-0.5 text-xs font-semibold rounded-lg bg-accent hover:bg-accent-hover text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <span v-if="isUpdatingSelf">{{ t('update.updating') }}</span>
-                  <span v-else-if="isCheckingUpdate">{{ t('common.loading') }}</span>
                   <span v-else-if="globalStore.updateInfo?.hasUpdate">{{ t('update.update_button', { latest: globalStore.updateInfo.latest }) }}</span>
                   <span v-else>{{ t('update.check_update') }}</span>
                 </button>

@@ -211,7 +211,9 @@ backend/
     │   ├── github.go             #   Release/Tag 查询与版本比较
     │   ├── cache.go              #   版本信息缓存（TTL 10 分钟）
     │   ├── coreversion.go        #   内核本地/远程版本比对
-    │   ├── selfupdate.go         #   Fluxor 自更新（多加速源回退；当前版本取自 buildinfo）
+    │   ├── selfupdate.go         #   Fluxor 自更新（优先 fluxor-<arch>.tar.gz 解压提取，回退裸二进制；
+    │   │                         #     仅「自身代理 / 直连」两条链路各重试 2 次，失败提示检查代理或网络；
+    │   │                         #     当前版本取自 buildinfo）
     │   └── handler.go            #   /check-update（当前版本取自 buildinfo，无需 ?current=）
     ├── buildinfo/                # 【叶子】构建期注入的版本号（-ldflags -X）
     │   ├── doc.go                #   包说明
