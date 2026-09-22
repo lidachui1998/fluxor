@@ -79,14 +79,20 @@ func getLatestAlphaCoreHash() (string, error) {
 	return hash, nil
 }
 
-// getLatestVersion 从 GitHub API 获取最新 release 版本号（带缓存）
-func getLatestVersion() (string, error) {
-	cacheMutex.RLock()
-	if latestVersionCache != "" && time.Since(latestVersionCacheTime) < cacheTTL {
+// getLatestVersion 从 GitHub API 获取最新 release 版本号（带缓存）。
+//
+// force 为 true 时无视缓存冷却直接回源（供弹窗里手动点「检查更新」使用），
+// 成功后照样写回缓存并续期，使随后的自动检查从这一刻重新起算冷却。
+func getLatestVersion(force bool) (string, error) {
+	if !force {
+		cacheMutex.RLock()
+		if latestVersionCache != "" && time.Since(latestVersionCacheTime) < cacheTTL {
+			cached := latestVersionCache
+			cacheMutex.RUnlock()
+			return cached, nil
+		}
 		cacheMutex.RUnlock()
-		return latestVersionCache, nil
 	}
-	cacheMutex.RUnlock()
 
 	url := "https://api.github.com/repos/shuangji66/fluxor/releases/latest"
 	resp, err := ghAPIClient.Get(url)
@@ -96,7 +102,9 @@ func getLatestVersion() (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", err
+		// 必须回报状态码：此前误返回 err（此时为 nil），会把 403 限流 / 404 无 Release
+		// 静默地当成「拿到空版本号」→ 前端显示「已是最新版本」，掩盖真实故障。
+		return "", fmt.Errorf("GitHub API returned %d", resp.StatusCode)
 	}
 
 	var result struct {
@@ -146,14 +154,19 @@ func compareVersions(v1, v2 string) int {
 	return 0
 }
 
-// getLatestReleaseInfo 获取完整 release 信息（带缓存）
-func getLatestReleaseInfo() (*githubRelease, error) {
-	releaseCacheMutex.RLock()
-	if latestReleaseCache != nil && time.Since(latestReleaseCacheTime) < cacheTTL {
+// getLatestReleaseInfo 获取完整 release 信息（带缓存）。
+//
+// force 语义同 getLatestVersion：跳过缓存冷却直接回源，成功后写回并续期。
+func getLatestReleaseInfo(force bool) (*githubRelease, error) {
+	if !force {
+		releaseCacheMutex.RLock()
+		if latestReleaseCache != nil && time.Since(latestReleaseCacheTime) < cacheTTL {
+			cached := latestReleaseCache
+			releaseCacheMutex.RUnlock()
+			return cached, nil
+		}
 		releaseCacheMutex.RUnlock()
-		return latestReleaseCache, nil
 	}
-	releaseCacheMutex.RUnlock()
 
 	apiURL := "https://api.github.com/repos/shuangji66/fluxor/releases/latest"
 	resp, err := ghAPIClient.Get(apiURL)
@@ -171,10 +184,25 @@ func getLatestReleaseInfo() (*githubRelease, error) {
 	}
 	rel.TagName = strings.TrimPrefix(rel.TagName, "v")
 
+	storeReleaseCache(&rel)
+
+	return &rel, nil
+}
+
+// storeReleaseCache 把一次成功的 release 查询结果写入缓存。
+//
+// 同时续期「仅版本号」那份缓存：它与 release 缓存查的是同一个接口，
+// 只是 release 信息拿不到时的回退路径。两边一起续期，冷却窗口才是一个整体——
+// 否则手动检查刚回源拿到的新版本，一旦 release 接口随后失败，
+// 回退路径仍会读到手动检查之前的旧版本号。
+func storeReleaseCache(rel *githubRelease) {
 	releaseCacheMutex.Lock()
-	latestReleaseCache = &rel
+	latestReleaseCache = rel
 	latestReleaseCacheTime = time.Now()
 	releaseCacheMutex.Unlock()
 
-	return &rel, nil
+	cacheMutex.Lock()
+	latestVersionCache = rel.TagName
+	latestVersionCacheTime = time.Now()
+	cacheMutex.Unlock()
 }

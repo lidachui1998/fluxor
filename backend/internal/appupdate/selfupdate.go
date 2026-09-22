@@ -297,7 +297,9 @@ func HandleSelfUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rel, err := getLatestReleaseInfo()
+	// 用缓存里的 Release 信息即可：能点到「更新版本」说明刚才那次手动检查
+	// （?force=1）已经把缓存连同冷却一起续期过，这里没必要再打一次 GitHub。
+	rel, err := getLatestReleaseInfo(false)
 	if err != nil {
 		httpx.WriteJSONError(w, http.StatusInternalServerError, "获取最新版本信息失败，请检查代理或网络连接: "+err.Error())
 		return

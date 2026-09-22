@@ -89,6 +89,8 @@ make V=1.2.3
 
 注入值写入 `internal/buildinfo.Version`，前端「关于」页与更新检查改为经后端接口
 `GET /app-version` 获取，`/check-update`、`/update-self` 也不再需要前端传 `?current=`。
+`/check-update` 另支持 `?force=1`：忽略后端 10 分钟缓存冷却直接回源查询，成功后刷新冷却
+（「关于」弹窗里的「检查更新」按钮走这一条）。
 
 未指定 `V` 时注入 `dev`；此时后端会判定「版本未知」，更新检查不会误报有新版本。
 

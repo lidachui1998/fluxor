@@ -217,13 +217,16 @@ const handleSelfUpdate = async () => {
 
 const isCheckingUpdate = ref(false)
 
+// 弹窗里的「检查更新」按钮专用：手动点击一律无视后端缓存冷却直接回源查询
+// （?force=1），避免拿到页面加载时那次自动检查的旧结果；后端在查询成功后
+// 会把缓存与冷却时间一并续期，所以随后的自动检查不会立刻再打一次 GitHub。
 const handleCheckUpdate = async () => {
   if (isCheckingUpdate.value) return
   isCheckingUpdate.value = true
 
   try {
     // 当前版本由后端自行获知（编译期注入），无需再传 ?current=
-    const resp = await apiFetch('/check-update')
+    const resp = await apiFetch('/check-update?force=1')
 
     if (resp.ok) {
       const data = await resp.json()
@@ -300,7 +303,8 @@ onMounted(async () => {
     })
     .catch(() => {}) // 静默失败，不影响正常使用
 
-  // 先取面板版本（后端编译期注入），再检查 Fluxor 自身更新
+  // 先取面板版本（后端编译期注入），再检查 Fluxor 自身更新。
+  // 这一次是「自动检查」：不带 force，沿用后端缓存，10 分钟冷却内不重复打 GitHub。
   await fetchAppVersion()
   apiFetch('/check-update')
     .then(res => res.ok ? res.json() : null)
