@@ -154,52 +154,52 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- 日志终端界面 -->
+    <!-- 日志终端界面：底色/前景取自主题变量（--log-*），随主题切换，不再是固定黑底 -->
     <div
       ref="terminalRef"
       @scroll.passive="handleScroll"
-      class="flex-1 bg-slate-950 text-slate-300 font-mono text-xs p-3 sm:p-5 rounded-xl overflow-y-auto leading-relaxed border border-slate-800/50 relative select-text"
+      class="flex-1 bg-[var(--log-bg)] text-[var(--log-text)] font-mono text-xs p-3 sm:p-5 rounded-xl overflow-y-auto leading-relaxed border border-[var(--border-color)] relative select-text"
     >
-      <div v-if="filteredLogs.length === 0" class="text-slate-600 flex items-center justify-center h-full">
+      <div v-if="filteredLogs.length === 0" class="text-[var(--log-dim)] flex items-center justify-center h-full">
         {{ t('logs.waiting') }}
       </div>
       <div v-else class="space-y-1">
         <div
           v-for="log in filteredLogs"
           :key="log.id"
-          class="log-row break-all hover:bg-slate-900/60 py-0.5 px-1 rounded transition-colors text-slate-300"
+          class="log-row break-all hover:bg-[var(--log-hover)] py-0.5 px-1 rounded transition-colors text-[var(--log-text)]"
         >
           <!-- 桌面端显示完整毫秒 -->
-          <span class="text-slate-500 select-none hidden sm:inline mr-1.5 sm:mr-2">[{{ log.time }}]</span>
+          <span class="text-[var(--log-dim)] select-none hidden sm:inline mr-1.5 sm:mr-2">[{{ log.time }}]</span>
           <!-- 移动端隐藏毫秒以节省极窄的空间 -->
-          <span class="text-slate-500 select-none sm:hidden mr-1.5 sm:mr-2">[{{ log.time.split('.')[0] }}]</span>
+          <span class="text-[var(--log-dim)] select-none sm:hidden mr-1.5 sm:mr-2">[{{ log.time.split('.')[0] }}]</span>
           
           <span
             class="inline-block align-middle font-bold uppercase text-[9px] sm:text-[10px] px-1 py-0.5 rounded tracking-wider text-center min-w-[45px] sm:min-w-[56px] select-none mr-1.5 sm:mr-2"
             :class="{
-              'bg-blue-500/20 text-blue-400': log.type === 'info' || log.type === 'debug',
-              'bg-amber-500/20 text-amber-400': log.type === 'warning',
-              'bg-red-500/20 text-red-400': log.type === 'error'
+              'bg-blue-500/15 text-[var(--log-info)]': log.type === 'info' || log.type === 'debug',
+              'bg-amber-500/15 text-[var(--log-warn)]': log.type === 'warning',
+              'bg-red-500/15 text-[var(--log-error)]': log.type === 'error'
             }"
           >
             {{ log.type }}
           </span>
           <span
             :class="{
-              'text-slate-300': log.type === 'info' || log.type === 'debug',
-              'text-amber-300': log.type === 'warning',
-              'text-red-400 font-medium': log.type === 'error'
+              'text-[var(--log-text)]': log.type === 'info' || log.type === 'debug',
+              'text-[var(--log-warn)]': log.type === 'warning',
+              'text-[var(--log-error)] font-medium': log.type === 'error'
             }"
           >{{ log.payload }}</span>
         </div>
       </div>
     </div>
 
-    <!-- 智能自动滚动控制悬浮钮（提升至滚动区外层以实现固定定位） -->
+    <!-- 智能自动滚动控制悬浮钮（提升至滚动区外层以实现固定定位）：底色/边框/文字同样随主题 -->
     <button
       v-if="filteredLogs.length > 0"
       @click="autoScroll = !autoScroll"
-      class="absolute bottom-4 right-4 bg-slate-900/90 hover:bg-slate-800 border border-slate-700 hover:border-slate-500 text-[10px] px-2.5 py-1.5 rounded-lg text-slate-400 flex items-center gap-1.5 transition-all shadow-lg z-40 select-none"
+      class="absolute bottom-4 right-4 bg-[var(--log-chip-bg)] hover:bg-[var(--log-chip-hover-bg)] border border-[var(--log-chip-border)] hover:border-[var(--accent)] text-[10px] px-2.5 py-1.5 rounded-lg text-[var(--log-text)] flex items-center gap-1.5 transition-all shadow-lg z-40 select-none"
     >
       <ArrowDownOutline class="w-3 h-3 transition-transform duration-200" :class="{ 'translate-y-0.5 animate-bounce text-success': autoScroll }" />
       {{ t('logs.auto_scroll') }}

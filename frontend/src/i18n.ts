@@ -89,7 +89,7 @@ const messages = {
     'overview.custom_placeholder': '输入自定义地址 (如 https://example.com)',
 
     'proxies.title': '代理组',
-    'proxies.current': '当前选择',
+    'proxies.current': '当前',
     'proxies.test': '测速',
     'proxies.testing': '测速中',
     'proxies.timeout': '超时',

@@ -124,6 +124,23 @@
   --scrollbar-thumb-hover: rgba(148, 163, 184, 0.4);
   --focus-ring: rgba(59, 130, 246, 0.2);
 
+  /* 日志面板：底色/前景随主题走（不再是各主题下同一块黑底）。
+     亮色主题的 --log-info/--log-warn/--log-error 取加深档，否则蓝/琥珀/红在浅底上看不清。 */
+  --log-bg: #0b1220;
+  --log-text: #cbd5e1;
+  --log-dim: #8494ab;
+  --log-hover: rgba(255, 255, 255, 0.06);
+  --log-info: #60a5fa;
+  --log-warn: #fbbf24;
+  --log-error: #f87171;
+
+  /* 日志悬浮钮（自动滚动）的浮起面：由面板底色向正文色混一点出来。
+     只在这里定义一次——各主题的 --log-bg/--log-text 都落在 :root/<html> 上，
+     引用它们的这套混色会自动跟着主题变，无需每个主题再写一遍。 */
+  --log-chip-bg: color-mix(in srgb, var(--log-text) 12%, var(--log-bg));
+  --log-chip-hover-bg: color-mix(in srgb, var(--log-text) 20%, var(--log-bg));
+  --log-chip-border: color-mix(in srgb, var(--log-text) 30%, transparent);
+
   /* 侧边栏激活高对比 */
   --sidebar-active-bg: var(--accent);
   --sidebar-active-text: #ffffff;
@@ -152,6 +169,15 @@
   --shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
   --btn-secondary-bg: #e8ecf0;
   --btn-secondary-hover-bg: rgba(15, 23, 42, 0.08);
+
+  /* 日志面板（浅色底 + 深色字） */
+  --log-bg: #f8fafc;
+  --log-text: #1e293b;
+  --log-dim: #64748b;
+  --log-hover: rgba(15, 23, 42, 0.05);
+  --log-info: #1d4ed8;
+  --log-warn: #92400e;
+  --log-error: #b91c1c;
 
   /* 浅色磨砂玻璃 */
   --bg-glass-heavy: rgba(255, 255, 255, 0.65);
@@ -198,6 +224,15 @@
   --btn-secondary-bg: #291b4d;
   --btn-secondary-hover-bg: rgba(168, 85, 247, 0.20);
 
+  /* 日志面板（暗紫底 + 亮紫字） */
+  --log-bg: #0f0819;
+  --log-text: #ede9fe;
+  --log-dim: #a78bfa;
+  --log-hover: rgba(168, 85, 247, 0.12);
+  --log-info: #60a5fa;
+  --log-warn: #fbbf24;
+  --log-error: #f87171;
+
   /* 魅惑紫磨砂玻璃 */
   --bg-glass-heavy: rgba(21, 13, 41, 0.65);
   --bg-glass-medium: rgba(21, 13, 41, 0.45);
@@ -242,6 +277,15 @@
   --btn-secondary-bg: #fff1f2;
   --btn-secondary-hover-bg: rgba(244, 63, 94, 0.12);
 
+  /* 日志面板（浅粉底 + 深玫瑰字） */
+  --log-bg: #fff7f8;
+  --log-text: #7f1030;
+  --log-dim: #be123c;
+  --log-hover: rgba(244, 63, 94, 0.07);
+  --log-info: #1d4ed8;
+  --log-warn: #92400e;
+  --log-error: #b91c1c;
+
   /* 粉色磨砂玻璃 */
   --bg-glass-heavy: rgba(255, 255, 255, 0.65);
   --bg-glass-medium: rgba(255, 255, 255, 0.45);
@@ -284,6 +328,15 @@
   --btn-secondary-bg: #dcfce7;
   --btn-secondary-hover-bg: rgba(52, 199, 89, 0.12);
 
+  /* 日志面板（浅绿底 + 深绿字） */
+  --log-bg: #f4fdf7;
+  --log-text: #04331a;
+  --log-dim: #15803d;
+  --log-hover: rgba(52, 199, 89, 0.08);
+  --log-info: #1d4ed8;
+  --log-warn: #92400e;
+  --log-error: #b91c1c;
+
   /* 清新绿磨砂玻璃 */
   --bg-glass-heavy: rgba(255, 255, 255, 0.65);
   --bg-glass-medium: rgba(255, 255, 255, 0.45);
@@ -325,6 +378,15 @@
   --shadow: none;
   --btn-secondary-bg: #e0f2fe;
   --btn-secondary-hover-bg: rgba(0, 122, 255, 0.12);
+
+  /* 日志面板（浅蓝底 + 深蓝字） */
+  --log-bg: #f5faff;
+  --log-text: #06283d;
+  --log-dim: #0369a1;
+  --log-hover: rgba(0, 122, 255, 0.08);
+  --log-info: #1d4ed8;
+  --log-warn: #92400e;
+  --log-error: #b91c1c;
 
   /* 冰海蓝磨砂玻璃 */
   --bg-glass-heavy: rgba(255, 255, 255, 0.65);
