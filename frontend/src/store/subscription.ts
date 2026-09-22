@@ -37,10 +37,33 @@ export interface RuleTypeSpec {
   no_resolve: boolean   // 该类型是否支持 no-resolve 选项
 }
 
-/** /subscribe/custom-rules/{name} 的统一响应体：增删查共用。 */
+/**
+ * 单条流量隧道（config.yaml 顶层 tunnels 块的一项）。
+ *
+ * 与后端 config.Tunnel 一一对应：network 是 tcp/udp 的列表，address/target 为 host:port，
+ * proxy 留空表示不指定（内核按正常规则匹配选择出口，因此「关闭」不等于「直连」）。
+ */
+export interface Tunnel {
+  id: string
+  network: string[]     // ['tcp','udp'] | ['tcp'] | ['udp']
+  address: string       // 本地监听地址，如 127.0.0.1:6553
+  target: string        // 转发目标地址，如 8.8.8.8:53
+  proxy?: string        // 可选的代理组/代理节点名，必须在当前配置里存在
+  enabled: boolean      // 启停开关：关闭的隧道不写进 config.yaml
+}
+
+/** 隧道视图：后端附带单行展示形式与合法性判定（前端不复刻校验逻辑）。 */
+export interface TunnelView extends Tunnel {
+  line: string          // 单行展示形式：network,address,target[,proxy]
+  valid: boolean
+  reason?: string       // valid=false 时的原因（proxy 不存在、地址非法、与另一条冲突…）
+}
+
+/** 规则与隧道接口的统一响应体：两者服务同一个作用域，响应必须同构。 */
 export interface CustomRulesPayload {
-  file_ready: boolean     // 订阅原始文件是否已下载（false 时无法添加规则）
+  file_ready: boolean     // 订阅原始文件是否已下载（false 时无法校验规则与隧道的 proxy）
   rules: CustomRule[]     // 已按生效顺序返回（before 组在前、after 组在后），前端原样渲染，勿再排序/分组
+  tunnels: TunnelView[]   // 该作用域的流量隧道，顺序即写入 config.yaml 的顺序
   groups: string[]        // 可选目标：代理组（订阅自带或档位模板），不含代理节点
   nodes: string[]         // 可选目标：自定义模式下的手工节点名（其余模式为空数组）
   builtins: string[]      // ['DIRECT','REJECT','PASS']
@@ -59,6 +82,9 @@ export interface SubscriptionItem {
   info?: SubscriptionInfo | null
   // 订阅级自定义规则（切换模式）：编辑订阅时必须原样带回，否则保存并应用会丢规则
   custom_rules?: CustomRule[]
+  // 订阅级流量隧道（切换模式）。后端在「保存并应用」时会以服务端状态为准，
+  // 因此这里只需原样带回（不丢字段），不必在前端维护其正确性
+  tunnels?: Tunnel[]
 }
 
 /** 自定义协议字段的取值类型（与后端 nodespec.Kind 一一对应）。 */

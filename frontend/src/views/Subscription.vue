@@ -64,6 +64,9 @@ const editForm = ref<SubscriptionItem>({
 const showRulesModal = ref(false)
 const rulesDialogRef = ref<InstanceType<typeof CustomRulesDialog> | null>(null)
 const rulesEndpoint = ref('')
+// 流量隧道的接口前缀：与规则一一对应（切换=订阅、融合=档位、自定义=独立一份）。
+// 两者服务的是同一批作用域，只改一个会让隧道表单打到错的入口上。
+const rulesTunnelEndpoint = ref('')
 const rulesScopes = ref<{ key: string, label: string, effective: boolean }[]>([])
 const rulesTitle = ref('')
 // 自定义规则弹窗的作用域提示：融合模式的规则挂在规则集档位上，切换模式在各订阅卡片上，文案随模式切换
@@ -72,6 +75,7 @@ const rulesHint = ref('')
 // 打开订阅级（切换模式）自定义规则：作用域即该订阅名，单作用域 → 不渲染页签
 const openSubRulesDialog = (name: string) => {
   rulesEndpoint.value = '/subscribe/custom-rules'
+  rulesTunnelEndpoint.value = '/subscribe/custom-tunnels'
   rulesScopes.value = [{ key: name, label: name, effective: name === currentConfig.value.active_subscription }]
   rulesTitle.value = t('subscription.custom_rules_title', { name })
   rulesHint.value = ''
@@ -85,6 +89,7 @@ const openSubRulesDialog = (name: string) => {
 const openRulesDialog = () => {
   if (currentConfig.value.mode === 'custom') {
     rulesEndpoint.value = '/subscribe/custom-mode-rules'
+    rulesTunnelEndpoint.value = '/subscribe/custom-mode-tunnels'
     rulesScopes.value = [{ key: 'custom', label: t('subscription.custom_rules'), effective: true }]
     rulesTitle.value = t('subscription.custom_rules_custom_title')
     rulesHint.value = t('subscription.custom_rules_custom_hint')
@@ -97,6 +102,7 @@ const openRulesDialog = () => {
 // 打开规则集档位级（融合模式）自定义规则：base/full 两档各自独立，用页签切换
 const openMergeRulesDialog = () => {
   rulesEndpoint.value = '/subscribe/merge-custom-rules'
+  rulesTunnelEndpoint.value = '/subscribe/merge-custom-tunnels'
   rulesScopes.value = [
     { key: 'base', label: t('subscription.rule_group_base'), effective: currentConfig.value.rule_group === 'base' },
     { key: 'full', label: t('subscription.rule_group_full'), effective: currentConfig.value.rule_group === 'full' },
@@ -968,6 +974,7 @@ onUnmounted(() => {
       :title="rulesTitle"
       :hint="rulesHint"
       :endpoint="rulesEndpoint"
+      :tunnel-endpoint="rulesTunnelEndpoint"
       :scopes="rulesScopes"
       @close="closeRulesDialog"
     />

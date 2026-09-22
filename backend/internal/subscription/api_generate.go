@@ -56,14 +56,14 @@ func HandleGenerateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg.DeletePhysical = nil // 清空临时字段避免持久化
 
-	// 自定义规则归各自的规则接口维护（切换模式按订阅、融合模式按规则集档位）：
-	// 本接口只负责生成配置文件，不能在请求体缺少这些字段时把它们清空——否则
-	// GenerateConfig 会生成一份不含自定义规则的 config.yaml，且内存态规则被清空后，
-	// 下一次规则编辑会把「只剩本次编辑」的列表写回文件。详见 config.AdoptServerOwnedRuleFields。
+	// 自定义规则与流量隧道归各自的专用接口维护（切换模式按订阅、融合模式按规则集档位、
+	// 自定义模式独立一份）：本接口只负责生成配置文件，不能在请求体缺少这些字段时把它们
+	// 清空——否则 GenerateConfig 会生成一份不含自定义规则/隧道的 config.yaml，且内存态被
+	// 清空后，下一次编辑会把「只剩本次编辑」的列表写回文件。详见 config.AdoptServerOwnedFields。
 	config.Mu.RLock()
 	prev := config.Current
 	config.Mu.RUnlock()
-	cfg.AdoptServerOwnedRuleFields(prev)
+	cfg.AdoptServerOwnedFields(prev)
 
 	// 自定义模式：不使用订阅，配置由模板 + 手工节点 + 标准规则集生成
 	if cfg.Mode == config.ModeCustom {
@@ -131,8 +131,10 @@ func HandleGenerateConfig(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteJSONError(w, http.StatusInternalServerError, "选中的订阅文件不存在: "+err.Error())
 			return
 		}
-		// 复制文件到 configTarget，并叠加该订阅的自定义规则
-		if _, err := writeRuntimeConfig(cfg.ActiveSubscription, copyCustomRules(cfg, cfg.ActiveSubscription)); err != nil {
+		// 复制文件到 configTarget，并叠加该订阅的自定义规则与流量隧道
+		if _, err := writeRuntimeConfig(cfg.ActiveSubscription,
+			copyCustomRules(cfg, cfg.ActiveSubscription),
+			copyCustomTunnels(cfg, cfg.ActiveSubscription)); err != nil {
 			httpx.WriteJSONError(w, http.StatusInternalServerError, "生成运行配置失败: "+err.Error())
 			return
 		}

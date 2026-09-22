@@ -80,7 +80,10 @@ fluxor/
                                  #   切换模式由订阅卡片按钮打开（作用域=该订阅，单页签）；
                                  #   融合模式与自定义模式由标题行「添加订阅/添加节点」左侧按钮打开
                                  #   （融合=base/full 两页签；自定义=独立作用域 custom 的单页签，规则与融合模式分开存放），
-                                 #   并传入 hint 文案说明作用域与切换模式的入口（文案由父组件按模式给定，组件内不判模式）
+                                 #   并传入 hint 文案说明作用域与切换模式的入口（文案由父组件按模式给定，组件内不判模式）。
+                                 #   同一个弹窗兼管「流量隧道」：类型下拉末尾的 tunnels 选项把表单切成隧道字段
+                                 #   （监听类型下拉 / 两个地址输入框 / proxy 选择框），隧道列表独立成段排在规则列表下方，
+                                 #   每条带启停开关与编辑/换序/删除；两个前端接口（endpoint / tunnelEndpoint）由父组件按模式传入
 ```
 
 > **构建流程**：`make` → ① 清理旧 `frontend/dist` 与 `backend/dist`；② `npm run build` 输出到 `frontend/dist/`；③ 拷贝至 `backend/dist/`；④ 在 `backend/` 内 `go build -ldflags` （依赖 `//go:embed dist`，同时注入版本号）输出到项目根目录 `./fluxor`。版本号用 `make V=1.0.0` 指定，缺省 `1.0.0`（`make V=dev` 可产出不参与更新判断的调试版本）。
@@ -106,10 +109,12 @@ backend/
     │   ├── name.go               #   订阅名校验与节点文件名清洗（防路径穿越）
     │   ├── nodes.go              #   CustomNode 名校验（非空/长度/无控制字符/重名）
     │   ├── rules.go              #   CustomRule 列表操作：同组内上/下移动、按生效顺序重排
+    │   │                         #     + AdoptServerOwnedFields：规则与隧道字段一律以服务端为准
+    │   ├── tunnels.go            #   Tunnel 模型：网络类型归一化、同地址判重、列表内上/下移动、按作用域取列表
     │   └── load.go               #   配置加载、默认值补齐、持久化
     │                             #     + FileMu / UpdateConfigFile：fluxor.json 的共用文件锁与「读—改—写」
     ├── configgen/                # 【基础层】config.yaml 模板 + YAML 结构化改写
-    │   ├── generator.go          #   GenerateConfig / GenerateBaseConfig（写盘前归一化顶层键序：标量键在前、块在后，块序 dns→proxy-providers→proxy-groups→proxies→rule-providers→rules）
+    │   ├── generator.go          #   GenerateConfig / GenerateBaseConfig（写盘前归一化顶层键序：标量键在前、块在后，块序 dns→proxy-providers→proxy-groups→proxies→tunnels→rule-providers→rules）
     │   ├── template_base.go      #   基础字段骨架
     │   ├── template_dns.go       #   统一注入的 DNS 块
     │   ├── groups_lite.go        #   base 规则集的代理组
@@ -119,6 +124,8 @@ backend/
     │   ├── rules_full.go         #   full 规则集的规则
     │   ├── customrules.go        #   自定义规则：校验 + 幂等注入 rules 序列（before/after 双锚点）
     │   ├── mergerules.go         #   规则上下文：融合档位（MergeRuleSetContext）与自定义模式（CustomModeRuleContext，目标额外含手工节点）
+    │   ├── tunnels.go            #   流量隧道：校验（监听地址 host:port、目标支持域名、proxy 必须存在）
+    │   │                         #     + 幂等注入 tunnels 块（写在 rule-providers/rules 之前；无效项跳过）
     │   ├── customconfig.go       #   GenerateCustomConfig：自定义模式产物 = 模板骨架 + dns + proxies 块 + 标准规则集
     │   └── doc.go                #   包说明
     ├── nodespec/                 # 【叶子】出站代理协议字段表（自定义模式的「默认模板」唯一来源）
@@ -167,7 +174,9 @@ backend/
     │   ├── templaterules.go      #   模板级自定义规则的公共实现：ruleScope（作用域）抽象 + 增/改/排序/删/响应/生效同步
     │   ├── mergecustomrules.go   #   /subscribe/merge-custom-rules/{base|full}：融合模式档位级自定义规则（仅融合模式）
     │   ├── custommoderules.go    #   /subscribe/custom-mode-rules/custom：自定义模式自定义规则（独立存储，仅自定义模式）
-    │   ├── runtimeconfig.go      #   writeRuntimeConfig：订阅文件 → config.yaml 副本 + 自定义规则叠加
+    │   ├── tunnels.go            #   流量隧道三作用域入口（custom-tunnels / merge-custom-tunnels /
+    │   │                         #     custom-mode-tunnels）+ tunnelScope 抽象 + 增/改/换序/删/启停
+    │   ├── runtimeconfig.go      #   writeRuntimeConfig：订阅文件 → config.yaml 副本 + 自定义规则与隧道一趟叠加
     │   ├── patch.go              #   向节点文件注入端口/密钥/DNS（YAML 结构化改写；并归一化顶层键序）
     │   ├── ensure.go             #   切换模式下确保订阅文件就绪
     │   ├── update.go             #   切换模式下的单个订阅更新（锁内取快照 → 锁外下载 → 锁内写回）
@@ -303,6 +312,9 @@ func (c *cancelableReadCloser) Close() error {
 | `/subscribe/custom-rules/{name}` | GET/POST/PUT/PATCH/DELETE | `subscription.HandleCustomRulesAPI` | 切换模式下该订阅的自定义规则：查询 / 新增 / 修改（body 带 `id`）/ 排序（`{id,direction:up\|down}`）/ 删除（`?id=`）；所有写操作即时持久化，激活订阅改动后重写 config.yaml 并重载内核 |
 | `/subscribe/merge-custom-rules/{ruleGroup}` | GET/POST/PUT/PATCH/DELETE | `subscription.HandleMergeCustomRulesAPI` | **仅融合模式**：按规则集档位（`base`/`full`）分开存放的模板级自定义规则，方法与语义同上；改动当前生效档位时重新生成 config.yaml 并重载内核 |
 | `/subscribe/custom-mode-rules/{scope}` | GET/POST/PUT/PATCH/DELETE | `subscription.HandleCustomModeRulesAPI` | **仅自定义模式**：独立一份自定义规则（`custom_mode_rules`，不按档位分表），方法与语义同上；可选目标额外含手工节点名；规则恒生效，改动即重新生成 config.yaml 并重载内核 |
+| `/subscribe/custom-tunnels/{name}` | GET/POST/PUT/PATCH/DELETE | `subscription.HandleSubscriptionTunnelsAPI` | 切换模式下该订阅的流量隧道（写进 config.yaml 的 `tunnels` 块）：查询 / 新增 / 修改（body 带 `id`，**启停开关也走它**）/ 排序（`{id,direction}`）/ 删除（`?id=`）；写操作即时持久化，激活订阅改动后重写 config.yaml 并重载内核 |
+| `/subscribe/merge-custom-tunnels/{ruleGroup}` | GET/POST/PUT/PATCH/DELETE | `subscription.HandleMergeTunnelsAPI` | **仅融合模式**：按规则集档位（`base`/`full`）分开存放的流量隧道，方法与语义同上；改动当前生效档位时重新生成 config.yaml 并重载内核 |
+| `/subscribe/custom-mode-tunnels/{scope}` | GET/POST/PUT/PATCH/DELETE | `subscription.HandleCustomModeTunnelsAPI` | **仅自定义模式**：独立一份流量隧道（`custom_mode_tunnels`），方法与语义同上；可选 proxy 额外含手工节点名 |
 | `/traffic` | WS | `wsproxy.WsProxyHandler("/traffic")` | 实时流量数据 WebSocket 代理 |
 | `/memory` | WS | `wsproxy.WsProxyHandler("/memory")` | 实时内存数据 WebSocket 代理 |
 | `/logs` | WS | `wsproxy.WsProxyHandler("/logs")` | 实时日志流 WebSocket 代理 |
@@ -402,7 +414,7 @@ func (c *cancelableReadCloser) Close() error {
 
 ### 3.9 自定义规则注入规约（`configgen` + `subscription`）
 
-自定义规则有三种作用域（切换=订阅、融合=档位、自定义=独立字段），注入链路不同，但共用同一套校验与幂等注入实现：
+自定义规则有三种作用域（切换=订阅、融合=档位、自定义=独立字段），注入链路不同，但共用同一套校验与幂等注入实现。**流量隧道（`tunnels` 顶层块）用的是同一套作用域划分与同一套事务顺序**，差异见 3.12。
 
 | 模式 | 作用域（存放位置） | 生效条件 | 注入点 |
 |------|--------------------|----------|--------|
@@ -434,7 +446,7 @@ func (c *cancelableReadCloser) Close() error {
     - 请求体**没带**规则字段（如精简的 API 调用）→ 配置生成读到空规则集，产出不含自定义规则的 `config.yaml`；
     - 请求体**带了过期的规则字段**（前端在规则弹窗里改过之后就是过期的）→ 实测：刚删掉的规则在「保存并应用」后复活、刚新增的规则被旧列表覆盖丢失。
 
-    因此两个接口一律调用 `config.SubscribeConfig.AdoptServerOwnedRuleFields(prev)`：**规则字段以服务端状态为准，键存在与否、是否为空都不影响**——规则接口是唯一的修改入口。唯一例外是服务端不认识的**全新订阅名**（新建或改名）：没有旧值可取，保留请求体里的规则，免得「带规则创建订阅」被静默丢数据。取服务端状态时按值深拷贝（nil 保持 nil），避免与规则接口的就地改写竞争。
+    因此两个接口一律调用 `config.SubscribeConfig.AdoptServerOwnedFields(prev)`：**规则与隧道字段都以服务端状态为准，键存在与否、是否为空都不影响**——两种专用接口是唯一的修改入口。唯一例外是服务端不认识的**全新订阅名**（新建或改名）：没有旧值可取，保留请求体里的规则与隧道，免得「带规则创建订阅」被静默丢数据。取服务端状态时按值深拷贝（nil 保持 nil，隧道的 `network` 切片也逐项复制），避免与专用接口的就地改写竞争。
     > 教训：同一个字段有两个写入者、其中一个还持有快照，就是「删了又回来」这类 bug 的温床。**不要再把判据退回「键是否出现」**——它只挡得住漏带，挡不住过期。前端 `loadConfig` 仍需把后端原始字段铺开带回（`...cfg`），但那只是「别丢字段」，不构成正确性保证。
 
 > 规则写操作（增/改/排序/删）的事务顺序统一为：锁内改 `config.Current` → `SaveSubscribeConfig()` 持久化 → 若命中的作用域当前生效（切换：激活订阅；融合：当前档位；自定义：恒为标准档位）则同步运行配置（切换走 `writeRuntimeConfig`，融合走 `configgen.GenerateConfig`，自定义走 `configgen.GenerateCustomConfig`）+ `ReloadCore()`。内核未运行时只更新 `config.yaml`（下次启动生效），并把「已保存但未同步」的情况作为 warning 如实回给前端。
@@ -483,6 +495,33 @@ func (c *cancelableReadCloser) Close() error {
 9. **定时器与订阅无关**：自定义模式不下载订阅、不抓取元数据，`StartAllTimers` 因 `mode != switch` 全部不启动；`/subscribe/update/{name}` 一类的订阅操作在自定义模式下没有意义。
 10. **首启按模式生成**：`main.go` 在 `config.yaml` 缺失时按 `config.Current.Mode` 分派（自定义模式走 `GenerateCustomConfig`），否则首启会得到一份没有节点的骨架配置，用户保存过的节点在重启后不生效。
 11. **端到端验证手段**：`configgen` 里有一个可选的内核校验用例（`FLUXOR_CORE_BIN=/path/to/mihomo go test ./internal/configgen/ -run TestAllProtocolsAcceptedByCore -v`），它为每个协议生成一个节点并要求真实内核 `-t` 通过——给某协议增补字段/默认值后跑它，能直接发现「字段写错、必填漏填、类型不符」这类只有内核才知道的问题。
+
+---
+
+### 3.12 流量隧道生成规约（`tunnels` 顶层块）
+
+流量隧道（内核的 [tunnels](https://wiki.metacubex.one/config/tunnels/)）把本机某地址收到的 tcp/udp 流量转发到目标地址，可指定经过某个 `proxies` / `proxy-groups`。它是**独立的顶层块**，与规则是两条并行链路，但作用域划分与「写一条存一条」的交互刻意与自定义规则完全对齐（同一个弹窗、同一批作用域）：
+
+| 模式 | 存放位置 | 生效条件 | 注入点 |
+|------|----------|----------|--------|
+| 切换 | 订阅（`subscriptions[].tunnels`） | 该订阅是 `active_subscription` | `writeRuntimeConfig`：订阅文件 → config.yaml 副本 → 与规则**一趟**叠加 |
+| 融合 | 规则集档位（`merge_tunnels.{base,full}`） | 该档位是 `rule_group` | `GenerateConfig`：`appendRuleSet` 之后、写盘之前注入 |
+| 自定义 | 独立字段（`custom_mode_tunnels`） | 恒生效 | `GenerateCustomConfig`：`proxies` 之后、写盘之前注入 |
+
+接口入口同样按模式分开：切换=`/subscribe/custom-tunnels/{name}`、融合=`/subscribe/merge-custom-tunnels/{base\|full}`、自定义=`/subscribe/custom-mode-tunnels/custom`。要点：
+
+1. **`proxy` 必须是配置里真实存在的名字**：内核实测在加载配置时就校验（`tunnel proxy X not found`）并**拒绝整份配置**，因此校验集合直接取该作用域 `RuleContext.Env.Targets`（代理组 + 代理节点 + 内置目标），与规则目标同源。界面上的下拉只列**代理组**；**节点只在自定义模式下**给出（该模式的节点是静态 `proxies`，内核能解析；融合/切换模式的节点来自 provider 或数量庞大的订阅文件，列出来只会淹没下拉）。`DIRECT` / `REJECT` / `PASS` 不进下拉，但校验仍接受（内核确实接受）。
+2. **`proxy` 留空 = 不指定代理，不等于「直连」**：内核只在 `SpecialProxy` 非空时才强制走该代理，留空时按正常规则匹配选择出口。界面上该选项写作「关闭（不指定代理）」，文案不要写成「直连」。
+3. **目标必须是 `host:port`，但允许省略域名端口**：内核的目标解析是 `socks5.ParseAddr`，它要求 `host:port`；裸主机实测**不会**加载失败，而是启动监听那一刻打一行 `Start tunnel example.com error: invalid target address example.com` 并跳过该条——配置能加载、内核照常运行，隧道却静默失效（界面与日志都看不出；实测加 `:80` 后正常 `listening at`）。因此 `config.NormalizeTunnelTarget` 在写入前把目标定形，供校验、落盘与界面展示三处共用：
+   - `host:port`（IP / 域名 / `[IPv6]:port`）→ 原样采用；
+   - 纯域名（`example.com`）→ 补**默认端口 80**（`config.DefaultTunnelTargetPort`，http 的约定俗成值）；
+   - 裸 IP（`8.8.8.8`、裸 IPv6 `::1`）→ **拒绝**并提示补端口：IP 没有默认端口的约定，猜一个等于替用户把流量转到别处。端口一律不继承监听地址的端口——那会引入一条用户没写在配置里的隐式规则。
+4. **非法项跳过而不是写进配置**：监听地址非 `host:port`、端口越界、目标写法无法解析、`proxy` 已不存在、与另一条隧道监听同一地址（内核会 `address already in use`）——这些都会让内核拒绝加载或起不来。`ApplyTunnels` 逐条校验后跳过并记日志，接口再把「有 N 条隧道因配置无效未写入配置」作为 warning 回给前端。判重的依据是 `config.TunnelBindingsOverlap`（**按网络是否相交**，不是比字符串：`[tcp,udp]` 与 `[tcp]` 形态不同却抢同一个端口），保存路径与写入路径共用同一处判断（`configgen.TunnelReasons`）。
+5. **启停开关就是「写不写进配置」**：`enabled=false` 的隧道保留在列表里但不写入 `tunnels` 块。开关走整条 PUT（`prepareTunnel` 对关闭的隧道**不做校验**）——否则一条 `proxy` 已被改名的隧道会因为校验失败而关不掉，用户只能删掉重建。
+6. **落点恒在 `rule-providers` / `rules` 之前**：生成链路靠 `configcheck.topBlockRank`（`tunnels` 排在 `proxies` 与 `rule-providers` 之间）归一化键序；切换模式的 config.yaml 是订阅文件副本、**不做整体键序归一**（会把机场自带的全部块重排），因此走 `Doc.SetNodeBefore("tunnels", …, "rule-providers", "rules")` 定位插入，两处结论一致。没有任何启用隧道时**完全不触碰文档**：注入的那一块在下次复制订阅文件时自然消失，机场自带的 `tunnels` 块也不该被我们抹掉。
+7. **规则接口与隧道接口的响应必须同构**：两者服务同一个作用域（同一个弹窗），响应体都同时含 `rules` 与 `tunnels`。只返回自己那一半，前端整份刷新时就会把另一半抹成空。
+8. **与规则的关系是「两条独立链路」**：隧道流量只在 `proxy` 非空时绕过规则匹配；否则仍走规则。因此隧道不参与 `rules` 的排序与幂等注入，也不需要「插入位置」概念——列表顺序只是产物中每条隧道的先后，`config.MoveTunnel` 在同一条列表内相邻交换。
+9. **端到端验证手段**：`FLUXOR_CORE_BIN=/path/to/mihomo go test ./internal/configgen/ -run TestTunnelsAcceptedByCore -v` 会把含 `tunnels` 块的配置交给真实内核 `-t`（夹具不含 GEOIP/GEOSITE，因此不需要 geo 数据文件）；给隧道增补字段或改落点时跑它，能直接发现「字段名/类型写错、proxy 解析不到」这类只有内核才知道的问题。
 
 ---
 

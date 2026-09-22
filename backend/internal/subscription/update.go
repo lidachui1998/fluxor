@@ -16,11 +16,12 @@ type subscriptionSnapshot struct {
 	mode       string
 	isActive   bool
 	proxiesDir string
-	// customRules 是该订阅自定义规则的锁内副本。
+	// customRules / tunnels 是该订阅自定义规则与流量隧道的锁内副本。
 	//
 	// 必须在锁内复制：config.Current.Subscriptions 的底层数组由全局锁保护，
-	// 若在锁外直接遍历该切片读取规则，会与并发的增删规则构成数据竞争。
+	// 若在锁外直接遍历该切片读取规则/隧道，会与并发的增删构成数据竞争。
 	customRules []config.CustomRule
+	tunnels     []config.Tunnel
 	// cfg 是锁内对 config.Current 的值拷贝，供锁外打补丁时读取标量字段
 	// （端口/密钥/面板等）。注意其 Subscriptions 与全局共享同一底层数组，
 	// 因此锁外只允许读取标量字段，不得遍历该切片。
@@ -52,6 +53,7 @@ func takeSubscriptionSnapshot(subName string) (subscriptionSnapshot, bool) {
 	}
 	snap.isActive = snap.mode == "switch" && config.Current.ActiveSubscription == subName
 	snap.customRules = copyCustomRules(config.Current, subName)
+	snap.tunnels = copyCustomTunnels(config.Current, subName)
 	return snap, true
 }
 
@@ -121,8 +123,8 @@ func updateSubscriptionInSwitchMode(subName string) (needsReload bool, err error
 	// 如果该订阅是当前激活的订阅，则复制到 configTarget，并标记需要重载
 	if snap.isActive {
 		log.Printf("[UPDATE] 当前订阅为激活订阅，开始写入运行配置 %s", config.ConfigTarget)
-		// 自定义规则取锁内快照（snap.customRules），避免在锁外引用全局切片
-		result, err := writeRuntimeConfig(subName, snap.customRules)
+		// 自定义规则与隧道取锁内快照（snap.customRules / snap.tunnels），避免在锁外引用全局切片
+		result, err := writeRuntimeConfig(subName, snap.customRules, snap.tunnels)
 		if err != nil {
 			log.Printf("[UPDATE] 写入运行配置失败: %v", err)
 			return false, err

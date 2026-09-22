@@ -224,3 +224,91 @@ proxy-groups:
 		t.Fatalf("顶层键序错误:\n实际: %v\n期望: %v", keys, want)
 	}
 }
+
+// TestSetNodeBefore 定位插入：新键落在最早出现的锚点键之前，锚点缺失时追加到末尾。
+//
+// 这是切换模式 config.yaml（订阅文件副本，不做整体键序归一）里 tunnels 块的定位手段：
+// 靠 Set/SetNode 追加会让它落到 rules 之后，与「tunnels 写在 rule-providers / rules 之前」
+// 的要求相悖。
+func TestSetNodeBefore(t *testing.T) {
+	newSeq := func() *yaml.Node {
+		return &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+	}
+
+	cases := []struct {
+		name    string
+		fixture string
+		anchors []string
+		want    []string
+	}{
+		{
+			name: "插在最靠前的锚点之前",
+			fixture: `mode: rule
+proxies:
+  - {name: n1, type: ss}
+rule-providers:
+  ads: {type: http}
+rules:
+  - MATCH,DIRECT
+`,
+			anchors: []string{"rule-providers", "rules"},
+			want:    []string{"mode", "proxies", "tunnels", "rule-providers", "rules"},
+		},
+		{
+			name: "只命中后一个锚点",
+			fixture: `mode: rule
+proxies:
+  - {name: n1, type: ss}
+rules:
+  - MATCH,DIRECT
+`,
+			anchors: []string{"rule-providers", "rules"},
+			want:    []string{"mode", "proxies", "tunnels", "rules"},
+		},
+		{
+			name: "锚点都不存在时追加到末尾",
+			fixture: `mode: rule
+proxies:
+  - {name: n1, type: ss}
+`,
+			anchors: []string{"rule-providers", "rules"},
+			want:    []string{"mode", "proxies", "tunnels"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			doc, err := ParseDoc([]byte(tc.fixture))
+			if err != nil {
+				t.Fatalf("解析失败: %v", err)
+			}
+			doc.SetNodeBefore("tunnels", newSeq(), tc.anchors...)
+			out, err := doc.Bytes()
+			if err != nil {
+				t.Fatalf("序列化失败: %v", err)
+			}
+			keys, _ := topLevelOrder(t, out)
+			if strings.Join(keys, "|") != strings.Join(tc.want, "|") {
+				t.Fatalf("键序错误:\n实际: %v\n期望: %v\n%s", keys, tc.want, out)
+			}
+		})
+	}
+
+	// 键已存在时就地覆盖，位置不变（幂等重写的必要条件）
+	doc, err := ParseDoc([]byte("mode: rule\ntunnels:\n  - old\nrules:\n  - MATCH,DIRECT\n"))
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	doc.SetNodeBefore("tunnels", newSeq(), "rules")
+	out, err := doc.Bytes()
+	if err != nil {
+		t.Fatalf("序列化失败: %v", err)
+	}
+	keys, _ := topLevelOrder(t, out)
+	if strings.Join(keys, "|") != "mode|tunnels|rules" {
+		t.Fatalf("覆盖后键序不应变化: %v", keys)
+	}
+	if strings.Contains(string(out), "old") {
+		t.Fatalf("旧值应被覆盖: %s", out)
+	}
+}

@@ -303,6 +303,12 @@ func main() {
 	mux.HandleFunc(config.BaseURL+"/subscribe/merge-custom-rules/", subscription.HandleMergeCustomRulesAPI)
 	// 自定义模式：独立一份规则（与融合模式互不影响），可选目标含手工节点名
 	mux.HandleFunc(config.BaseURL+"/subscribe/custom-mode-rules/", subscription.HandleCustomModeRulesAPI)
+	// 流量隧道（config.yaml 的 tunnels 顶层块）三个作用域入口，与上面三条自定义规则入口
+	// 一一对应：切换模式按订阅、融合模式按规则集档位、自定义模式独立一份。
+	// 均为查询 / 新增 / 修改（含启停开关）/ 排序 / 删除，即时持久化并在生效作用域同步运行配置。
+	mux.HandleFunc(config.BaseURL+"/subscribe/custom-tunnels/", subscription.HandleSubscriptionTunnelsAPI)
+	mux.HandleFunc(config.BaseURL+"/subscribe/merge-custom-tunnels/", subscription.HandleMergeTunnelsAPI)
+	mux.HandleFunc(config.BaseURL+"/subscribe/custom-mode-tunnels/", subscription.HandleCustomModeTunnelsAPI)
 
 	// 获取所有订阅的代理信息（融合模式使用）
 	mux.HandleFunc(config.BaseURL+"/providers/proxies", dashapi.HandleProvidersProxiesAll)

@@ -43,6 +43,10 @@ func GenerateCustomConfig(cfg config.SubscribeConfig) error {
 	if err := applyCustomRules(doc, config.RuleScopeCustom, cfg.CustomModeRules); err != nil {
 		return err
 	}
+	// 流量隧道：在 proxies 之后注入，proxy 才能解析到手工节点名
+	if err := applyTunnels(doc, config.RuleScopeCustom, cfg.CustomModeTunnels); err != nil {
+		return err
+	}
 
 	if err := applyDNSBlock(doc); err != nil {
 		return err

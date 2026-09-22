@@ -35,13 +35,26 @@ func copyCustomRules(cfg config.SubscribeConfig, name string) []config.CustomRul
 	return nil
 }
 
-// writeRuntimeConfig 把指定订阅的节点文件写为运行配置 config.yaml，并叠加其自定义规则。
+// copyCustomTunnels 复制一份某个订阅的流量隧道切片（理由同 copyCustomRules）。
 //
-// 切换模式下 config.yaml 是「订阅文件副本」，因此自定义规则只能在复制之后叠加：
+// config.CopyTunnels 会连 Network 切片一并深拷贝，因此副本可在锁外安全使用。
+func copyCustomTunnels(cfg config.SubscribeConfig, name string) []config.Tunnel {
+	for i := range cfg.Subscriptions {
+		if cfg.Subscriptions[i].Name == name {
+			return config.CopyTunnels(cfg.Subscriptions[i].Tunnels)
+		}
+	}
+	return nil
+}
+
+// writeRuntimeConfig 把指定订阅的节点文件写为运行配置 config.yaml，并叠加其自定义规则
+// 与流量隧道。
+//
+// 切换模式下 config.yaml 是「订阅文件副本」，因此这两类改写只能在复制之后叠加：
 // 订阅文件（proxies/*.yaml）始终保持与机场下发内容一致，便于排查与整体重拉。
 //
-// rules 由调用方在锁内取好副本后传入，本函数不做全局状态访问。
-func writeRuntimeConfig(subName string, rules []config.CustomRule) (configgen.ApplyResult, error) {
+// rules / tunnels 由调用方在锁内取好副本后传入，本函数不做全局状态访问。
+func writeRuntimeConfig(subName string, rules []config.CustomRule, tunnels []config.Tunnel) (configgen.ApplyResult, error) {
 	srcFile := subscriptionFilePath(subName)
 	if _, err := os.Stat(srcFile); err != nil {
 		return configgen.ApplyResult{}, fmt.Errorf("订阅文件不存在: %w", err)
@@ -50,13 +63,19 @@ func writeRuntimeConfig(subName string, rules []config.CustomRule) (configgen.Ap
 		return configgen.ApplyResult{}, fmt.Errorf("复制配置文件失败: %w", err)
 	}
 
-	result, err := configgen.ApplyCustomRulesToFile(config.ConfigTarget, rules)
+	// 规则与隧道一趟改写完成：分两趟会在中间态留下「有隧道无规则」的 config.yaml，
+	// 而内核热重载可能就落在那个中间态上
+	result, tunnelResult, err := configgen.ApplyRuntimeOverridesToFile(config.ConfigTarget, rules, tunnels)
 	if err != nil {
 		return result, fmt.Errorf("写入自定义规则失败: %w", err)
 	}
 	for _, skip := range result.Skipped {
 		log.Printf("[CUSTOM-RULE] 跳过订阅 %s 的规则 %s,%s,%s: %s",
 			subName, skip.Rule.Type, skip.Rule.Payload, skip.Rule.Target, skip.Reason)
+	}
+	for _, skip := range tunnelResult.Skipped {
+		log.Printf("[TUNNEL] 跳过订阅 %s 的隧道 %s -> %s: %s",
+			subName, skip.Tunnel.Address, skip.Tunnel.Target, skip.Reason)
 	}
 	return result, nil
 }

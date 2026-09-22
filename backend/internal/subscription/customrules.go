@@ -40,6 +40,11 @@ type customRulesPayload struct {
 	FileReady bool `json:"file_ready"`
 	// Rules 该订阅已配置的自定义规则（含合法性判定），顺序即生效顺序。
 	Rules []customRuleView `json:"rules"`
+	// Tunnels 该作用域的流量隧道（含启停开关与合法性判定），顺序即写入配置的顺序。
+	//
+	// 与规则放在同一个响应体里：规则接口与隧道接口服务的是同一个作用域（同一个弹窗），
+	// 前端拿到任一响应都会整份刷新状态，两者必须同构。
+	Tunnels []tunnelView `json:"tunnels"`
 	// Groups 可选目标：代理组（订阅自带或档位模板），**不含**代理节点。
 	Groups []string `json:"groups"`
 	// Nodes 可选目标：自定义模式下的手工节点名（其余模式为空）。
@@ -385,10 +390,12 @@ func applyCustomRulesToActiveSubscription(name string) (string, string) {
 	config.Mu.RLock()
 	cfg := config.Current
 	active := cfg.Mode == "switch" && cfg.ActiveSubscription == name
-	// 锁内复制规则：锁外不得引用 config.Current.Subscriptions 的底层数组
+	// 锁内复制规则与隧道：锁外不得引用 config.Current.Subscriptions 的底层数组
 	var rules []config.CustomRule
+	var tunnels []config.Tunnel
 	if active {
 		rules = copyCustomRules(cfg, name)
+		tunnels = copyCustomTunnels(cfg, name)
 	}
 	config.Mu.RUnlock()
 
@@ -396,7 +403,7 @@ func applyCustomRulesToActiveSubscription(name string) (string, string) {
 		return "ok", ""
 	}
 
-	result, err := writeRuntimeConfig(name, rules)
+	result, err := writeRuntimeConfig(name, rules, tunnels)
 	if err != nil {
 		log.Printf("[CUSTOM-RULE] 同步订阅 %s 的运行配置失败: %v", name, err)
 		return "warning", "规则已保存，但同步运行配置失败: " + err.Error()
@@ -426,6 +433,7 @@ func applyCustomRulesToActiveSubscription(name string) (string, string) {
 func buildCustomRulesPayload(name string, cfg config.SubscribeConfig, sub config.Subscription) customRulesPayload {
 	payload := customRulesPayload{
 		Rules:     []customRuleView{},
+		Tunnels:   []tunnelView{},
 		Groups:    []string{},
 		Builtins:  configcheck.BuiltinRuleTargets(),
 		Providers: []string{},
@@ -434,6 +442,8 @@ func buildCustomRulesPayload(name string, cfg config.SubscribeConfig, sub config
 
 	ctx, err := configgen.LoadRuleContext(subscriptionFilePath(name))
 	if err != nil {
+		// 订阅文件未就绪：规则与隧道都无从校验（可选目标就来自那份文件），
+		// 但已保存的内容仍要展示，供用户删除或等文件就绪后再改
 		reason := "订阅文件尚未就绪，请先保存并应用"
 		for _, rule := range config.SortCustomRulesForDisplay(sub.CustomRules) {
 			payload.Rules = append(payload.Rules, customRuleView{
@@ -443,12 +453,14 @@ func buildCustomRulesPayload(name string, cfg config.SubscribeConfig, sub config
 				Reason:     reason,
 			})
 		}
+		payload.Tunnels = buildTunnelViews(sub.Tunnels, nil, reason)
 		return payload
 	}
 
 	payload.FileReady = true
 	payload.Groups = ctx.GroupNames()
 	payload.Providers = ctx.ProviderNames()
+	payload.Tunnels = buildTunnelViews(sub.Tunnels, ctx, "")
 	for _, rule := range config.SortCustomRulesForDisplay(sub.CustomRules) {
 		view := customRuleView{CustomRule: rule, Line: displayRuleLine(rule)}
 		if line, err := configgen.ValidateCustomRule(rule, ctx.Env); err == nil {
@@ -492,6 +504,7 @@ func findSubscription(name string) (config.SubscribeConfig, config.Subscription,
 		if cfg.Subscriptions[i].Name == name {
 			sub := cfg.Subscriptions[i]
 			sub.CustomRules = copyCustomRules(cfg, name)
+			sub.Tunnels = copyCustomTunnels(cfg, name)
 			return cfg, sub, true
 		}
 	}

@@ -47,6 +47,12 @@ func GenerateConfig(cfg config.SubscribeConfig) error {
 		return err
 	}
 
+	// 流量隧道：同样只取当前档位那一份；必须在代理组/代理就位后注入（proxy 要能解析）。
+	// 位置由 ApplyTunnels 保证写在 rule-providers / rules 之前。
+	if err := applyTunnels(doc, cfg.RuleGroup, cfg.MergeTunnelsFor(cfg.RuleGroup)); err != nil {
+		return err
+	}
+
 	// 替换 DNS 块
 	if err := applyDNSBlock(doc); err != nil {
 		return err
@@ -92,6 +98,16 @@ func GenerateBaseConfig(cfg config.SubscribeConfig) error {
 	for _, f := range fields {
 		if err := doc.Set(f.key, f.value); err != nil {
 			return fmt.Errorf("写入字段 %s 失败: %w", f.key, err)
+		}
+	}
+
+	// 流量隧道：无订阅的兜底配置同样要下发（融合模式删掉全部订阅后，隧道不该无声消失）。
+	// 只取融合模式当前档位那一份——切换模式下隧道挂在订阅上，没有订阅就没有作用域。
+	// 基础配置里没有代理组，因此引用代理组的隧道会被 ApplyTunnels 依据本文件的实际
+	// 目标判为失效并跳过：少一条隧道远优于内核拒绝加载整份配置。
+	if cfg.Mode == config.ModeMerge {
+		if err := applyTunnels(doc, cfg.RuleGroup, cfg.MergeTunnelsFor(cfg.RuleGroup)); err != nil {
+			return err
 		}
 	}
 	return writeConfigTarget(doc)
@@ -258,7 +274,7 @@ func applyDNSBlock(doc *configcheck.Doc) error {
 // writeConfigTarget 序列化文档并写入内核配置路径。
 func writeConfigTarget(doc *configcheck.Doc) error {
 	// 顶层键序归一：标量键在前、块在后，块按固定顺序排（dns 在 proxy-providers 之前，
-	// 末尾依次 proxy-providers / proxy-groups / proxies / rule-providers / rules）。
+	// 末尾依次 proxy-providers / proxy-groups / proxies / tunnels / rule-providers / rules）。
 	// 模板自身的键序不保证这一点（geodata-* 三个键就写在 tun 之后），按订阅追加的块
 	// 也只会落在末尾。
 	doc.OrderTopLevel()

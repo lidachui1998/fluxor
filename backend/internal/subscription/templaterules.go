@@ -27,6 +27,11 @@ type ruleScope struct {
 	name string
 	// rules 取该作用域当前的规则（快照与锁内读都走它，避免两处各写一份取法）。
 	rules func(cfg config.SubscribeConfig) []config.CustomRule
+	// tunnels 取该作用域当前的流量隧道（只读）。
+	//
+	// 规则接口的响应必须带上隧道：两个接口服务同一个作用域（同一个弹窗），响应体同构，
+	// 否则规则接口的返回值会把前端刚加载到的隧道列表覆盖成空。
+	tunnels func(cfg config.SubscribeConfig) []config.Tunnel
 	// store 在写锁内把规则写回该作用域（含 map 初始化）。
 	store func(rules []config.CustomRule)
 	// editable 判定「当前模式下该作用域是否可编辑」。
@@ -50,6 +55,9 @@ func mergeRuleScope(ruleGroup string) (ruleScope, bool) {
 		name: ruleGroup,
 		rules: func(cfg config.SubscribeConfig) []config.CustomRule {
 			return cfg.MergeCustomRulesFor(ruleGroup)
+		},
+		tunnels: func(cfg config.SubscribeConfig) []config.Tunnel {
+			return cfg.MergeTunnelsFor(ruleGroup)
 		},
 		store: func(rules []config.CustomRule) {
 			config.Mu.Lock()
@@ -80,6 +88,9 @@ func customModeRuleScope() ruleScope {
 		name: config.RuleScopeCustom,
 		rules: func(cfg config.SubscribeConfig) []config.CustomRule {
 			return cfg.CustomModeRules
+		},
+		tunnels: func(cfg config.SubscribeConfig) []config.Tunnel {
+			return cfg.CustomModeTunnels
 		},
 		store: func(rules []config.CustomRule) {
 			config.Mu.Lock()
@@ -298,11 +309,15 @@ func applyRulesToActiveConfig(scope ruleScope) (string, string) {
 }
 
 // buildRulesPayload 组装规则列表响应（三种作用域结构一致，仅可选目标不同）。
+//
+// 响应同时带上该作用域的流量隧道：规则接口与隧道接口服务的是同一个作用域（同一个弹窗），
+// 前端拿到任一响应都会整份刷新，两者必须同构，否则后到的响应会把另一个列表抹成空。
 func buildRulesPayload(cfg config.SubscribeConfig, scope ruleScope) customRulesPayload {
 	payload := customRulesPayload{
 		// 模板级作用域不依赖订阅文件：规则目标来自模板与手工节点，恒定可校验
 		FileReady: true,
 		Rules:     []customRuleView{},
+		Tunnels:   []tunnelView{},
 		Groups:    []string{},
 		Nodes:     []string{},
 		Builtins:  configcheck.BuiltinRuleTargets(),
@@ -312,12 +327,16 @@ func buildRulesPayload(cfg config.SubscribeConfig, scope ruleScope) customRulesP
 
 	ctx, err := scope.context(cfg)
 	if err != nil {
+		// 模板常量编译在二进制里，正常不会失败；真失败时如实下发 file_ready=false，
+		// 让前端禁用表单而不是给出一个「可选目标为空」的假象
+		payload.FileReady = false
 		return payload
 	}
 
 	payload.Groups = ctx.GroupNames()
 	payload.Nodes = ctx.NodeNames()
 	payload.Providers = ctx.ProviderNames()
+	payload.Tunnels = buildTunnelViews(scope.tunnels(cfg), ctx, "")
 	for _, rule := range config.SortCustomRulesForDisplay(scope.rules(cfg)) {
 		view := customRuleView{CustomRule: rule, Line: displayRuleLine(rule)}
 		if line, err := configgen.ValidateCustomRule(rule, ctx.Env); err == nil {

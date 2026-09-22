@@ -159,6 +159,27 @@ func applyCustomRules(doc *configcheck.Doc, scopeName string, rules []config.Cus
 	return nil
 }
 
+// applyTunnels 把某个作用域的流量隧道注入文档，并记录未写入的条目。
+//
+// 调用点必须在代理块（proxies / proxy-groups / proxy-providers）之后：隧道的 proxy
+// 取自这些块，提前注入会因「目标尚未存在」而把全部隧道误判为失效。
+// scopeName 只用于日志。
+func applyTunnels(doc *configcheck.Doc, scopeName string, tunnels []config.Tunnel) error {
+	if len(tunnels) == 0 {
+		return nil
+	}
+	result, err := ApplyTunnels(doc, tunnels)
+	if err != nil {
+		return fmt.Errorf("注入流量隧道失败（%s）: %w", scopeName, err)
+	}
+	for _, skip := range result.Skipped {
+		// 跳过而不是写进配置：proxy 不存在的隧道会让内核拒绝加载整份配置
+		log.Printf("[TUNNEL] %s 跳过隧道 %s -> %s: %s",
+			scopeName, skip.Tunnel.Address, skip.Tunnel.Target, skip.Reason)
+	}
+	return nil
+}
+
 // RuleSkips 返回一组规则里因目标/规则集失效而无法写入配置的规则说明。
 //
 // 与切换模式 writeRuntimeConfig 返回的 ApplyResult.Skipped 对齐：让接口能如实

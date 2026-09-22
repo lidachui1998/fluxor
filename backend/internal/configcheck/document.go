@@ -100,6 +100,33 @@ func (d *Doc) SetNode(key string, value *yaml.Node) {
 		value)
 }
 
+// SetNodeBefore 以现成节点设置顶层键，并尽量把它插在 anchors 中**最早出现的那个键**之前。
+//
+// 用于「新键应当落在配置的某一段」的场景：切换模式的 config.yaml 是订阅文件的副本，
+// 不做整体键序归一（OrderTopLevel 会重排机场自带的全部块），但又必须保证新键不落在
+// 末尾——tunnels 块要求写在 rule-providers / rules 之前，靠追加是做不到的。
+//
+// anchors 一个都不存在（或键已存在）时追加到末尾/原位覆盖：调用方只表达偏好，
+// 不存在的锚点不该让写入失败。
+func (d *Doc) SetNodeBefore(key string, value *yaml.Node, anchors ...string) {
+	if idx, ok := d.find(key); ok {
+		d.top.Content[idx+1] = value
+		return
+	}
+	// find 返回的是键节点的下标（其值在 +1），键值对以 [key, value, ...] 平铺，
+	// 因此在下标 pos 处插入一对需要后移 pos 起的全部元素
+	pos := len(d.top.Content)
+	for _, anchor := range anchors {
+		if idx, ok := d.find(anchor); ok && idx < pos {
+			pos = idx
+		}
+	}
+	d.top.Content = append(d.top.Content, nil, nil)
+	copy(d.top.Content[pos+2:], d.top.Content[pos:len(d.top.Content)-2])
+	d.top.Content[pos] = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}
+	d.top.Content[pos+1] = value
+}
+
 // Delete 删除顶层键，返回是否确实删除了。
 func (d *Doc) Delete(key string) bool {
 	idx, ok := d.find(key)
@@ -121,8 +148,9 @@ var topBlockRank = map[string]int{
 	"proxy-providers": 2, // 融合模式
 	"proxy-groups":    3,
 	"proxies":         4, // 切换模式
-	"rule-providers":  5,
-	"rules":           6,
+	"tunnels":         5, // 流量隧道：写在 rule-providers / rules 之前
+	"rule-providers":  6,
+	"rules":           7,
 }
 
 // OrderTopLevel 归一化顶层键序：标量键在前、块在后，块再按 topBlockRank 排定先后。

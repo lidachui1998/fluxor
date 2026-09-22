@@ -1,4 +1,4 @@
-import type { CustomRule, CustomRulesPayload } from '../store/subscription'
+import type { CustomRule, CustomRulesPayload, TunnelView } from '../store/subscription'
 
 // 模拟后端数据库，维持状态更改
 let coreRunning = true
@@ -295,6 +295,124 @@ const mockCustomRuleProviders = ['ads', 'private']
 // 支持 no-resolve 的类型（IP 类与 RULE-SET），用于组装规则行
 const mockCustomRuleNoResolveTypes = mockCustomRuleTypes.filter(t => t.no_resolve).map(t => t.type)
 
+// 流量隧道（按作用域隔离，模拟后端的即时持久化）。
+//
+// key 与后端三种作用域一一对应：融合=merge:<档位>、自定义=custom、切换=sub:<订阅名>。
+// 离线开发时即可完整走通「新增 / 排序 / 开关 / 编辑 / 删除」与产物预览。
+const mockTunnelsByScope: Record<string, TunnelView[]> = {
+  'merge:base': [],
+  'merge:full': [
+    { id: 'mock-tunnel-01', network: ['tcp', 'udp'], address: '127.0.0.1:6553', target: '8.8.8.8:53', proxy: '🚀 节点选择', enabled: true, line: 'tcp/udp,127.0.0.1:6553,8.8.8.8:53,🚀 节点选择', valid: true },
+  ],
+  custom: [],
+}
+
+let mockTunnelSeq = 100
+
+// 取（并按需初始化）某个作用域的隧道列表。
+const mockTunnelStore = (scopeKey: string): TunnelView[] => {
+  if (!mockTunnelsByScope[scopeKey]) mockTunnelsByScope[scopeKey] = []
+  return mockTunnelsByScope[scopeKey]
+}
+
+// 组装隧道视图：单行展示形式、目标归一化与合法性判定都与后端 buildTunnelViews 对齐。
+//
+// 与后端同样把网络类型归一化为小写（界面显示大写、落盘小写），并把目标定形成 host:port：
+// 只写域名时补默认端口 `:80`，裸 IP 则判为无效（不猜 IP 的端口）。内核解析不了裸主机，
+// 而失败只在起监听时打一行日志并跳过该条（隧道静默失效），所以必须在写入前定形。
+const buildMockTunnelView = (body: any, id: string, knownProxies: string[]): TunnelView => {
+  const network: string[] = (Array.isArray(body.network) ? body.network : ['tcp', 'udp'])
+    .map((item: unknown) => String(item).trim().toLowerCase())
+  const address = String(body.address || '').trim()
+  const proxy = String(body.proxy || '').trim()
+
+  let target = String(body.target || '').trim()
+  // 裸 IP（纯数字点分，或含冒号的 IPv6）不补端口；纯域名按 http 默认端口补 :80
+  const bareIp = /^[\d.]+$/.test(target) || target.includes(':')
+  if (target && !target.includes(':') && !bareIp) target = `${target}:80`
+
+  const view: TunnelView = {
+    id,
+    network,
+    address,
+    target,
+    proxy,
+    enabled: body.enabled === undefined ? true : !!body.enabled,
+    line: [network.join('/'), address, target, proxy].filter((part, i) => part !== '' || i === 2).join(','),
+    valid: true,
+  }
+  if (!address.includes(':')) {
+    view.valid = false
+    view.reason = '本地监听地址应为 host:port（如 127.0.0.1:8888、0.0.0.0:8888）'
+  } else if (!target.includes(':')) {
+    view.valid = false
+    view.reason = '目标转发地址缺少端口，请写成 host:port（如 8.8.8.8:8888）；只写域名时按 :80 处理'
+  } else if (proxy && !knownProxies.includes(proxy)) {
+    view.valid = false
+    view.reason = `proxy "${proxy}" 不在当前可选目标里（代理组/节点可能已改名，请重新选择）`
+  }
+  return view
+}
+
+// 处理隧道接口（三个作用域共用）：方法语义与后端一致，写操作直接改内存数组。
+//
+// 返回 null 表示当前方法不是本模块处理的（调用方继续向下匹配）。
+// 返回 null 表示「这个方法不是本模块处理的」，"" 表示成功，其它字符串是**给用户看的原因**。
+//
+// 失败原因直接取自视图的 reason（与后端 ValidateTunnel 的措辞对齐），这样离线开发时看到的
+// 提示与真实后端一致——否则 mock 只会甩一句笼统的「保存失败」，让人分不清是哪一项不合法。
+const handleMockTunnelRequest = (
+  tunnels: TunnelView[],
+  knownProxies: string[],
+  rawPath: string,
+  method: string,
+  bodyRaw: string | undefined,
+): string | null => {
+  if (method === 'POST') {
+    const body = JSON.parse(bodyRaw || '{}')
+    mockTunnelSeq += 1
+    const view = buildMockTunnelView(body, `mock-tunnel-${mockTunnelSeq}`, knownProxies)
+    if (!view.valid) return view.reason || '隧道配置无效'
+    // 新增追加到列表末尾（与后端一致）
+    tunnels.push(view)
+    return ''
+  }
+
+  if (method === 'PUT') {
+    const body = JSON.parse(bodyRaw || '{}')
+    const idx = tunnels.findIndex(t => t.id === body.id)
+    if (idx < 0) return '隧道不存在: ' + body.id
+    // 就地替换：位置不变；开关（关闭时不做校验）与字段一起更新
+    const view = buildMockTunnelView(body, tunnels[idx].id, knownProxies)
+    view.valid = body.enabled === false ? true : view.valid
+    if (!view.valid) return view.reason || '隧道配置无效'
+    tunnels[idx] = view
+    return ''
+  }
+
+  if (method === 'PATCH') {
+    const body = JSON.parse(bodyRaw || '{}')
+    const idx = tunnels.findIndex(t => t.id === body.id)
+    if (idx < 0) return '隧道不存在: ' + body.id
+    const swapIdx = body.direction === 'up' ? idx - 1 : idx + 1
+    if (swapIdx < 0 || swapIdx >= tunnels.length) return '隧道已在列表的最前/最后，无法继续移动'
+    const moved = tunnels[idx]
+    tunnels[idx] = tunnels[swapIdx]
+    tunnels[swapIdx] = moved
+    return ''
+  }
+
+  if (method === 'DELETE') {
+    const id = decodeURIComponent(new URLSearchParams(rawPath.split('?')[1] || '').get('id') || '')
+    const idx = tunnels.findIndex(t => t.id === id)
+    if (idx < 0) return '隧道不存在: ' + id
+    tunnels.splice(idx, 1)
+    return ''
+  }
+
+  return null
+}
+
 // 与后端一致：响应中的 rules 已按生效顺序排列（before 组整体在前、after 组整体在后），前端原样渲染
 const orderMockCustomRules = (rules: any[]) => [
   ...rules.filter(r => r.position === 'before'),
@@ -335,9 +453,12 @@ const buildMockCustomRulesPayload = (
   status?: 'ok' | 'warning',
   message?: string,
   nodes: string[] = [],
+  tunnels: TunnelView[] = [],
 ): CustomRulesPayload => ({
   file_ready: true,
   rules: orderMockCustomRules(rules),
+  // 规则接口与隧道接口的响应必须同构：前端拿到任一响应都会整份刷新弹窗
+  tunnels,
   groups,
   // 节点作为目标只在自定义模式下给出（与后端 buildMergeRulesPayload 一致）
   nodes,
@@ -361,11 +482,12 @@ const handleMockCustomRulesRequest = (
   method: string,
   bodyRaw: string | undefined,
   nodes: string[] = [],
+  tunnels: TunnelView[] = [],
 ): Response | null => {
   if (method === 'POST') {
     const body = JSON.parse(bodyRaw || '{}')
     rules.push(buildMockCustomRule(body, nextMockRuleId()))
-    return reply(buildMockCustomRulesPayload(rules, groups, providers, 'ok', undefined, nodes))
+    return reply(buildMockCustomRulesPayload(rules, groups, providers, 'ok', undefined, nodes, tunnels))
   }
 
   if (method === 'PUT') {
@@ -374,7 +496,7 @@ const handleMockCustomRulesRequest = (
     if (idx < 0) return reply({ status: 'error', message: '规则不存在: ' + body.id }, 404)
     // 就地替换：索引与 id 都保持原样，列表位置不变（与后端 PUT 语义一致）
     rules[idx] = buildMockCustomRule(body, rules[idx].id)
-    return reply(buildMockCustomRulesPayload(rules, groups, providers, 'ok', undefined, nodes))
+    return reply(buildMockCustomRulesPayload(rules, groups, providers, 'ok', undefined, nodes, tunnels))
   }
 
   if (method === 'PATCH') {
@@ -395,7 +517,7 @@ const handleMockCustomRulesRequest = (
     ordered[swapIdx] = moved
     // 交换结果按生效顺序写回原数组
     ordered.forEach((r, i) => { rules[i] = r })
-    return reply(buildMockCustomRulesPayload(rules, groups, providers, undefined, undefined, nodes))
+    return reply(buildMockCustomRulesPayload(rules, groups, providers, undefined, undefined, nodes, tunnels))
   }
 
   if (method === 'DELETE') {
@@ -404,10 +526,10 @@ const handleMockCustomRulesRequest = (
     const idx = rules.findIndex(r => r.id === id)
     if (idx < 0) return reply({ status: 'error', message: '规则不存在: ' + id }, 404)
     rules.splice(idx, 1)
-    return reply(buildMockCustomRulesPayload(rules, groups, providers, 'ok', undefined, nodes))
+    return reply(buildMockCustomRulesPayload(rules, groups, providers, 'ok', undefined, nodes, tunnels))
   }
 
-  if (method === 'GET') return reply(buildMockCustomRulesPayload(rules, groups, providers, undefined, undefined, nodes))
+  if (method === 'GET') return reply(buildMockCustomRulesPayload(rules, groups, providers, undefined, undefined, nodes, tunnels))
 
   return null
 }
@@ -555,6 +677,7 @@ export function handleMockFetch(path: string, options: RequestInit = {}): Respon
       return reply({ status: 'error', message: '未知作用域: ' + scope }, 400)
     }
     const customNodes = (mockSubConfig.custom_nodes || []) as { name: string }[]
+    const nodes = mockSubConfig.mode === 'custom' ? customNodes.map(node => node.name) : []
     const resp = handleMockCustomRulesRequest(
       mockCustomModeRules,
       mockMergeBaseGroups,
@@ -562,7 +685,8 @@ export function handleMockFetch(path: string, options: RequestInit = {}): Respon
       path,
       method,
       options.body as string | undefined,
-      mockSubConfig.mode === 'custom' ? customNodes.map(node => node.name) : [],
+      nodes,
+      mockTunnelStore('custom'),
     )
     if (resp) return resp
   }
@@ -579,8 +703,58 @@ export function handleMockFetch(path: string, options: RequestInit = {}): Respon
     const groups = ruleGroup === 'full' ? mockMergeFullGroups : mockMergeBaseGroups
     const providers = ruleGroup === 'full' ? mockMergeFullProviders : mockMergeBaseProviders
     // 融合模式的档位不含节点目标（节点只在自定义模式下可选）
-    const resp = handleMockCustomRulesRequest(mockMergeCustomRules[ruleGroup], groups, providers, path, method, options.body as string | undefined)
+    const resp = handleMockCustomRulesRequest(
+      mockMergeCustomRules[ruleGroup],
+      groups,
+      providers,
+      path,
+      method,
+      options.body as string | undefined,
+      [],
+      mockTunnelStore(`merge:${ruleGroup}`),
+    )
     if (resp) return resp
+  }
+
+  // 流量隧道（三个作用域各一条前缀）：作用域语义与上面三条规则入口一一对应。
+  // 响应体与规则接口同构（同时含 rules 与 tunnels），前端用一个 payload 刷新整个弹窗。
+  const tunnelRoutes: { prefix: string, scopeKey: string, groups: string[], nodes: string[] }[] = [
+    { prefix: '/subscribe/merge-custom-tunnels/', scopeKey: 'merge:', groups: mockMergeBaseGroups, nodes: [] },
+    { prefix: '/subscribe/custom-mode-tunnels/', scopeKey: 'custom', groups: mockMergeBaseGroups, nodes: [] },
+    { prefix: '/subscribe/custom-tunnels/', scopeKey: 'sub:', groups: mockCustomRuleGroups, nodes: [] },
+  ]
+  for (const route of tunnelRoutes) {
+    if (!cleanPath.includes(route.prefix)) continue
+    const scope = decodeURIComponent(cleanPath.split(route.prefix)[1] || '')
+    let scopeKey = route.scopeKey + scope
+    let groups = route.groups
+    let nodes = route.nodes
+    let rules = mockCustomModeRules
+    let providers = mockMergeBaseProviders
+    if (route.prefix === '/subscribe/merge-custom-tunnels/') {
+      if (scope !== 'base' && scope !== 'full') return reply({ status: 'error', message: '未知规则集: ' + scope }, 400)
+      groups = scope === 'full' ? mockMergeFullGroups : mockMergeBaseGroups
+      providers = scope === 'full' ? mockMergeFullProviders : mockMergeBaseProviders
+      rules = mockMergeCustomRules[scope] || (mockMergeCustomRules[scope] = [])
+    } else if (route.prefix === '/subscribe/custom-mode-tunnels/') {
+      if (scope !== 'custom') return reply({ status: 'error', message: '未知作用域: ' + scope }, 400)
+      const customNodes = (mockSubConfig.custom_nodes || []) as { name: string }[]
+      nodes = mockSubConfig.mode === 'custom' ? customNodes.map(node => node.name) : []
+    } else {
+      if (!mockCustomRulesBySub[scope]) mockCustomRulesBySub[scope] = []
+      rules = mockCustomRulesBySub[scope]
+      providers = mockCustomRuleProviders
+    }
+    const tunnels = mockTunnelStore(scopeKey)
+    // 已知可选 proxy = 代理组 + 自定义模式的手工节点（与后端一致：其余模式不下发节点）
+    const result = handleMockTunnelRequest(tunnels, [...groups, ...nodes], path, method, options.body as string | undefined)
+    if (result === null) {
+      return reply(buildMockCustomRulesPayload(rules, groups, providers, undefined, undefined, nodes, tunnels))
+    }
+    if (result !== '') {
+      return reply({ status: 'error', message: result }, 400)
+    }
+    return reply(buildMockCustomRulesPayload(rules, groups, providers, 'ok', undefined, nodes, tunnels))
   }
 
   // 订阅自定义规则（切换模式）：GET 查询 / POST 新增 / PUT 修改 / PATCH 排序 / DELETE 删除（?id=）
@@ -595,6 +769,8 @@ export function handleMockFetch(path: string, options: RequestInit = {}): Respon
       path,
       method,
       options.body as string | undefined,
+      [],
+      mockTunnelStore(`sub:${subName}`),
     )
     if (resp) return resp
   }

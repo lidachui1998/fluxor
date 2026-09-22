@@ -145,12 +145,12 @@ func TestSortCustomRulesForDisplay(t *testing.T) {
 	assertOrder(t, SortCustomRulesForDisplay(rules), "b1", "b2", "legacy-unknown", "a1", "a2")
 }
 
-// TestAdoptServerOwnedRuleFields 规则字段以服务端为准：过期快照不得覆盖已删/已改的规则。
+// TestAdoptServerOwnedFields 规则字段以服务端为准：过期快照不得覆盖已删/已改的规则。
 //
 // 这是「规则字段归规则接口所有」的完整版：以前只在调用方**没带**该键时才沿用服务端，
 // 于是「保存并应用」提交的前端快照（规则弹窗改过之后就是过期的）会把删掉的规则写回来、
 // 把新增的规则覆盖掉——实测复现过，因此改成一律取服务端状态。
-func TestAdoptServerOwnedRuleFields(t *testing.T) {
+func TestAdoptServerOwnedFields(t *testing.T) {
 	prev := SubscribeConfig{
 		MergeCustomRules: map[string][]CustomRule{
 			RuleGroupBase: {{ID: "b1", Payload: "base.test"}},
@@ -176,7 +176,7 @@ func TestAdoptServerOwnedRuleFields(t *testing.T) {
 		},
 	}
 
-	dst.AdoptServerOwnedRuleFields(prev)
+	dst.AdoptServerOwnedFields(prev)
 
 	if got := dst.MergeCustomRules[RuleGroupBase]; len(got) != 1 || got[0].ID != "b1" {
 		t.Fatalf("融合 base 档位应取服务端状态，实际: %+v", got)
@@ -205,17 +205,17 @@ func TestAdoptServerOwnedRuleFields(t *testing.T) {
 	}
 }
 
-// TestAdoptServerOwnedRuleFieldsEmptyServer 服务端本来就没有规则时，请求体也不能凭空造规则。
+// TestAdoptServerOwnedFieldsEmptyServer 服务端本来就没有规则时，请求体也不能凭空造规则。
 //
 // 关键场景：用户删光规则后落盘会省略该键（omitempty），下次读到的是 nil；此时若「服务端为空
 // 就采纳调用方」，过期快照里的规则同样会复活。
-func TestAdoptServerOwnedRuleFieldsEmptyServer(t *testing.T) {
+func TestAdoptServerOwnedFieldsEmptyServer(t *testing.T) {
 	dst := SubscribeConfig{
 		CustomModeRules:  []CustomRule{{ID: "stale"}},
 		MergeCustomRules: map[string][]CustomRule{RuleGroupBase: {{ID: "stale"}}},
 		Subscriptions:    []Subscription{{Name: "机场A", CustomRules: []CustomRule{{ID: "stale"}}}},
 	}
-	dst.AdoptServerOwnedRuleFields(SubscribeConfig{Subscriptions: []Subscription{{Name: "机场A"}}})
+	dst.AdoptServerOwnedFields(SubscribeConfig{Subscriptions: []Subscription{{Name: "机场A"}}})
 
 	if dst.CustomModeRules != nil {
 		t.Fatalf("服务端无规则时不应采纳请求体，实际: %+v", dst.CustomModeRules)

@@ -281,7 +281,7 @@ func blockKeys(keys []string) []string {
 	var out []string
 	for _, key := range keys {
 		switch key {
-		case "profile", "sniffer", "tun", "dns", "proxy-providers", "proxy-groups", "rule-providers", "rules":
+		case "profile", "sniffer", "tun", "dns", "proxy-providers", "proxy-groups", "tunnels", "rule-providers", "rules":
 			out = append(out, key)
 		}
 	}

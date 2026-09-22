@@ -140,6 +140,10 @@ func LoadSubscribeConfig() {
 	if tmp.MergeCustomRules == nil {
 		tmp.MergeCustomRules = map[string][]CustomRule{}
 	}
+	// 融合模式的流量隧道与规则同构、同样按档位存放，map 也必须非 nil
+	if tmp.MergeTunnels == nil {
+		tmp.MergeTunnels = map[string][]Tunnel{}
+	}
 
 	Current = tmp
 	log.Printf("成功加载订阅配置：%d 个订阅，%d 个自定义节点", len(Current.Subscriptions), len(Current.CustomNodes))

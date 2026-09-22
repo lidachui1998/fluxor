@@ -232,27 +232,45 @@ func ApplyCustomRules(doc *configcheck.Doc, rules []config.CustomRule) (ApplyRes
 // 无自定义规则时完全不读写文件（保持「订阅文件原样副本」的既有语义）。
 // 校验与改写全部在内存中完成，任一步失败都不会落盘，避免留下内核加载不了的
 // 半成品配置。
+//
+// 需要同时注入流量隧道时用 ApplyRuntimeOverridesToFile：两者各跑一次「读—解析—写」
+// 既浪费 IO，也会在中间态留下「有隧道无规则」的配置（内核会被热重载请求读到）。
 func ApplyCustomRulesToFile(path string, rules []config.CustomRule) (ApplyResult, error) {
-	if len(rules) == 0 {
-		return ApplyResult{}, nil
+	result, _, err := ApplyRuntimeOverridesToFile(path, rules, nil)
+	return result, err
+}
+
+// ApplyRuntimeOverridesToFile 一次性把自定义规则与流量隧道叠加进配置文件。
+//
+// 切换模式专用：config.yaml 是订阅文件的副本，两类改写都只能在复制之后进行。
+// 隧道的 proxy 校验以本文件既有的代理组/代理为基础（RuleEnvFromDoc），因此与
+// 「内核实际能解析到什么」天然一致。
+func ApplyRuntimeOverridesToFile(path string, rules []config.CustomRule, tunnels []config.Tunnel) (ApplyResult, TunnelApplyResult, error) {
+	var tunnelResult TunnelApplyResult
+	if len(rules) == 0 && len(tunnels) == 0 {
+		return ApplyResult{}, tunnelResult, nil
 	}
 	content, err := os.ReadFile(path)
 	if err != nil {
-		return ApplyResult{}, err
+		return ApplyResult{}, tunnelResult, err
 	}
 	doc, err := configcheck.ParseValidatedDoc(content)
 	if err != nil {
-		return ApplyResult{}, fmt.Errorf("配置文件 %s 无法解析: %w", path, err)
+		return ApplyResult{}, tunnelResult, fmt.Errorf("配置文件 %s 无法解析: %w", path, err)
 	}
 	result, err := ApplyCustomRules(doc, rules)
 	if err != nil {
-		return result, err
+		return result, tunnelResult, err
+	}
+	tunnelResult, err = ApplyTunnels(doc, tunnels)
+	if err != nil {
+		return result, tunnelResult, err
 	}
 	out, err := doc.Bytes()
 	if err != nil {
-		return result, err
+		return result, tunnelResult, err
 	}
-	return result, os.WriteFile(path, out, 0644)
+	return result, tunnelResult, os.WriteFile(path, out, 0644)
 }
 
 // lastMatchIndex 返回最后一条 MATCH 规则的下标；不存在时返回序列长度（即末尾）。

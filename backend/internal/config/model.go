@@ -31,7 +31,16 @@ type SubscribeConfig struct {
 	// 融合模式的节点来自 proxy-providers、运行时才加载，静态校验看不到。
 	// 分开之后两种模式各改各的，切模式不会看到「一列失效规则」。
 	CustomModeRules []CustomRule `json:"custom_mode_rules,omitempty"`
-	DeletePhysical  []string     `json:"delete_physical,omitempty"`
+	// MergeTunnels 融合模式的流量隧道，按规则集档位（base / full）分开存放。
+	//
+	// 与 MergeCustomRules 同构且必须同样按档位分开：两个档位的代理组完全不同，
+	// 同一份隧道列表放在两档下必然有一半指向不存在的代理组。
+	MergeTunnels map[string][]Tunnel `json:"merge_tunnels,omitempty"`
+	// CustomModeTunnels 自定义模式的流量隧道（独立一份，与融合模式互不影响）。
+	//
+	// 分开的理由与 CustomModeRules 相同：该模式可选的 proxy 里额外包含手工节点名。
+	CustomModeTunnels []Tunnel `json:"custom_mode_tunnels,omitempty"`
+	DeletePhysical    []string `json:"delete_physical,omitempty"`
 }
 
 // 订阅中心支持的三种模式（SubscribeConfig.Mode 的取值）。
@@ -94,12 +103,17 @@ func (c SubscribeConfig) TemplateRulesFor(scope string) []CustomRule {
 
 // Subscription 描述单个订阅源及其最近一次的更新元数据。
 type Subscription struct {
-	Name             string                 `json:"name"`
-	URL              string                 `json:"url"`
-	UpdateInterval   int                    `json:"update_interval"`
-	HealthInterval   int                    `json:"health_interval"`
-	Prefix           string                 `json:"prefix"`
-	CustomRules      []CustomRule           `json:"custom_rules,omitempty"`
+	Name           string       `json:"name"`
+	URL            string       `json:"url"`
+	UpdateInterval int          `json:"update_interval"`
+	HealthInterval int          `json:"health_interval"`
+	Prefix         string       `json:"prefix"`
+	CustomRules    []CustomRule `json:"custom_rules,omitempty"`
+	// Tunnels 切换模式下该订阅的流量隧道（写进 config.yaml 的顶层 tunnels 块）。
+	//
+	// 挂在订阅上与 CustomRules 同理：隧道的 proxy 取的是该订阅自带的代理组，
+	// 随订阅一起增删改，不与其他订阅互相污染。
+	Tunnels          []Tunnel               `json:"tunnels,omitempty"`
 	UpdatedAt        string                 `json:"updated_at,omitempty"`
 	SubscriptionInfo map[string]interface{} `json:"subscription_info,omitempty"`
 }
