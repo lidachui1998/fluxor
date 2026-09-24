@@ -2,6 +2,7 @@ package web
 
 import (
 	"fluxor/internal/config"
+	"fluxor/internal/httpx"
 	"html/template"
 	"net/http"
 	"strings"
@@ -43,6 +44,10 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
 		"BaseHref": baseHref,
 		"RawBase":  rawBase,
 	}
+	// 入口 HTML 不缓存：它决定本次加载去取哪一份带哈希名的资源。若浏览器留下
+	// 旧副本，重新部署后仍会按旧 <script> 去取（旧资源本身还有一年 immutable
+	// 缓存），页面能开却永远停在上一个版本。响应体不足 1 kB，回源代价可忽略。
+	w.Header().Set("Cache-Control", httpx.CacheControlRevalidate)
 	IndexTmpl.Execute(w, data)
 }
 

@@ -9,6 +9,7 @@ import (
 	"fluxor/internal/core"
 	"fluxor/internal/dashapi"
 	"fluxor/internal/delaytest"
+	"fluxor/internal/httpx"
 	"fluxor/internal/logx"
 	"fluxor/internal/netinfo"
 	"fluxor/internal/quality"
@@ -260,10 +261,14 @@ func main() {
 	mux.Handle(config.BaseURL+"/zash/", http.StripPrefix(config.BaseURL+"/zash/", http.FileServer(http.Dir(config.ZashDir))))
 
 	// 内嵌静态文件（Vue 构建产物 assets/ 目录，直接挂载在 baseURL 下）
+	// assets/ 下的文件名都带内容哈希（index-<hash>.js），内容一改名字即变，故给一年期强缓存：
+	// 重复访问不再重下（此前无 Cache-Control，且内嵌文件无 ModTime/ETag，连 304 都无法协商）；
+	// 而每次部署后 index.html 引用的都是新哈希名，不会取到旧副本。
 	staticFileServer := http.FileServer(http.FS(staticFS))
-	mux.Handle(config.BaseURL+"/assets/", http.StripPrefix(config.BaseURL, staticFileServer))
+	mux.Handle(config.BaseURL+"/assets/", http.StripPrefix(config.BaseURL, httpx.CacheImmutable(staticFileServer)))
 	// 内嵌静态根文件（index.html 之外的静态资源，如 favicon ICON.PNG）
-	mux.Handle(config.BaseURL+"/ICON.PNG", http.StripPrefix(config.BaseURL, staticFileServer))
+	// 名字固定、内容可能变，只能要求每次回源校验
+	mux.Handle(config.BaseURL+"/ICON.PNG", http.StripPrefix(config.BaseURL, httpx.CacheRevalidate(staticFileServer)))
 
 	// 页面路由
 	if config.BaseURL == "" {

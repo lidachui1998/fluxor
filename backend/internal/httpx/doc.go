@@ -4,3 +4,4 @@ package httpx
 //
 //   - response.go 统一的 JSON 成功/错误响应写法
 //   - regex.go    外部面板后端地址的格式校验正则
+//   - cache.go    静态资源的 Cache-Control 策略与中间件
