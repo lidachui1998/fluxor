@@ -135,8 +135,19 @@ func HandleRestart(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, resp.Body)
 }
 
+// 下面四个接口都会让内核立刻做一件有副作用的事（下载 GEO 数据库、清空 DNS / FakeIP 缓存）。
+//
+// 它们此前不校验 HTTP 方法，一个 GET 就能触发——配合「面板自身无 CSRF 防护」，
+// 任意站点用 <img src="http://<面板>/app/Fluxor/cache/dns/flush"> 就能反复清缓存。
+// 前端一直是以 POST 调用的，因此收紧为「只接受 POST」不破坏任何既有调用。
+// HandleDNSQuery 同理只接受 GET（它是只读查询，方法收紧是为了让语义明确）。
+
 // HandleConfigsGeo 更新 GEO 数据库（POST /configs/geo）
 func HandleConfigsGeo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	resp, err := core.CoreRequest("POST", "/configs/geo", nil)
 	if err != nil {
 		httpx.WriteJSONError(w, http.StatusBadGateway, "更新 GEO 失败: "+err.Error())
@@ -148,6 +159,10 @@ func HandleConfigsGeo(w http.ResponseWriter, r *http.Request) {
 
 // HandleProvidersGeo 更新 GEO 数据库（回退接口，POST /providers/geo）
 func HandleProvidersGeo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	resp, err := core.CoreRequest("POST", "/providers/geo", nil)
 	if err != nil {
 		httpx.WriteJSONError(w, http.StatusBadGateway, "更新 GEO 失败: "+err.Error())
@@ -159,6 +174,10 @@ func HandleProvidersGeo(w http.ResponseWriter, r *http.Request) {
 
 // HandleFlushFakeIP 清空 FakeIP 缓存（POST /cache/fakeip/flush）
 func HandleFlushFakeIP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	resp, err := core.CoreRequest("POST", "/cache/fakeip/flush", nil)
 	if err != nil {
 		httpx.WriteJSONError(w, http.StatusBadGateway, "清空 FakeIP 失败: "+err.Error())
@@ -170,6 +189,10 @@ func HandleFlushFakeIP(w http.ResponseWriter, r *http.Request) {
 
 // HandleFlushDNS 清空 DNS 缓存（POST /cache/dns/flush）
 func HandleFlushDNS(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	resp, err := core.CoreRequest("POST", "/cache/dns/flush", nil)
 	if err != nil {
 		httpx.WriteJSONError(w, http.StatusBadGateway, "清空 DNS 缓存失败: "+err.Error())
@@ -181,6 +204,10 @@ func HandleFlushDNS(w http.ResponseWriter, r *http.Request) {
 
 // HandleDNSQuery 执行 DNS 查询（代理 /dns/query）
 func HandleDNSQuery(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	name := r.URL.Query().Get("name")
 	qtype := r.URL.Query().Get("type")
 	path := "/dns/query?name=" + name + "&type=" + qtype

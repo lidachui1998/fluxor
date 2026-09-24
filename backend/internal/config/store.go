@@ -184,10 +184,17 @@ func (s *Store[T]) flush() error {
 	return nil
 }
 
-// writeFileAtomic 以「临时文件 + fsync + rename」写入，避免崩溃/断电留下半截文件。
+// writeFileAtomic 以「临时文件 + fsync + rename + fsync(父目录)」写入，
+// 避免崩溃/断电留下半截或「名字对、内容空」的文件。
 //
 // 临时文件与目标同目录（保证 rename 不跨设备），并显式 chmod 到 0644：CreateTemp
 // 默认 0600，直接 rename 会让配置文件对同组用户不可读（fnOS 下启动脚本与面板可能不同用户）。
+//
+// 最后一步（同步父目录）不是可选的：rename 改的是**父目录的目录项**，而 fsync(tmp)
+// 只保证那个文件的数据落盘。少了目录同步，断电后 rename 可能整个丢失，更糟的是在
+// ext4 这类延迟分配的日志文件系统上，目录项已经更新而新文件的数据块还没落盘——
+// 重启后得到一个长度正确、内容全零的配置文件（对配置来说就是「面板起来是默认值」）。
+// 这是 SQLite / PostgreSQL 那套 fsync(file) → rename → fsync(dir) 的标准做法。
 func writeFileAtomic(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -217,5 +224,27 @@ func writeFileAtomic(path string, data []byte) error {
 	if err := os.Chmod(tmpName, 0644); err != nil {
 		return err
 	}
-	return os.Rename(tmpName, path)
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	return syncDir(dir)
+}
+
+// syncDir 把目录自身的元数据刷盘，让其中的 rename/create/remove 变更跨断电存活。
+//
+// 失败只记日志、不返回错误：目录 fsync 在部分平台/文件系统上本就不支持（Windows 上
+// 对目录调用 Sync 会直接报错），而配置文件此刻已经写好了。因为一个"加固步骤"失败就
+// 把整次保存判为失败，会让面板在那些平台上完全无法保存——得不偿失。记一条 WARN
+// 是为了让"这台机器上持久性没有保障"这件事在日志里可见。
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		logx.Warn(logx.ModuleConfig, "failed to open %s for directory sync, rename durability is not guaranteed: %v", dir, err)
+		return nil
+	}
+	defer d.Close()
+	if err := d.Sync(); err != nil {
+		logx.Warn(logx.ModuleConfig, "failed to sync directory %s, rename durability is not guaranteed: %v", dir, err)
+	}
+	return nil
 }

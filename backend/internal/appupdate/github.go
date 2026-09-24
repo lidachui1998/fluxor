@@ -3,6 +3,7 @@ package appupdate
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -127,31 +128,145 @@ func getLatestVersion(force bool) (string, error) {
 	return version, nil
 }
 
-// compareVersions 比较两个语义化版本号
+// compareVersions 比较两个版本号：前者大于后者返回 1，小于返回 -1，相等返回 0。
+//
+// 按语义化版本的规则处理，而不是「按 . 切开逐个 Atoi」：
+//   - 去掉可能存在的 v/V 前缀（GitHub tag 与 make V=... 的写法未必一致）；
+//   - 段数不等时缺失段按 0 补（1.2 == 1.2.0）；
+//   - 忽略构建元数据（+ 之后）；
+//   - **预发布版本小于同版本的正式版**（1.1.0-rc1 < 1.1.0），预发布之间按 semver
+//     的标识符规则比较（纯数字段按数值比，数字段小于非数字段）。
+//
+// 旧实现用 `strconv.Atoi` 且忽略错误，于是 "0-rc1" 这类段被静默当成 0：
+// compareVersions("1.1.0", "1.1.0-rc1") == 0，即**跑预发布版的用户永远收不到正式版
+// 更新提示**（反向也会把 rc 当成正式版）。这类错误不会报错、只会静默漏报更新。
 func compareVersions(v1, v2 string) int {
-	parts1 := strings.Split(v1, ".")
-	parts2 := strings.Split(v2, ".")
-	maxLen := len(parts1)
-	if len(parts2) > maxLen {
-		maxLen = len(parts2)
-	}
+	core1, pre1 := splitVersion(v1)
+	core2, pre2 := splitVersion(v2)
 
-	for i := 0; i < maxLen; i++ {
+	for i := 0; i < max(len(core1), len(core2)); i++ {
 		var n1, n2 int
-		if i < len(parts1) {
-			n1, _ = strconv.Atoi(parts1[i])
+		if i < len(core1) {
+			n1 = core1[i]
 		}
-		if i < len(parts2) {
-			n2, _ = strconv.Atoi(parts2[i])
+		if i < len(core2) {
+			n2 = core2[i]
 		}
-		if n1 > n2 {
-			return 1
-		}
-		if n1 < n2 {
+		if n1 != n2 {
+			if n1 > n2 {
+				return 1
+			}
 			return -1
 		}
 	}
+
+	// 核心段相同：有预发布标识的更小
+	if len(pre1) == 0 && len(pre2) == 0 {
+		return 0
+	}
+	if len(pre1) == 0 {
+		return 1
+	}
+	if len(pre2) == 0 {
+		return -1
+	}
+	return comparePrerelease(pre1, pre2)
+}
+
+// splitVersion 把版本串拆成「数字核心段」与「预发布标识」。
+//
+// 容忍脏输入：核心段里出现非数字时按其在数值中的前缀解析（"1a" → 1），整段无数字时按 0，
+// 这样任何输入都能得到一个确定的可比较结果，不会因为一处格式异常就静默判成相等。
+func splitVersion(v string) (core []int, pre string) {
+	v = strings.TrimSpace(v)
+	v = strings.TrimPrefix(strings.TrimPrefix(v, "v"), "V")
+	// 构建元数据不参与比较（semver：+ 之后的内容可忽略）
+	if i := strings.IndexByte(v, '+'); i >= 0 {
+		v = v[:i]
+	}
+	if i := strings.IndexByte(v, '-'); i >= 0 {
+		pre = v[i+1:]
+		v = v[:i]
+	}
+	for _, part := range strings.Split(v, ".") {
+		core = append(core, leadingNumber(part))
+	}
+	return core, pre
+}
+
+// leadingNumber 取字符串开头的连续数字（"12b" → 12，"" / "b" → 0）。
+func leadingNumber(s string) int {
+	end := 0
+	for end < len(s) && s[end] >= '0' && s[end] <= '9' {
+		end++
+	}
+	if end == 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(s[:end])
+	if err != nil {
+		// 超出 int 范围：按最大可比较值处理，避免回落到 0 而把「更大的版本」判小
+		return math.MaxInt
+	}
+	return n
+}
+
+// comparePrerelease 按 semver 规则比较两个预发布标识串（形如 "rc.1"、"beta.2"、"alpha"）。
+func comparePrerelease(p1, p2 string) int {
+	ids1 := strings.Split(p1, ".")
+	ids2 := strings.Split(p2, ".")
+	for i := 0; i < max(len(ids1), len(ids2)); i++ {
+		// 标识符少的一方更小（1.1.0-alpha < 1.1.0-alpha.1）
+		if i >= len(ids1) {
+			return -1
+		}
+		if i >= len(ids2) {
+			return 1
+		}
+		if c := comparePrereleaseID(ids1[i], ids2[i]); c != 0 {
+			return c
+		}
+	}
 	return 0
+}
+
+// comparePrereleaseID 比较单个预发布标识符：纯数字按数值比，且数字标识符小于非数字标识符。
+func comparePrereleaseID(a, b string) int {
+	aNum, aIsNum := atoiIfNumeric(a)
+	bNum, bIsNum := atoiIfNumeric(b)
+	switch {
+	case aIsNum && bIsNum:
+		if aNum != bNum {
+			if aNum > bNum {
+				return 1
+			}
+			return -1
+		}
+		return 0
+	case aIsNum:
+		return -1 // 数字 < 非数字
+	case bIsNum:
+		return 1
+	default:
+		return strings.Compare(a, b)
+	}
+}
+
+// atoiIfNumeric 判定并解析「纯数字标识符」。
+func atoiIfNumeric(s string) (int, bool) {
+	if s == "" {
+		return 0, false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return math.MaxInt, true
+	}
+	return n, true
 }
 
 // getLatestReleaseInfo 获取完整 release 信息（带缓存）。

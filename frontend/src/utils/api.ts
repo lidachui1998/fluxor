@@ -28,7 +28,12 @@ export async function apiFetch(path: string, options: RequestInit = {}): Promise
     const resp = await fetch(url, options);
     return resp;
   } catch (err: any) {
-    throw new Error('网络错误: ' + err.message);
+    // 这里刻意**不**拼任何文案：apiFetch 是底层工具，没有语言上下文，硬编码中文会在
+    // 英文界面下漏出中文（规约：用户可见文案必须走 i18n）。各调用方已经用
+    // t('common.error') / t('common.network_error') 做了本地化前缀，这里只保留
+    // 浏览器给出的技术原因（英文），拼出来是「错误: Failed to fetch」——
+    // 比原来「错误: 网络错误: Failed to fetch」的双重前缀更清楚，也便于搜索排查。
+    throw new Error(err?.message || String(err));
   }
 }
 

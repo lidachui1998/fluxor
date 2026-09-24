@@ -307,7 +307,7 @@ func (c *cancelableReadCloser) Close() error {
 | 路由 | 方法 | Handler | 说明 |
 |------|------|---------|------|
 | `/` | GET | `web.HandleIndex` | SPA 主页模板渲染 |
-| `/whoami` | GET | `web.HandleWhoAmI` | 获取当前用户信息 / 角色 |
+| `/whoami` | GET | `web.HandleWhoAmI` | 读取 `X-Trim-Username` 头并原样返回（门户透传的用户名，**仅供显示欢迎语**；请求头由客户端自填，**不得用于鉴权或授权判断**） |
 | `/app-version` | GET | `web.HandleAppVersion` | 获取 Fluxor 版本号（编译期注入，供前端展示与更新检查） |
 | `/core/status` | GET | `core.HandleCoreStatus` | 内核运行状态（PID 文件检测）；仅供启停操作后确认与 SSE 降级兜底，启动阶段不再调用 |
 | `/core/events` | SSE | `core.HandleCoreEvents` | 内核运行状态变更推送（替代前端轮询） |
@@ -315,9 +315,10 @@ func (c *cancelableReadCloser) Close() error {
 | `/core/stop` | POST | `core.HandleCoreStop` | 停止内核进程（SIGTERM） |
 | `/core/restart` | POST | `core.HandleCoreRestart` | 热重启（重载配置） |
 | `/upgrade` | POST | `dashapi.HandleUpgrade` | 升级内核（透传内核 /upgrade） |
-| `/subscribe/config` | GET/POST | `subscription.HandleSubscribeConfigAPI` | 订阅配置读写（持久化到 subscribe.json） |
+| `/core/check-update` | GET | `appupdate.HandleCoreCheckUpdate` | 检查内核是否有新版本（对比本地内核版本与 GitHub release） |
+| `/subscribe/config` | GET/POST | `subscription.HandleSubscribeConfigAPI` | 订阅配置读写（持久化到 `settings.json`；只收设置类字段，规则/隧道/元数据由各自的接口维护） |
 | `/subscribe/generate` | POST | `subscription.HandleGenerateConfig` | 保存配置 + 生成 config.yaml + 重载内核 |
-| `/subscribe/update/{name}` | GET/POST | `subscription.HandleSubscribeUpdate` | 手动更新指定订阅节点数据 |
+| `/subscribe/update/{name}` | POST | `subscription.HandleSubscribeUpdate` | 手动更新指定订阅节点数据（只接受 POST，GET 返回 405） |
 | `/subscribe/node-protocols` | GET | `subscription.HandleNodeProtocolsAPI` | 自定义模式可添加的协议与字段表（类型/默认值/可选值/必填/高级），前端据此渲染动态表单；字段表由后端 `nodespec` 单点维护 |
 | `/subscribe/custom-rules/{name}` | GET/POST/PUT/PATCH/DELETE | `subscription.HandleCustomRulesAPI` | 切换模式下该订阅的自定义规则：查询 / 新增 / 修改（body 带 `id`）/ 排序（`{id,direction:up\|down}`）/ 删除（`?id=`）；所有写操作即时持久化，激活订阅改动后重写 config.yaml 并重载内核 |
 | `/subscribe/merge-custom-rules/{ruleGroup}` | GET/POST/PUT/PATCH/DELETE | `subscription.HandleMergeCustomRulesAPI` | **仅融合模式**：按规则集档位（`base`/`full`）分开存放的模板级自定义规则，方法与语义同上；改动当前生效档位时重新生成 config.yaml 并重载内核 |
@@ -337,17 +338,21 @@ func (c *cancelableReadCloser) Close() error {
 | `/providers/rules` | GET | `dashapi.HandleRuleProviders` | 获取规则提供商列表 |
 | `/providers/rules/{name}` | PUT | `dashapi.HandleUpdateRuleProvider` | 更新单个规则提供商 |
 | `/interfaces` | GET | `netinfo.HandleInterfaces` | 返回系统物理接口名称（过滤回环及未启用接口） |
-| `/providers/proxies/{name}` | GET/PUT | `dashapi.HandleProviderProxies` | 获取/更新订阅代理信息 |
+| `/providers/proxies` | GET | `dashapi.HandleProvidersProxiesAll` | 获取全部订阅的代理信息（含节点历史与代理组；融合模式的代理页数据源） |
+| `/providers/proxies/{name}` | GET/PUT | `dashapi.HandleProviderProxies` | 获取/更新订阅代理信息；也承接 `/providers/proxies/{provider}/{node}/healthcheck` |
 | `/rules` | GET | `dashapi.HandleRules` | 获取所有规则 |
 | `/rules/disable` | PATCH | `dashapi.HandleRulesDisable` | 启用/禁用规则 |
 | `/proxies` | GET | `dashapi.HandleProxies` | 获取所有代理组 |
 | `/proxies/{name}/delay` | GET | `dashapi.HandleProxyDelay` | 测速（需 ?url=&timeout= 参数） |
 | `/proxies/{name}` | PUT | `dashapi.HandleProxySwitch` | 切换代理选择 |
 | `/proxies/quality` | GET | `quality.HandleQualityScores` | 获取所有代理节点的质量分数评分列表 |
+| `/group/{name}/delay` | GET | `dashapi.HandleGroupDelay` | 策略组整体测速（返回 `{节点名: 延迟}`；需 ?url=&timeout=） |
 | `/cache/fakeip/flush` | POST | `dashapi.HandleFlushFakeIP` | 清空 FakeIP 缓存 |
 | `/cache/dns/flush` | POST | `dashapi.HandleFlushDNS` | 清空 DNS 缓存 |
 | `/dns/query` | GET | `dashapi.HandleDNSQuery` | DNS 查询（?name=&type=） |
 | `/restart` | POST | `dashapi.HandleRestart` | 内核远端重启 |
+| `/check-update` | GET | `appupdate.HandleCheckUpdate` | 检查 Fluxor 自身是否有新版本（`?force=1` 无视 10 分钟冷却，供弹窗手动检查） |
+| `/update-self` | POST | `appupdate.HandleSelfUpdate` | 下载并安装新版本（校验 checksums.txt 的 sha256 与 ELF 头，原子替换，失败回滚） |
 | `/config/tproxy` | GET/POST | `tproxy.HandleTproxyState` | 获取或切换 TProxy 防火墙状态 |
 | `/config/tproxy/exceptions` | GET/POST | `tproxy.HandleTproxyExceptions` | 获取或配置 TProxy 源/目的绕过列表（GET 一并返回 `defaults` 预填模板，供前端「恢复默认」） |
 | `/config/tproxy/proxy-local` | GET/POST | `tproxy.HandleTproxyProxyLocal` | 获取或切换本机流量接管开关（界面文案「接管本机流量」） |
@@ -364,7 +369,8 @@ func (c *cancelableReadCloser) Close() error {
 | `/delaytest/custom` | GET | `delaytest.HandleDelayTestCustom` | 测试用户自定义地址连通延迟 |
 | `/meta/` | GET | `http.FileServer` | MetaCubeXD 外部面板静态文件 |
 | `/zash/` | GET | `http.FileServer` | Zashboard 外部面板静态文件 |
-| `/assets/` | GET | `http.FileServer` | 内嵌前端构建静态资源（Vite assets 目录） |
+| `/assets/` | GET | `http.FileServer` | 内嵌前端构建静态资源（Vite assets 目录，文件名带内容哈希 → 一年期 immutable） |
+| `/ICON.PNG` | GET | `httpx.ETagFile` | 内嵌 favicon；名字固定而内容随部署变化，故 `no-cache` + 内容摘要 ETag（命中 If-None-Match 回 304，避免每次导航重下 80 KB） |
 
 > 所有路由均挂载在 `baseURL = "/app/Fluxor"` 之下，如 `/app/Fluxor/core/status`。
 
@@ -393,7 +399,7 @@ func (c *cancelableReadCloser) Close() error {
 | `subscription-meta.json` | 每订阅 `updated_at` + `subscription_info`（机场元数据） | 更新与元数据流程（手动/定时更新、启动 ensure） | `config.SaveSubscriptionMeta` |
 | `tproxy.json` | TProxy 三个开关 + 两条绕过列表 | `tproxy` 包（用自己的 `config.Store`） | `tproxy.SaveTproxy*` |
 
-旧的 `fluxor.json` 只作为**一次性迁移的输入**：启动时 `config.MigrateLegacyFiles()` 把它拆成上述 5 个文件并改名为 `fluxor.json.migrated-<时间戳>`（幂等、可回滚；任一新文件写入失败则保留旧文件下次重试）。新布局已存在时旧文件被忽略（不会出现两套真相）。
+旧的 `fluxor.json` 只作为**一次性迁移的输入**：启动时 `config.MigrateLegacyFiles()` 把它拆成上述 5 个文件并改名为 `fluxor.json.migrated-<时间戳>`。幂等判据不是「settings.json 是否存在」（它是五份里第一个被写的，从第二个起失败就会让整段迁移被永久跳过、未迁移的类别再也读不到），而是一个显式的 `fluxor.json.migrating` 标记：写文件前落标记，五份全部写成才归档旧文件并删标记；中途失败则下次启动读到标记后**只补写缺失的那几份**（已写成的保持原样，不覆盖用户其后的改动）。新布局已存在且无标记时旧文件被忽略（不会出现两套真相）。
 
 实现载体是 `config.Store[T]`（`internal/config/store.go`）。写代码时必须遵守：
 
@@ -401,9 +407,9 @@ func (c *cancelableReadCloser) Close() error {
 2. **锁内「读—改—写」**：规则/隧道的修改一律用 `config.UpdateXxx(…, func(current []T) ([]T, error))`——闭包拿到的 `current` 是**此刻**存储里的列表，返回的列表被原样落盘，整段在同一把文件锁内完成。**禁止**「先 `config.SubscriptionRules(name)` 取快照 → 在闭包外算好 → 整份写回」：那是丢失更新的经典形态（同一作用域的并发请求会互相覆盖）。
 3. **`config.Current` 是派生视图**：由各 store 组装（`assembleCurrent`），写入口落盘后会自动重组装。**任何代码都不得给 `config.Current` 赋值或就地改它的切片**（`Current` 只在读路径使用）。需要跨数据类别的读，一律走视图或 getter（`TemplateRulesFor` / `SubscriptionTunnelsFor` / `SubscriptionMetaOf` …）。
 4. **不得嵌套两把锁**：写入口内部会取 `config.Mu` 重组装，因此**持有 `config.Mu` 时不得调用任何 `Save*/Update*`**；也不得在 `Store.View` 回调里调用该 store 的 `Update`（`sync.Mutex` 不可重入，会自死锁——本项目踩过一次）。
-5. **原子落盘与损坏保护**：写盘统一走 `writeFileAtomic`（临时文件 + `fsync` + `rename`，显式 0644）。文件内容无法解析时：备份为 `<file>.corrupt-<时间戳>`、内存态回落默认值、**拒绝后续写入**（返回「内容损坏」错误让接口如实回 500），而不是以空值继续——静默继续会覆盖掉用户手工编辑的内容。
+5. **原子落盘与损坏保护**：写盘统一走 `writeFileAtomic`（临时文件 + `fsync(tmp)` + `rename` + **`fsync(父目录)`**，显式 0644）。最后一步不能省：`rename` 改的是父目录的目录项，只 `fsync` 文件不 `fsync` 目录时，断电后 `rename` 可能整个丢失，或在 ext4 这类延迟分配的文件系统上留下「长度正确、内容全零」的文件——对配置来说就是「面板起来是默认值」。目录同步失败只记 WARN 不判失败（部分平台/文件系统不支持对目录 Sync，为此让保存失败得不偿失）。文件内容无法解析时：备份为 `<file>.corrupt-<时间戳>`、内存态回落默认值、**拒绝后续写入**（返回「内容损坏」错误让接口如实回 500），而不是以空值继续——静默继续会覆盖掉用户手工编辑的内容。
 6. **默认值不落盘**：只在用户真正改过时才写文件。标量默认值靠 `Store.Init`（读盘前填充，键存在即被覆盖；端口 0 表示禁用，只有 `Init` 能区分「缺失」与「显式 0」）；容器类靠 `Store.Normalize`（读盘后修 `null`）。tproxy 的两条绕过列表用 `nil` 表示「用代码里的预填模板」，`LoadTproxyState` 会把与模板一致的列表从文件里移除——预填的上万字节注释不该进用户文件。
-7. **按订阅名存的数据要能自愈**：`rules.json` / `tunnels.json` / `subscription-meta.json` 里的条目以订阅名为键。订阅**改名**时由 `SaveSettings` 识别（判据是「旧表独有 × 新表独有且 URL 相同」）并搬运；订阅**删除**后的孤儿由 `GCResources()` 回收（启动时 + 每次 `SaveSettings` 后），且只在确有删除时才落盘。孤儿进不了生成链路（生成按订阅名查找），因此回收是清理而非正确性要求——正因如此，拆文件才不需要跨文件事务。前端在「改名的同时修改链接且该订阅确有规则/隧道」时会先弹一次确认（`subscription.rename_url_change_confirm`）——这种组合无法被识别为改名，旧条目会被当作孤儿回收。
+7. **按订阅名存的数据要能自愈**：`rules.json` / `tunnels.json` / `subscription-meta.json` 里的条目以订阅名为键。订阅**改名**时由 `SaveSettings` 识别（判据是「旧表独有 × 新表独有且 URL 相同」）并搬运；订阅**删除**后的孤儿由 `GCResources()` 回收（**只在 `SaveSettings` 之后**——那时 settings 一定刚被成功写入，订阅表是可信的），且只在确有删除时才落盘。**启动阶段只探测不回收**（`probeOrphanResources`）：那时 settings.json 可能解析失败或读不出来，内存态已回落成空订阅表，若照常回收会把 rules / tunnels / meta 三份文件里所有按订阅名存放的条目判成孤儿并删除（这三份没有 `.corrupt` 备份，一次解析失败就能毁掉用户全部规则与隧道）。回收本身只是「让文件干净」而非正确性要求，推迟到下一次保存完全无副作用。取值判据见 `subscriptionNamesForGC()`：settings store 处于损坏状态时一律拒绝回收。孤儿进不了生成链路（生成按订阅名查找），因此回收是清理而非正确性要求——正因如此，拆文件才不需要跨文件事务。前端在「改名的同时修改链接且该订阅确有规则/隧道」时会先弹一次确认（`subscription.rename_url_change_confirm`）——这种组合无法被识别为改名，旧条目会被当作孤儿回收。
 8. **不变量留在同一文件内**：唯一需要原子的跨字段约束是「`active_subscription` 必须是 `subscriptions` 的成员」，两者同在 `settings.json`。新增字段时若发现需要跨文件原子性，先重新划分归属，而不是引入跨文件事务。
 9. **元数据是唯一允许「写失败即留空」的一类**：`subscription-meta.json` 的内容可从机场重抓，因此更新流程里抓取失败**不落库**（保持 store 里的旧值），只在本地视图沿用旧值以保证本次生成/响应一致。
    同理，**抓到但内容为空**（内核 provider 还没重新拉取、或机场不下发 `subscription-userinfo`）也不算成功：`SaveSubscriptionMeta(name, "", nil/空 map)` 既不写也不删，`updateAllSubscriptionsMetadata` / 异步更新分支据此保留旧值并记一条 WARN。把它当成「清空」会抹掉用户上次已知的流量与到期——切到融合模式后卡片会立刻变成「流量信息不可用」，而这正是最需要旧值兜底的时刻（前端在实时数据缺失时回退显示 `sub.info`，见 `getSubscriptionDisplayInfo`）。
@@ -580,6 +586,20 @@ logx.Error(logx.ModuleCore, "failed to start mihomo %s: %v", config.CoreBin, err
 7. **`Setup` 失败不阻断启动**：日志文件打不开（目录不可写）时 `logx` 退回「只写 stderr」，由 `main.go` 把该错误报到 stderr 后继续运行——日志系统自身不可用不该让面板起不来。
 8. **写入口径**：`logx` 用单个 `*log.Logger` 串行写出，每条记录一次 `Write` 且 `O_APPEND`，行不会撕裂；`Setup` 之后才写入的调用方（用 `Enabled()` 自检）无需再加锁。
 
+
+### 3.14 面板 WebSocket 的来源校验（浏览器 → 面板）
+
+`/traffic`、`/memory`、`/connections`、`/logs` 是**全站唯一走 WebSocket 的接口**，由 `wsproxy` 的 `upgrader` 统一做来源校验。面板自身没有任何认证，而 WebSocket **不受 CORS 约束**（跨站 `fetch` 读不到响应，跨站 WS 却能双向收发），因此这道校验是必要的；但它的实现必须容忍反向代理，否则会一次性打死全部实时功能——四路 WS 同时 403，面板上「流量计、内存占用、连接、日志」全空，而其它走 HTTP 的功能（内核版本、规则、订阅）一切正常，极易误判成后端不通。实测踩过一次，判定见 `wsproxy/upgrader.go`：
+
+1. **显式放行清单** `FLUXOR_WS_ALLOWED_ORIGINS`（逗号分隔主机名；`*` 表示放行全部来源）。逃生口：某些网关把 `Host` 改写成与访问地址无关的值（如上游名 `localhost`）且不透传 `X-Forwarded-Host`，此时自动判定无从得知浏览器用的是哪个主机名，只能显式声明。清单是「额外放行」而非白名单——未命中时仍走后面的自动判定。
+2. **`Sec-Fetch-Site`**（首选）：由浏览器按「发起方页面 ↔ 目标 URL」自行推导，**不受反代改写 Host 影响**，是代理部署下唯一可靠的信号。`cross-site` 拒绝，`same-origin` / `same-site` / `none` 放行。
+3. **主机名比较**（退化路径，供不发 `Sec-Fetch-Site` 的旧浏览器）：只比**主机名、不比端口**，并可回退到 `X-Forwarded-Host`（多级链取第一个）。
+
+> **「只比主机名、不比端口」是实测教训，不要改回逐字比较**：反代常把 `Host` 的端口剥掉。实测（fnOS 应用网关，面板挂在 `https://<host>:3333` 之后）浏览器发 `Origin: https://fn.1kw.site:3333`，面板收到的却是 `Host: fn.1kw.site`——按「主机:端口」比较会把这种正常部署整体拒掉。跨站攻击来自**不同的站点**（主机名不同），同主机不同端口在浏览器同源策略里属同一个 site；能占用本机其它端口的攻击者已经在本机之内，不是这道校验的目标。
+>
+> `Origin` 缺失（脚本 / curl 这类非浏览器客户端）一律放行：它们不受跨站请求伪造影响，拦下只会妨碍调试。`Origin: null`（沙箱 iframe / file://）解析出的主机名为空，会被拒绝。
+>
+> 排查提示：升级失败会记一条 ERROR 并带 `origin=` 与 `host=`（`wsproxy/handler.go`），内核侧拨号失败记 DEBUG（`FLUXOR_LOG_LEVEL=debug` 可见）。这两条日志把「前端没连上 / 来源被拒 / 内核侧连不上」三种情况区分开——此前该路径完全静默，是「WS 没内容」难查的主因。
 
 为了保障页面切换时的流畅交互体验，并避免在后台静置运行时产生资源泄漏：
 

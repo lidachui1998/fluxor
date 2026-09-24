@@ -144,17 +144,31 @@ const mutatedKeys = reactive(new Set<string>())
 const { t } = useI18n()
 const globalStore = useGlobalStore()
 
-// 作用域状态表：按 key 持有，跨开关弹窗保留，因此重新打开时不会丢掉已输入的内容
+// 作用域状态表：按 key 持有，跨开关弹窗保留，因此重新打开时不会丢掉已输入的内容。
+//
+// 索引键**必须带上 endpoint**（见 stateKey）：作用域名与订阅名共用同一个名字空间，
+// 而订阅名允许纯字母（config/name.go），所以完全可能存在一个叫 base / full / custom
+// 的订阅。此时切换模式的 /subscribe/custom-rules/base 与融合档位的
+// /subscribe/merge-custom-rules/base 是两个不同的作用域，却会命中同一份 ScopeState——
+// 列表每次打开都会重拉所以看着正常，但表单取值、formInited 与 editingRuleId 会跨入口
+// 残留：在融合档位点过「编辑」再打开那个同名订阅的规则弹窗，提交时会带着另一个作用域
+// 的 id 发 PUT，后端只能回 404「规则不存在」，用户完全无从理解。
 const scopeStates = reactive<Record<string, ScopeState>>({})
 const activeScopeKey = ref('')
 
 // 每个作用域的表单状态在首次加载到 payload 时才会被写入，这次程序化赋值同样
-// 不得触发「改类型即清空取值」的重置，故按 key 记录被程序化改写的类型值。
+// 不得触发「改类型即清空取值」的重置，故按状态键记录被程序化改写的类型值。
 const programmaticTypes = new Map<string, string>()
 
+// stateKey 把「作用域 key」映射为「状态表索引键」：加入当前 endpoint，避免不同模式下
+// 同名作用域互相串味。activeScopeKey 等仍然只用作用域名（它们都与当前 endpoint 绑定，
+// 且模板里拿它跟 props.scopes[].key 比较），只有状态表的索引需要这个前缀。
+const stateKey = (key: string) => `${props.endpoint}|${key}`
+
 const scopeState = (key: string): ScopeState => {
-  if (!scopeStates[key]) scopeStates[key] = createScopeState()
-  return scopeStates[key]
+  const k = stateKey(key)
+  if (!scopeStates[k]) scopeStates[k] = createScopeState()
+  return scopeStates[k]
 }
 
 const scopeUrl = (key: string) => `${props.endpoint}/${encodeURIComponent(key)}`
@@ -318,7 +332,7 @@ const applyPayload = (key: string, data: CustomRulesPayload) => {
   if (!form.type && data.rule_types?.length) {
     // RULE-SET 只能从下拉里选；类型下拉本身含全部类型，无需特殊处理
     form.type = data.rule_types[0].type
-    programmaticTypes.set(key, form.type)
+    programmaticTypes.set(stateKey(key), form.type)
   }
   if (!form.target) {
     form.target = data.builtins?.[0] || data.groups?.[0] || ''
@@ -370,8 +384,9 @@ watch(() => ruleForm.value?.type ?? '', (newType) => {
   const key = activeScopeKey.value
   const state = activeScope.value
   if (!key || !state) return
-  if (programmaticTypes.get(key) === newType) {
-    programmaticTypes.delete(key)
+  const cacheKey = stateKey(key)
+  if (programmaticTypes.get(cacheKey) === newType) {
+    programmaticTypes.delete(cacheKey)
     return
   }
   const form = state.form
@@ -395,7 +410,7 @@ watch(() => ruleForm.value?.type ?? '', (newType) => {
 const startEditRule = (rule: CustomRule) => {
   const state = activeScope.value
   if (!state) return
-  programmaticTypes.set(activeScopeKey.value, rule.type)
+  programmaticTypes.set(stateKey(activeScopeKey.value), rule.type)
   // 提交按钮只有一套：编辑规则时退出隧道编辑态
   state.editingTunnelId = ''
   state.editingRuleId = rule.id
@@ -439,7 +454,7 @@ const startEditTunnel = (tunnel: TunnelView) => {
   // 只有类型真的变化时才登记「程序化赋值」：类型没变时 watch 不会触发，
   // 登记进去就成了永远没人消费的残留值，会吞掉之后的一次真实类型切换
   if (state.form.type !== TUNNEL_TYPE) {
-    programmaticTypes.set(activeScopeKey.value, TUNNEL_TYPE)
+    programmaticTypes.set(stateKey(activeScopeKey.value), TUNNEL_TYPE)
   }
   state.editingRuleId = ''
   state.editingTunnelId = tunnel.id

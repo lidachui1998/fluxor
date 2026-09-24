@@ -323,9 +323,16 @@ func main() {
 	// 而每次部署后 index.html 引用的都是新哈希名，不会取到旧副本。
 	staticFileServer := http.FileServer(http.FS(staticFS))
 	mux.Handle(config.BaseURL+"/assets/", http.StripPrefix(config.BaseURL, httpx.CacheImmutable(staticFileServer)))
-	// 内嵌静态根文件（index.html 之外的静态资源，如 favicon ICON.PNG）
-	// 名字固定、内容可能变，只能要求每次回源校验
-	mux.Handle(config.BaseURL+"/ICON.PNG", http.StripPrefix(config.BaseURL, httpx.CacheRevalidate(staticFileServer)))
+	// 内嵌静态根文件（index.html 之外的静态资源，如 favicon ICON.PNG）。
+	// 名字固定、内容可能随部署变化，因此必须每次回源校验；但内嵌文件系统没有
+	// ModTime/ETag，单靠 no-cache 会让浏览器每次完整重下（ICON.PNG 有 80 KB）。
+	// ETagFile 在启动时算出内容摘要，命中 If-None-Match 时回 304（无响应体）。
+	if iconHandler, err := httpx.ETagFile(staticFS, "ICON.PNG", "image/png"); err != nil {
+		logx.Warn(logx.ModuleMain, "failed to prepare ETag handler for ICON.PNG, falling back to plain file server: %v", err)
+		mux.Handle(config.BaseURL+"/ICON.PNG", http.StripPrefix(config.BaseURL, httpx.CacheRevalidate(staticFileServer)))
+	} else {
+		mux.Handle(config.BaseURL+"/ICON.PNG", iconHandler)
+	}
 
 	// 页面路由
 	if config.BaseURL == "" {
@@ -420,7 +427,13 @@ func main() {
 	// 代理 API
 	mux.HandleFunc(config.BaseURL+"/proxies", dashapi.HandleProxies)
 	mux.HandleFunc(config.BaseURL+"/proxies/", func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/delay") || strings.Contains(r.URL.Path, "/delay?") {
+		// 只按路径后缀分派：r.URL.Path **不含查询串**（参数在 r.URL.RawQuery 里），
+		// 因此曾经的 `strings.Contains(r.URL.Path, "/delay?")` 恒为假——看起来像在
+		// 处理 "/proxies/x/delay?timeout=..." 这种形态，实际由上面的后缀判断覆盖。
+		//
+		// 已知限制（未修）：名叫 delay 的代理同样以 "/delay" 结尾，会被误判成测速请求，
+		// 于是 PUT /proxies/delay 回 405、该代理无法被选中。要修需改按路径段分派。
+		if strings.HasSuffix(r.URL.Path, "/delay") {
 			dashapi.HandleProxyDelay(w, r)
 		} else {
 			dashapi.HandleProxySwitch(w, r)

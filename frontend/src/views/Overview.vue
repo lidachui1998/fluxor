@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, onActivated, onDeactivated, nextTick, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { apiFetch } from '../utils/api'
+import { apiFetch, withBase } from '../utils/api'
 import { modeI18nKey } from '../utils/i18n-keys'
 import { OpenOutline, SyncOutline, EyeOutline, EyeOffOutline, GridOutline, GlobeOutline, FlashOutline } from '@vicons/ionicons5'
 import { storeToRefs } from 'pinia'
@@ -45,7 +45,10 @@ const currentNodeDisplay = computed(() => placeholderText(stats.value.currentNod
 
 const currentGroupDisplay = computed(() => placeholderText(stats.value.currentGroup) ?? stats.value.currentGroup)
 
-const base = window.BASE_URL || ''
+// 外置面板的入口地址由 withBase 统一拼前缀，不要自己拼 window.BASE_URL：
+// BASE_URL 为 '/'（根路径部署，docs/faq.md 支持的部署方式）时会拼出 "//meta/"，
+// 那是**协议相对 URL**，浏览器会解析成 https://meta/ —— 点了直接跳到不存在的主机。
+// withBase 里专门处理了 BASE === '/' 与末尾斜杠，是唯一该用的地方。
 
 // 流量数据点 (最多65个)
 const maxPoints = 65
@@ -971,7 +974,7 @@ onUnmounted(() => {
         </div>
         <div
           class="bg-slate-50/50 dark:bg-slate-900/30 p-4 rounded-xl border border-slate-200/40 dark:border-slate-800/40 transition-all">
-          <a :href="`${base}${uiPanel === 'zashboard' ? '/zash/' : '/meta/'}`" target="_blank"
+          <a :href="withBase(uiPanel === 'zashboard' ? '/zash/' : '/meta/')" target="_blank"
             class="block text-slate-800 dark:text-slate-100 decoration-transparent">
             <div class="flex justify-between items-center">
               <span class="text-xs sm:text-sm font-bold text-slate-500 dark:text-slate-400">{{
