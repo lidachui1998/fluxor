@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fluxor/internal/config"
 	"fluxor/internal/httpx"
-	"log"
+	"fluxor/internal/logx"
 	"net/http"
 )
 
@@ -76,7 +76,7 @@ func HandleTproxyState(w http.ResponseWriter, r *http.Request) {
 			// 「面板显示已关闭、流量仍被劫持」的静默错配。
 			DisableTProxyRules()
 			SetTproxyEnabled(false)
-			log.Printf("[TProxy] 添加规则失败: %v", err)
+			logx.Error(logx.ModuleTproxy, "failed to apply tproxy rules: %v", err)
 			httpx.WriteJSONError(w, http.StatusInternalServerError, "启用 TProxy 失败: "+err.Error())
 			return
 		}
@@ -127,7 +127,7 @@ func HandleTproxyExceptions(w http.ResponseWriter, r *http.Request) {
 		}
 		// 如果 TProxy 启用则重载
 		if err := reapplyTproxyRules(); err != nil {
-			log.Printf("[TProxy] 绕过更新后重新应用规则失败: %v", err)
+			logx.Error(logx.ModuleTproxy, "failed to reapply tproxy rules after bypass list update: %v", err)
 			httpx.WriteJSONError(w, http.StatusInternalServerError, "重新应用规则失败（TProxy 已自动关闭）: "+err.Error())
 			return
 		}
@@ -149,13 +149,13 @@ func HandleTproxyProxyLocal(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := SaveTproxyProxyLocal(req.Enabled); err != nil {
-			log.Printf("[TProxy] 保存本机代理开关失败: %v", err)
+			logx.Error(logx.ModuleTproxy, "failed to persist proxy-local switch: %v", err)
 			httpx.WriteJSONError(w, http.StatusInternalServerError, "保存失败")
 			return
 		}
 		// 如果 TProxy 当前启用，立即重新应用规则
 		if err := reapplyTproxyRules(); err != nil {
-			log.Printf("[TProxy] 重新应用规则失败: %v", err)
+			logx.Error(logx.ModuleTproxy, "failed to reapply tproxy rules: %v", err)
 			httpx.WriteJSONError(w, http.StatusInternalServerError, "重新应用规则失败（TProxy 已自动关闭）: "+err.Error())
 			return
 		}
@@ -181,7 +181,7 @@ func HandleTproxyProxyIPv6(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := SaveTproxyIPv6(req.Enabled); err != nil {
-			log.Printf("[TProxy] 保存 IPv6 接管开关失败: %v", err)
+			logx.Error(logx.ModuleTproxy, "failed to persist IPv6 takeover switch: %v", err)
 			httpx.WriteJSONError(w, http.StatusInternalServerError, "保存失败")
 			return
 		}
@@ -189,7 +189,7 @@ func HandleTproxyProxyIPv6(w http.ResponseWriter, r *http.Request) {
 		if err := reapplyTproxyRules(); err != nil {
 			// 规则没装成功就必须让调用方知道：此处不能默默吞掉，
 			// 否则面板会显示「已启用」而 IPv6 实际未被接管。
-			log.Printf("[TProxy] 切换 IPv6 接管后重新应用规则失败: %v", err)
+			logx.Error(logx.ModuleTproxy, "failed to reapply tproxy rules after IPv6 takeover change: %v", err)
 			httpx.WriteJSONError(w, http.StatusInternalServerError, "重新应用规则失败（TProxy 已自动关闭）: "+err.Error())
 			return
 		}

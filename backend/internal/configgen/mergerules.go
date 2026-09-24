@@ -3,8 +3,8 @@ package configgen
 import (
 	"fluxor/internal/config"
 	"fluxor/internal/configcheck"
+	"fluxor/internal/logx"
 	"fmt"
-	"log"
 	"sort"
 	"strings"
 
@@ -153,7 +153,7 @@ func applyCustomRules(doc *configcheck.Doc, scopeName string, rules []config.Cus
 	}
 	for _, skip := range result.Skipped {
 		// 跳过而不是写进配置：目标不存在的规则会让内核拒绝加载整份配置
-		log.Printf("[CUSTOM-RULE] %s 跳过规则 %s,%s,%s: %s",
+		logx.Warn(logx.ModuleRule, "custom rule skipped: scope=%s rule=%s,%s,%s reason=%s",
 			scopeName, skip.Rule.Type, skip.Rule.Payload, skip.Rule.Target, skip.Reason)
 	}
 	return nil
@@ -174,7 +174,7 @@ func applyTunnels(doc *configcheck.Doc, scopeName string, tunnels []config.Tunne
 	}
 	for _, skip := range result.Skipped {
 		// 跳过而不是写进配置：proxy 不存在的隧道会让内核拒绝加载整份配置
-		log.Printf("[TUNNEL] %s 跳过隧道 %s -> %s: %s",
+		logx.Warn(logx.ModuleTunnel, "tunnel skipped: scope=%s, %s -> %s (%s)",
 			scopeName, skip.Tunnel.Address, skip.Tunnel.Target, skip.Reason)
 	}
 	return nil

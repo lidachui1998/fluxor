@@ -7,8 +7,8 @@ import (
 	"fluxor/internal/configgen"
 	"fluxor/internal/core"
 	"fluxor/internal/httpx"
+	"fluxor/internal/logx"
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -463,7 +463,7 @@ func applyTunnelsToActiveConfig(scope tunnelScope) (string, string) {
 	}
 
 	if err := scope.regenerate(cfg); err != nil {
-		log.Printf("[TUNNEL] %s 作用域（%s）重新生成配置失败: %v", cfg.Mode, scope.name, err)
+		logx.Error(logx.ModuleTunnel, "regenerate config failed: mode=%s scope=%s: %v", cfg.Mode, scope.name, err)
 		return "warning", "隧道已保存，但重新生成配置文件失败: " + err.Error()
 	}
 
@@ -471,7 +471,7 @@ func applyTunnelsToActiveConfig(scope tunnelScope) (string, string) {
 	if ctx, err := scope.context(cfg); err == nil {
 		if skipped := configgen.TunnelSkips(scope.tunnels(cfg), ctx); len(skipped) > 0 {
 			warning = "有 " + strconv.Itoa(len(skipped)) + " 条隧道因配置无效未写入配置"
-			log.Printf("[TUNNEL] %s 作用域（%s）有 %d 条隧道未写入配置", cfg.Mode, scope.name, len(skipped))
+			logx.Warn(logx.ModuleTunnel, "tunnels not written to config: mode=%s scope=%s count=%d", cfg.Mode, scope.name, len(skipped))
 		}
 	}
 
@@ -480,7 +480,7 @@ func applyTunnelsToActiveConfig(scope tunnelScope) (string, string) {
 		return "ok", warning
 	}
 	if err := core.ReloadCore(); err != nil {
-		log.Printf("[TUNNEL] 重载内核失败: %v", err)
+		logx.Warn(logx.ModuleTunnel, "reload core failed: %v", err)
 		return "warning", joinMessage(warning, "内核重载失败: "+err.Error())
 	}
 	return "ok", warning

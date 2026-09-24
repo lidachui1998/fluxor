@@ -2,9 +2,9 @@ package subscription
 
 import (
 	"fluxor/internal/config"
+	"fluxor/internal/logx"
 	"fluxor/internal/subscription/download"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -64,7 +64,7 @@ func ensureSubscriptionFiles(cfg *config.SubscribeConfig) error {
 				}
 				cfg.Subscriptions[idx].UpdatedAt = updatedAt
 				cfg.Subscriptions[idx].SubscriptionInfo = subInfo
-				log.Printf("[ensure] 已下载并更新订阅 %s 元数据", s.Name)
+				logx.Info(logx.ModuleSub, "subscription %q downloaded and metadata updated", s.Name)
 				// 下载成功后打补丁
 				if err := patchSubscriptionFile(targetFile, *cfg); err != nil {
 					errCh <- fmt.Errorf("订阅 %s 打补丁失败: %w", s.Name, err)

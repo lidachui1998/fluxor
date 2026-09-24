@@ -2,7 +2,7 @@ package config
 
 import (
 	"encoding/json"
-	"log"
+	"fluxor/internal/logx"
 	"os"
 	"path/filepath"
 	"sync"
@@ -91,7 +91,7 @@ func LoadSubscribeConfig() {
 	data, err := os.ReadFile(FluxorConfigFile)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			log.Printf("读取订阅配置失败: %v", err)
+			logx.Error(logx.ModuleConfig, "failed to read config file %s: %v", FluxorConfigFile, err)
 		}
 		Current = defaultCfg
 		return
@@ -99,7 +99,7 @@ func LoadSubscribeConfig() {
 
 	var tmp SubscribeConfig
 	if err := json.Unmarshal(data, &tmp); err != nil {
-		log.Printf("解析订阅配置失败: %v，使用默认配置", err)
+		logx.Warn(logx.ModuleConfig, "failed to parse config file %s, falling back to defaults: %v", FluxorConfigFile, err)
 		Current = defaultCfg
 		return
 	}
@@ -146,7 +146,7 @@ func LoadSubscribeConfig() {
 	}
 
 	Current = tmp
-	log.Printf("成功加载订阅配置：%d 个订阅，%d 个自定义节点", len(Current.Subscriptions), len(Current.CustomNodes))
+	logx.Info(logx.ModuleConfig, "config loaded: subscriptions=%d custom_nodes=%d", len(Current.Subscriptions), len(Current.CustomNodes))
 }
 
 // SaveSubscribeConfig 保存订阅配置到文件。

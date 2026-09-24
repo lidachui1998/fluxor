@@ -3,11 +3,13 @@ package main
 import (
 	"embed"
 	"fluxor/internal/appupdate"
+	"fluxor/internal/buildinfo"
 	"fluxor/internal/config"
 	"fluxor/internal/configgen"
 	"fluxor/internal/core"
 	"fluxor/internal/dashapi"
 	"fluxor/internal/delaytest"
+	"fluxor/internal/logx"
 	"fluxor/internal/netinfo"
 	"fluxor/internal/quality"
 	"fluxor/internal/subscription"
@@ -59,7 +61,8 @@ func main() {
 				customAddr = args[i+1]
 				i++
 			} else {
-				fmt.Println("错误：-a 或 --addr 需要指定地址")
+				// 此时日志系统尚未初始化（日志路径由运行模式决定，晚于参数解析）
+				fmt.Fprintln(os.Stderr, "usage error: -a/--addr requires an address")
 				os.Exit(1)
 			}
 		default:
@@ -80,6 +83,10 @@ func main() {
 	config.SetDefaults(mode)
 
 	// 环境变量覆盖（所有配置均可通过环境变量修改）
+	if v := os.Getenv("FLUXOR_DATA_DIR"); v != "" {
+		// 统一运行数据目录：fluxor.json / fluxor.log 由此派生（PID 文件见 config.SetDataDir）
+		config.SetDataDir(v)
+	}
 	if v := os.Getenv("SOCKET_PATH"); v != "" {
 		config.SocketPath = v
 	}
@@ -89,14 +96,8 @@ func main() {
 	if v := os.Getenv("FLUXOR_ADDR"); v != "" {
 		config.TcpAddr = v
 	}
-	if v := os.Getenv("FLUXOR_PID_FILE"); v != "" {
-		config.FluxorPidFile = v
-	}
 	if v := os.Getenv("FLUXOR_BIN_DIR"); v != "" {
 		config.FluxorBinDir = v
-	}
-	if v := os.Getenv("CORE_PID_FILE"); v != "" {
-		config.CorePidFile = v
 	}
 	if v := os.Getenv("CORE_BIN"); v != "" {
 		config.CoreBin = v
@@ -110,14 +111,8 @@ func main() {
 	if v := os.Getenv("ZASH_DIR"); v != "" {
 		config.ZashDir = v
 	}
-	if v := os.Getenv("FLUXOR_CONFIG_FILE"); v != "" {
-		config.FluxorConfigFile = v
-	}
 	if v := os.Getenv("CONFIG_TARGET"); v != "" {
 		config.ConfigTarget = v
-	}
-	if v := os.Getenv("INFO_LOG_FILE"); v != "" {
-		config.InfoLogFile = v
 	}
 	if v := os.Getenv("CORE_WORK_DIR"); v != "" {
 		config.CoreWorkDir = v
@@ -131,13 +126,30 @@ func main() {
 	// 更新 originalBaseURL（可能被环境变量修改）
 	config.OriginalBaseURL = config.BaseURL
 
-	if mode == "openwrt" {
-		fmt.Printf("Fluxor 运行于 OpenWrt 模式")
+	// === 初始化日志 ===
+	// 全部日志由后端独占写入运行数据目录下的 fluxor.log（并镜像到 stderr），
+	// 不依赖启动脚本的 stdout/stderr 重定向——否则同一份日志会因启动方式不同而
+	// 落在不同文件里。等级由 FLUXOR_LOG_LEVEL 控制（debug / info / warn / error）。
+	logLevel := logx.ParseLevel(os.Getenv("FLUXOR_LOG_LEVEL"))
+	logx.SetLevel(logLevel)
+	if err := logx.Setup(config.FluxorLogFile); err != nil {
+		// 文件打不开不阻断启动：logx 退回「只写 stderr」，这里如实报一条
+		logx.Error(logx.ModuleMain, "failed to open log file %s, logging to stderr only: %v", config.FluxorLogFile, err)
 	}
+	defer logx.Close()
+	logx.Info(logx.ModuleMain, "Fluxor starting: version=%s mode=%s log_file=%s log_level=%s",
+		buildinfo.Name(), mode, config.FluxorLogFile, logx.LevelName(logLevel))
 
 	// === 检查和准备 ===
+	// 运行数据目录与 PID 目录先建好（openwrt 下 PID 目录固定在 /var/run，与数据
+	// 目录不同址）：其下的 fluxor.json / fluxor.log / fluxor.pid / core.pid 都在
+	// 启动早期被读取或写入，目录缺失时各处的报错会分散且难定位。
+	for _, dir := range []string{config.FluxorDataDir, filepath.Dir(config.FluxorPidFile)} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			logx.Error(logx.ModuleMain, "failed to create runtime directory %s: %v", dir, err)
+		}
+	}
 	config.LoadSubscribeConfig()
-	core.InitCoreLogger()
 	subscription.StartAllTimers()
 	tproxy.LoadTproxySrcExceptions()
 	tproxy.LoadTproxyDstExceptions()
@@ -160,37 +172,35 @@ func main() {
 			generate = configgen.GenerateCustomConfig
 		}
 		if err := generate(config.Current); err != nil {
-			fmt.Printf("生成基本配置文件失败: %v\n", err)
+			logx.Error(logx.ModuleGen, "failed to generate initial config.yaml: %v", err)
 		} else {
-			fmt.Println("已生成基本配置文件 (config.yaml)")
+			logx.Info(logx.ModuleGen, "initial config.yaml generated: %s", config.ConfigTarget)
 		}
 	}
 
-	if err := os.MkdirAll(filepath.Dir(config.FluxorPidFile), 0755); err != nil {
-		fmt.Printf("无法创建 PID 目录: %v\n", err)
+	// 写入面板自身的 PID 文件（运行数据目录已在启动早期创建）
+	pidData := []byte(fmt.Sprintf("%d", os.Getpid()))
+	if err := os.WriteFile(config.FluxorPidFile, pidData, 0644); err != nil {
+		logx.Error(logx.ModuleMain, "failed to write pid file %s: %v", config.FluxorPidFile, err)
 	} else {
-		pidData := []byte(fmt.Sprintf("%d", os.Getpid()))
-		if err := os.WriteFile(config.FluxorPidFile, pidData, 0644); err != nil {
-			fmt.Printf("写入 PID 文件失败: %v\n", err)
-		} else {
-			defer func() {
-				if err := os.Remove(config.FluxorPidFile); err != nil {
-					fmt.Printf("删除 PID 文件失败: %v\n", err)
-				}
-			}()
-		}
+		logx.Debug(logx.ModuleMain, "pid file written: %s (pid=%d)", config.FluxorPidFile, os.Getpid())
+		defer func() {
+			if err := os.Remove(config.FluxorPidFile); err != nil {
+				logx.Error(logx.ModuleMain, "failed to remove pid file %s: %v", config.FluxorPidFile, err)
+			}
+		}()
 	}
 
 	var err error
 	web.IndexTmpl, err = template.ParseFS(staticFS, "index.html")
 	if err != nil {
-		fmt.Printf("加载主页模板失败: %v\n", err)
+		logx.Error(logx.ModuleWeb, "failed to parse index.html template: %v", err)
 		os.Exit(1)
 	}
 
 	// === 检查监听方式 ===
 	if config.SocketPath == "" && config.TcpAddr == "" {
-		fmt.Println("错误：未配置任何监听地址（SOCKET_PATH 和 FLUXOR_ADDR 均为空）")
+		logx.Error(logx.ModuleMain, "no listen address configured: both SOCKET_PATH and FLUXOR_ADDR are empty")
 		os.Exit(1)
 	}
 
@@ -198,14 +208,14 @@ func main() {
 	var listener net.Listener
 	if config.SocketPath != "" {
 		if err := os.MkdirAll(filepath.Dir(config.SocketPath), 0755); err != nil {
-			fmt.Printf("无法创建 socket 目录: %v\n", err)
+			logx.Error(logx.ModuleMain, "failed to create socket directory for %s: %v", config.SocketPath, err)
 			os.Exit(1)
 		}
 		os.Remove(config.SocketPath)
 
 		listener, err = net.Listen("unix", config.SocketPath)
 		if err != nil {
-			fmt.Printf("监听 Unix socket 失败: %v\n", err)
+			logx.Error(logx.ModuleMain, "failed to listen on unix socket %s: %v", config.SocketPath, err)
 			os.Exit(1)
 		}
 		defer listener.Close()
@@ -213,27 +223,27 @@ func main() {
 		// 0660：仅属主与所属组可读写，收窄此前 0666（任意本地用户均可
 		// 通过该 socket 全权操作内核）。
 		if err := os.Chmod(config.SocketPath, 0660); err != nil {
-			fmt.Printf("设置 socket 权限失败: %v\n", err)
+			logx.Warn(logx.ModuleMain, "failed to chmod unix socket %s to 0660: %v", config.SocketPath, err)
 		}
-		fmt.Printf("Unix socket 监听: %s\n", config.SocketPath)
+		logx.Info(logx.ModuleMain, "listening on unix socket: %s", config.SocketPath)
 	} else {
-		fmt.Println("Unix socket 已禁用")
+		logx.Info(logx.ModuleMain, "unix socket disabled")
 	}
 
 	// === 创建 TCP 监听器（若启用）===
 	var tcpListener net.Listener
 	if config.TcpAddr != "" {
 		if err := netinfo.ValidateTCPAddr(config.TcpAddr); err != nil {
-			fmt.Printf("无效的 FLUXOR_ADDR 格式: %v，将禁用 TCP 监听\n", err)
+			logx.Warn(logx.ModuleMain, "invalid FLUXOR_ADDR %q (%v), tcp listener disabled", config.TcpAddr, err)
 			config.TcpAddr = ""
 		}
 		if config.TcpAddr != "" {
 			tcpListener, err = net.Listen("tcp", config.TcpAddr)
 			if err != nil {
-				fmt.Printf("无法监听 TCP 地址 %s: %v\n", config.TcpAddr, err)
+				logx.Error(logx.ModuleMain, "failed to listen on tcp address %s: %v", config.TcpAddr, err)
 			} else {
 				defer tcpListener.Close()
-				fmt.Printf("TCP 监听: %s\n", config.TcpAddr)
+				logx.Info(logx.ModuleMain, "listening on tcp address: %s", config.TcpAddr)
 			}
 		}
 	}
@@ -393,10 +403,10 @@ func main() {
 	// 自动启动内核
 	if !core.IsCoreRunning() {
 		if err := core.StartCore(); err != nil {
-			fmt.Printf("自动启动内核失败: %v\n", err)
+			logx.Error(logx.ModuleCore, "auto start of mihomo failed: %v", err)
 		}
 	} else {
-		fmt.Println("内核已在运行，跳过自动启动")
+		logx.Info(logx.ModuleCore, "mihomo already running, auto start skipped")
 	}
 
 	// 无条件发布一次初态，确保 SSE hub 的状态「已确定」。
@@ -412,15 +422,15 @@ func main() {
 		go func() {
 			err := http.Serve(listener, mux)
 			if err != nil && !strings.Contains(err.Error(), "use of closed network connection") {
-				fmt.Printf("Unix HTTP 服务错误: %v\n", err)
+				logx.Error(logx.ModuleMain, "unix socket http server stopped unexpectedly: %v", err)
 			}
 		}()
 	}
 	if tcpListener != nil {
 		go func() {
-			fmt.Printf("Fluxor TCP 服务已启动，监听: %s\n", config.TcpAddr)
+			logx.Info(logx.ModuleMain, "http server started on tcp address: %s", config.TcpAddr)
 			if err := http.Serve(tcpListener, mux); err != nil && !strings.Contains(err.Error(), "use of closed network connection") {
-				fmt.Printf("TCP HTTP 服务错误: %v\n", err)
+				logx.Error(logx.ModuleMain, "tcp http server stopped unexpectedly: %v", err)
 			}
 		}()
 	}
@@ -430,15 +440,15 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	fmt.Printf("收到退出信号，正在关闭 Fluxor...\n")
+	logx.Info(logx.ModuleMain, "shutdown signal received, stopping Fluxor")
 	subscription.StopAllTimers()
 	tproxy.DisableTProxyRules()
 	if core.IsCoreRunning() {
 		if err := core.StopCore(); err != nil {
-			fmt.Printf("停止内核失败: %v\n", err)
+			logx.Error(logx.ModuleCore, "failed to stop mihomo: %v", err)
 		}
 	} else {
-		fmt.Printf("内核未运行，无需停止\n")
+		logx.Debug(logx.ModuleCore, "mihomo is not running, nothing to stop")
 	}
-	fmt.Printf("Fluxor 已安全退出\n")
+	logx.Info(logx.ModuleMain, "Fluxor stopped")
 }

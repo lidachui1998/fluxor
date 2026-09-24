@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fluxor/internal/config"
 	"fluxor/internal/httpx"
-	"log"
+	"fluxor/internal/logx"
 	"net/http"
 	"net/url"
 	"strings"
@@ -63,7 +63,7 @@ func HandleUpdateSubscriptionInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := config.SaveSubscribeConfig(); err != nil {
-		log.Printf("保存配置失败: %v", err)
+		logx.Error(logx.ModuleConfig, "saving subscription config failed: %v", err)
 		httpx.WriteJSONError(w, http.StatusInternalServerError, "保存失败")
 		return
 	}

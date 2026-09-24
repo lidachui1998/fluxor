@@ -3,8 +3,8 @@ package wsproxy
 import (
 	"context"
 	"fluxor/internal/config"
+	"fluxor/internal/logx"
 	"github.com/gorilla/websocket"
-	"log"
 	"net"
 	"net/http"
 )
@@ -14,7 +14,7 @@ func WsProxyHandler(targetPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
-			log.Printf("[WS] 升级失败 (路径 %s): %v", targetPath, err)
+			logx.Error(logx.ModuleWS, "failed to upgrade websocket connection: path=%s err=%v", targetPath, err)
 			return
 		}
 		defer conn.Close()

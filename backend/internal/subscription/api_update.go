@@ -4,7 +4,7 @@ import (
 	"fluxor/internal/config"
 	"fluxor/internal/core"
 	"fluxor/internal/httpx"
-	"log"
+	"fluxor/internal/logx"
 	"net/http"
 	"net/url"
 	"strings"
@@ -28,7 +28,7 @@ func HandleSubscribeUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[UPDATE] 收到更新请求: %s", name)
+	logx.Debug(logx.ModuleSub, "update request received: subscription=%q", name)
 
 	config.Mu.RLock()
 	mode := config.Current.Mode
@@ -55,11 +55,11 @@ func HandleSubscribeUpdate(w http.ResponseWriter, r *http.Request) {
 
 		// 启动后台协程异步调用内核更新并拉取元数据，避免阻塞 HTTP 主线程导致 504
 		go func(subName string) {
-			log.Printf("[ASYNC-UPDATE] 后台启动更新订阅: %s", subName)
+			logx.Info(logx.ModuleSub, "background update started for subscription %q", subName)
 			encoded := url.QueryEscape(subName)
 			resp, err := core.CoreRequest("PUT", "/providers/proxies/"+encoded, nil)
 			if err != nil {
-				log.Printf("[ASYNC-UPDATE][ERROR] 调用内核更新失败 %s: %v", subName, err)
+				logx.Error(logx.ModuleSub, "core update of subscription %q failed: %v", subName, err)
 				return
 			}
 			resp.Body.Close()
@@ -67,7 +67,7 @@ func HandleSubscribeUpdate(w http.ResponseWriter, r *http.Request) {
 			// 从主内核拉取最新的元数据
 			updatedAt, subInfo, err := fetchSubscriptionMetadataFromCore(subName)
 			if err != nil {
-				log.Printf("[ASYNC-UPDATE][ERROR] 获取订阅元数据失败 %s: %v", subName, err)
+				logx.Error(logx.ModuleSub, "fetching metadata for subscription %q failed: %v", subName, err)
 				return
 			}
 
@@ -84,9 +84,9 @@ func HandleSubscribeUpdate(w http.ResponseWriter, r *http.Request) {
 
 			// 持久化保存到 subscribe.json
 			if err := config.SaveSubscribeConfig(); err != nil {
-				log.Printf("[ASYNC-UPDATE][ERROR] 保存订阅配置失败 %s: %v", subName, err)
+				logx.Error(logx.ModuleSub, "saving subscription config failed: subscription=%q err=%v", subName, err)
 			} else {
-				log.Printf("[ASYNC-UPDATE] 订阅 %s 后台更新并保存元数据成功", subName)
+				logx.Info(logx.ModuleSub, "subscription %q updated in background and metadata saved", subName)
 			}
 		}(name)
 
@@ -126,9 +126,9 @@ func HandleSubscribeUpdate(w http.ResponseWriter, r *http.Request) {
 
 		// 如果需要重载，在锁外调用
 		if needsReload {
-			log.Printf("[UPDATE] 开始重载内核")
+			logx.Info(logx.ModuleSub, "reloading core")
 			if err := core.ReloadCore(); err != nil {
-				log.Printf("[UPDATE] 重载内核失败: %v", err)
+				logx.Error(logx.ModuleSub, "reloading core failed: %v", err)
 			}
 		}
 
@@ -138,7 +138,7 @@ func HandleSubscribeUpdate(w http.ResponseWriter, r *http.Request) {
 
 		// 立即持久化（避免统一保存被绕过或失败时前端未知）
 		if err := config.SaveSubscribeConfig(); err != nil {
-			log.Printf("[UPDATE] 保存订阅配置失败: %v", err)
+			logx.Error(logx.ModuleSub, "saving subscription config failed: %v", err)
 			httpx.WriteJSONError(w, http.StatusInternalServerError, "保存配置失败: "+err.Error())
 			return
 		}

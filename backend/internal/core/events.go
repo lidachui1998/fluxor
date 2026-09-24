@@ -2,8 +2,8 @@ package core
 
 import (
 	"encoding/json"
+	"fluxor/internal/logx"
 	"fmt"
-	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -162,7 +162,7 @@ func HandleCoreEvents(w http.ResponseWriter, r *http.Request) {
 			}
 			payload, err := json.Marshal(ev)
 			if err != nil {
-				log.Printf("[CORE][SSE] 序列化事件失败: %v", err)
+				logx.Warn(logx.ModuleCore, "failed to encode core state event for SSE client: %v", err)
 				continue
 			}
 			// 事件名固定为 core-state，便于前端 addEventListener 精确订阅

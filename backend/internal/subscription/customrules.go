@@ -9,8 +9,8 @@ import (
 	"fluxor/internal/configgen"
 	"fluxor/internal/core"
 	"fluxor/internal/httpx"
+	"fluxor/internal/logx"
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -405,14 +405,14 @@ func applyCustomRulesToActiveSubscription(name string) (string, string) {
 
 	result, err := writeRuntimeConfig(name, rules, tunnels)
 	if err != nil {
-		log.Printf("[CUSTOM-RULE] 同步订阅 %s 的运行配置失败: %v", name, err)
+		logx.Error(logx.ModuleRule, "sync runtime config failed: subscription=%q: %v", name, err)
 		return "warning", "规则已保存，但同步运行配置失败: " + err.Error()
 	}
 
 	warning := ""
 	if len(result.Skipped) > 0 {
 		warning = "有 " + strconv.Itoa(len(result.Skipped)) + " 条规则因目标不存在未写入配置"
-		log.Printf("[CUSTOM-RULE] 订阅 %s 有 %d 条规则未写入运行配置", name, len(result.Skipped))
+		logx.Warn(logx.ModuleRule, "custom rules not written to runtime config: subscription=%q count=%d", name, len(result.Skipped))
 	}
 
 	// 内核未运行时只更新 config.yaml（下次启动即生效），不做重载
@@ -420,7 +420,7 @@ func applyCustomRulesToActiveSubscription(name string) (string, string) {
 		return "ok", warning
 	}
 	if err := core.ReloadCore(); err != nil {
-		log.Printf("[CUSTOM-RULE] 重载内核失败: %v", err)
+		logx.Warn(logx.ModuleRule, "reload core failed: %v", err)
 		return "warning", joinMessage(warning, "内核重载失败: "+err.Error())
 	}
 	return "ok", warning

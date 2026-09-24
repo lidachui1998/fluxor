@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fluxor/internal/config"
 	"fluxor/internal/httpx"
+	"fluxor/internal/logx"
 	"fluxor/internal/nodespec"
-	"log"
 	"net/http"
 )
 
@@ -24,7 +24,7 @@ func HandleSubscribeConfigAPI(w http.ResponseWriter, r *http.Request) {
 
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(view); err != nil {
-			log.Printf("编码订阅配置失败: %v", err)
+			logx.Error(logx.ModuleConfig, "encoding subscription config failed: %v", err)
 		}
 
 	case http.MethodPost:
@@ -64,7 +64,7 @@ func HandleSubscribeConfigAPI(w http.ResponseWriter, r *http.Request) {
 		config.Mu.Unlock()
 
 		if err := config.SaveSubscribeConfig(); err != nil {
-			log.Printf("保存订阅配置失败: %v", err)
+			logx.Error(logx.ModuleConfig, "saving subscription config failed: %v", err)
 			httpx.WriteJSONError(w, http.StatusInternalServerError, "保存配置失败: "+err.Error())
 			return
 		}

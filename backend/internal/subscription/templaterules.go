@@ -7,7 +7,7 @@ import (
 	"fluxor/internal/configgen"
 	"fluxor/internal/core"
 	"fluxor/internal/httpx"
-	"log"
+	"fluxor/internal/logx"
 	"net/http"
 	"strconv"
 	"strings"
@@ -285,7 +285,7 @@ func applyRulesToActiveConfig(scope ruleScope) (string, string) {
 	}
 
 	if err := scope.regenerate(cfg); err != nil {
-		log.Printf("[CUSTOM-RULE] %s 作用域（%s）重新生成配置失败: %v", cfg.Mode, scope.name, err)
+		logx.Error(logx.ModuleRule, "regenerate config failed: mode=%s scope=%s: %v", cfg.Mode, scope.name, err)
 		return "warning", "规则已保存，但重新生成配置文件失败: " + err.Error()
 	}
 
@@ -293,7 +293,7 @@ func applyRulesToActiveConfig(scope ruleScope) (string, string) {
 	if ctx, err := scope.context(cfg); err == nil {
 		if skipped := configgen.RuleSkips(scope.rules(cfg), ctx); len(skipped) > 0 {
 			warning = "有 " + strconv.Itoa(len(skipped)) + " 条规则因目标不存在未写入配置"
-			log.Printf("[CUSTOM-RULE] %s 作用域（%s）有 %d 条规则未写入配置", cfg.Mode, scope.name, len(skipped))
+			logx.Warn(logx.ModuleRule, "custom rules not written to config: mode=%s scope=%s count=%d", cfg.Mode, scope.name, len(skipped))
 		}
 	}
 
@@ -302,7 +302,7 @@ func applyRulesToActiveConfig(scope ruleScope) (string, string) {
 		return "ok", warning
 	}
 	if err := core.ReloadCore(); err != nil {
-		log.Printf("[CUSTOM-RULE] 重载内核失败: %v", err)
+		logx.Warn(logx.ModuleRule, "reload core failed: %v", err)
 		return "warning", joinMessage(warning, "内核重载失败: "+err.Error())
 	}
 	return "ok", warning

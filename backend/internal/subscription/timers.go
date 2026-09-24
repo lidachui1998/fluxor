@@ -4,7 +4,7 @@ import (
 	"context"
 	"fluxor/internal/config"
 	"fluxor/internal/core"
-	"log"
+	"fluxor/internal/logx"
 	"sync"
 	"time"
 )
@@ -75,14 +75,14 @@ func startSubscriptionTimer(subs []config.Subscription, idx int) {
 				needsReload, err := updateSubscriptionInSwitchMode(name)
 				// 执行更新
 				if err != nil {
-					log.Printf("定时更新订阅 %s 失败: %v", name, err)
+					logx.Error(logx.ModuleSub, "scheduled update of subscription %q failed: %v", name, err)
 				} else {
 					if err := config.SaveSubscribeConfig(); err != nil {
-						log.Printf("保存订阅配置失败: %v", err)
+						logx.Error(logx.ModuleSub, "saving subscription config failed: %v", err)
 					}
 					if needsReload {
 						if err := core.ReloadCore(); err != nil {
-							log.Printf("定时更新后重载内核失败: %v", err)
+							logx.Error(logx.ModuleSub, "reloading core after scheduled update failed: %v", err)
 						}
 					}
 				}

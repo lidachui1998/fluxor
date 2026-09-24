@@ -3,8 +3,8 @@ package subscription
 import (
 	"fluxor/internal/config"
 	"fluxor/internal/configgen"
+	"fluxor/internal/logx"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 )
@@ -70,11 +70,11 @@ func writeRuntimeConfig(subName string, rules []config.CustomRule, tunnels []con
 		return result, fmt.Errorf("写入自定义规则失败: %w", err)
 	}
 	for _, skip := range result.Skipped {
-		log.Printf("[CUSTOM-RULE] 跳过订阅 %s 的规则 %s,%s,%s: %s",
+		logx.Warn(logx.ModuleRule, "custom rule skipped: subscription=%q rule=%s,%s,%s reason=%s",
 			subName, skip.Rule.Type, skip.Rule.Payload, skip.Rule.Target, skip.Reason)
 	}
 	for _, skip := range tunnelResult.Skipped {
-		log.Printf("[TUNNEL] 跳过订阅 %s 的隧道 %s -> %s: %s",
+		logx.Warn(logx.ModuleTunnel, "tunnel skipped: subscription=%q tunnel=%s -> %s reason=%s",
 			subName, skip.Tunnel.Address, skip.Tunnel.Target, skip.Reason)
 	}
 	return result, nil

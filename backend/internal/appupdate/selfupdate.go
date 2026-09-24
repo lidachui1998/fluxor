@@ -8,6 +8,7 @@ import (
 	"fluxor/internal/buildinfo"
 	"fluxor/internal/config"
 	"fluxor/internal/httpx"
+	"fluxor/internal/logx"
 	"fluxor/internal/netinfo"
 	"fmt"
 	"io"
@@ -427,7 +428,7 @@ func HandleSelfUpdate(w http.ResponseWriter, r *http.Request) {
 		cmd.Stderr = os.Stderr
 		cmd.Env = os.Environ()
 		if err := cmd.Start(); err != nil {
-			fmt.Printf("重启失败: %v\n", err)
+			logx.Error(logx.ModuleUpdate, "failed to restart after self-update: %v", err)
 			return
 		}
 		os.Exit(0)

@@ -117,7 +117,9 @@ make V=1.2.3
 
 所有路径均可通过环境变量覆盖，优先级高于模式默认值：
 
-`SOCKET_PATH`、`BASE_URL`、`FLUXOR_ADDR`、`FLUXOR_PID_FILE`、`FLUXOR_BIN_DIR`、`CORE_PID_FILE`、`CORE_BIN`、`CORE_SOCKET`、`META_DIR`、`ZASH_DIR`、`FLUXOR_CONFIG_FILE`、`CONFIG_TARGET`、`INFO_LOG_FILE`、`CORE_WORK_DIR`
+`SOCKET_PATH`、`BASE_URL`、`FLUXOR_ADDR`、`FLUXOR_DATA_DIR`、`FLUXOR_BIN_DIR`、`CORE_BIN`、`CORE_SOCKET`、`META_DIR`、`ZASH_DIR`、`CONFIG_TARGET`、`CORE_WORK_DIR`
+
+`FLUXOR_DATA_DIR` 是运行数据目录：`fluxor.json` 与 `fluxor.log`（后端全部运行日志）固定生成在该目录下；`fluxor.pid` 与 `core.pid` 默认同址，但 openwrt 模式固定在 `/var/run/`（PID 属运行时状态，不写 flash），不受该变量影响。默认值：fnos 取环境变量 `TRIM_PKGVAR`（未注入时回退 `/var/apps/Fluxor/var`），openwrt 为 `/etc/fluxor/`。这四个文件的路径不再支持单独指定。日志等级由 `FLUXOR_LOG_LEVEL` 控制（`debug` / `info` / `warn` / `error`，缺省 `info`）；日志由后端独占写入 `fluxor.log`，启动脚本不应再重定向面板的 stdout/stderr。
 
 ### 默认端口
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fluxor/internal/config"
 	"fluxor/internal/configgen"
+	"fluxor/internal/logx"
 	"fluxor/internal/tproxy"
 	"fmt"
 	"io"
@@ -28,8 +29,10 @@ func ReloadCore() error {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		respBody, _ := io.ReadAll(resp.Body)
+		logx.Error(logx.ModuleCore, "reload rejected by mihomo: status=%d body=%s", resp.StatusCode, string(respBody))
 		return fmt.Errorf("内核返回错误状态 %d: %s", resp.StatusCode, string(respBody))
 	}
+	logx.Info(logx.ModuleCore, "core config reloaded: %s", config.ConfigTarget)
 
 	// 重载成功后，异步更新 nftables TProxy 规则
 	go func() {
@@ -120,15 +123,14 @@ func pidLooksLikeCore(pid int) bool {
 // StartCore 启动内核进程
 func StartCore() error {
 	if IsCoreRunning() {
+		logx.Debug(logx.ModuleCore, "start skipped, mihomo is already running")
 		return fmt.Errorf("内核已在运行")
 	}
 
 	// 确保配置文件存在，若不存在则使用 subscribeConfig 生成；若存在则强制补齐网关属性
 	if _, err := os.Stat(config.ConfigTarget); os.IsNotExist(err) {
 		if err := configgen.GenerateConfig(config.Current); err != nil {
-			if CoreLogger != nil {
-				CoreLogger.Printf("[START][ERROR] 生成配置文件失败: %v\n", err)
-			}
+			logx.Error(logx.ModuleCore, "failed to generate config.yaml, start aborted: %v", err)
 			return fmt.Errorf("生成配置文件失败: %w", err)
 		}
 	}
@@ -138,9 +140,7 @@ func StartCore() error {
 	cmd.Stderr = &stderr
 
 	if err := cmd.Start(); err != nil {
-		if CoreLogger != nil {
-			CoreLogger.Printf("[START][ERROR] 启动内核失败: %v, stderr: %s\n", err, stderr.String())
-		}
+		logx.Error(logx.ModuleCore, "failed to start mihomo %s: %v, stderr: %s", config.CoreBin, err, stderr.String())
 		return fmt.Errorf("启动内核失败: %v, stderr: %s", err, stderr.String())
 	}
 
@@ -156,9 +156,7 @@ func StartCore() error {
 		if stderrContent == "" {
 			stderrContent = "进程已退出，无 stderr 输出"
 		}
-		if CoreLogger != nil {
-			CoreLogger.Printf("[START][ERROR] 内核启动后立即退出: %s\n", stderrContent)
-		}
+		logx.Error(logx.ModuleCore, "mihomo exited immediately after start: %s", stderrContent)
 		return fmt.Errorf("内核启动后立即退出: %s", stderrContent)
 	}
 
@@ -167,9 +165,7 @@ func StartCore() error {
 	if err := os.WriteFile(config.CorePidFile, []byte(strconv.Itoa(pid)), 0644); err != nil {
 		cmd.Process.Kill()
 		cmd.Wait()
-		if CoreLogger != nil {
-			CoreLogger.Printf("[START][ERROR] 写入 PID 文件失败: %v\n", err)
-		}
+		logx.Error(logx.ModuleCore, "failed to write pid file %s: %v", config.CorePidFile, err)
 		return fmt.Errorf("写入 PID 文件失败: %v", err)
 	}
 
@@ -186,6 +182,7 @@ func StartCore() error {
 	// 广播「已启动」。放在 goroutine 启动之后：此刻 PID 文件已写入，
 	// IsCoreRunning() 已为 true，前端收到事件后再查状态能保持一致。
 	PublishCoreState(true)
+	logx.Info(logx.ModuleCore, "mihomo started: pid=%d bin=%s", pid, config.CoreBin)
 
 	return nil
 }
@@ -202,15 +199,11 @@ func StopCore() error {
 	pid, _ := strconv.Atoi(strings.TrimSpace(string(data)))
 	process, err := os.FindProcess(pid)
 	if err != nil {
-		if CoreLogger != nil {
-			CoreLogger.Printf("[STOP][ERROR] 查找进程失败: %v\n", err)
-		}
+		logx.Error(logx.ModuleCore, "stop failed, cannot find process pid=%d: %v", pid, err)
 		return fmt.Errorf("查找进程失败: %v", err)
 	}
 	if err := process.Signal(syscall.SIGTERM); err != nil {
-		if CoreLogger != nil {
-			CoreLogger.Printf("[STOP][ERROR] 停止进程失败: %v\n", err)
-		}
+		logx.Error(logx.ModuleCore, "failed to send SIGTERM to pid=%d: %v", pid, err)
 		return fmt.Errorf("停止进程失败: %v", err)
 	}
 
@@ -238,6 +231,11 @@ func StopCore() error {
 
 	os.Remove(config.CorePidFile)
 	_ = os.Remove(config.CoreSocket)
+	if killed {
+		logx.Info(logx.ModuleCore, "mihomo stopped: pid=%d", pid)
+	} else {
+		logx.Warn(logx.ModuleCore, "mihomo did not exit within 5s, killed with SIGKILL: pid=%d", pid)
+	}
 	// 通知所有 SSE 订阅者：内核已停止（StartCore 中等待进程的 goroutine 也会
 	// 广播一次，但 hub 仅在状态真正变化时才推送，因此不会产生重复事件）。
 	PublishCoreState(false)

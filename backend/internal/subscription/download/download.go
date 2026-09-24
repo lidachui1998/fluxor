@@ -3,7 +3,7 @@ package download
 import (
 	"fluxor/internal/config"
 	"fluxor/internal/core"
-	"log"
+	"fluxor/internal/logx"
 )
 
 // DownloadSubscriptionFile 下载单个订阅的节点文件，返回元数据
@@ -15,11 +15,7 @@ func DownloadSubscriptionFile(sub config.Subscription, index int, targetFile str
 		return directUpdatedAt, NormalizeMapKeys(directSubInfo), nil
 	}
 	// 直接下载失败，记录日志并回退到临时内核
-	if core.CoreLogger != nil {
-		core.CoreLogger.Printf("[DOWNLOAD] 订阅 %s 直连下载失败: %v，回退到临时内核", sub.Name, directErr)
-	} else {
-		log.Printf("[DOWNLOAD] 订阅 %s 直连下载失败: %v，回退到临时内核", sub.Name, directErr)
-	}
+	logx.Warn(logx.ModuleSub, "direct download failed, falling back to temp core: subscription=%q: %v", sub.Name, directErr)
 
 	// 2. 回退到原有临时内核流程
 	updatedAt, subInfo, err = core.DownloadWithTempCore(sub, index, targetFile)

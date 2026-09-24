@@ -6,9 +6,9 @@ import (
 	"errors"
 	"fluxor/internal/config"
 	"fluxor/internal/configcheck"
+	"fluxor/internal/logx"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -138,7 +138,7 @@ func CleanupStaleTempCores() {
 	}
 
 	if cleaned > 0 {
-		log.Printf("[TMPCORE] 启动清理：终止了 %d 个残留的临时内核进程", cleaned)
+		logx.Info(logx.ModuleCore, "startup cleanup: killed %d stale temp core process(es)", cleaned)
 	}
 }
 
@@ -202,7 +202,7 @@ func runDownloadProcess(cmd *exec.Cmd, targetFile string, port int, subName stri
 				select {
 				case <-done:
 				case <-time.After(2 * time.Second):
-					log.Printf("[DOWNLOAD] 临时内核未在预期时间内完成回收，放弃等待")
+					logx.Warn(logx.ModuleSub, "temp core did not exit in time, giving up waiting for it")
 				}
 			}
 		}
@@ -243,18 +243,18 @@ func runDownloadProcess(cmd *exec.Cmd, targetFile string, port int, subName stri
 				// 否则会产出内核无法加载的 config.yaml。
 				if content, readErr := os.ReadFile(targetFile); readErr == nil {
 					if validErr := configcheck.ValidateClashConfig(content); validErr != nil {
-						log.Printf("[DOWNLOAD] 内核产出的订阅文件无效，终止: %s", validErr)
+						logx.Warn(logx.ModuleSub, "temp core produced an invalid subscription file, aborting: %s", validErr)
 						return "", nil, fmt.Errorf("%w: 内核可读取该订阅但产出内容不是 Clash 配置: %s",
 							errInvalidSubscription, validErr)
 					}
 				}
-				log.Printf("[DOWNLOAD] 文件 %s 已生成，大小 %d 字节", targetFile, info.Size())
+				logx.Debug(logx.ModuleSub, "subscription file written by temp core: %s (%d bytes)", targetFile, info.Size())
 				fileGenerated = true
 				break
 			}
 			// 内核已明确判定 provider 加载失败，无需继续等待
 			if reason := providerLoadError(output.String(), subName); reason != "" {
-				log.Printf("[DOWNLOAD] 内核加载 provider %s 失败，提前终止: %s", subName, reason)
+				logx.Warn(logx.ModuleSub, "temp core failed to load provider %s, aborting early: %s", subName, reason)
 				return "", nil, fmt.Errorf("%w: 该订阅链接不是 Clash 配置，内核解析失败: %s", errInvalidSubscription, reason)
 			}
 		}
@@ -294,7 +294,7 @@ func runDownloadProcess(cmd *exec.Cmd, targetFile string, port int, subName stri
 	updatedAtVal, _ := data["updatedAt"].(string)
 	subInfoVal, _ := data["subscriptionInfo"].(map[string]interface{})
 
-	log.Printf("[DOWNLOAD] 成功获取元数据: updatedAt=%s, subInfo=%v", updatedAtVal, subInfoVal)
+	logx.Debug(logx.ModuleSub, "subscription metadata fetched: updated_at=%s info=%v", updatedAtVal, subInfoVal)
 	return updatedAtVal, subInfoVal, nil
 }
 

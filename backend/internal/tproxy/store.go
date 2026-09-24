@@ -3,7 +3,7 @@ package tproxy
 import (
 	"encoding/json"
 	"fluxor/internal/config"
-	"log"
+	"fluxor/internal/logx"
 )
 
 // fluxor.json 中由本包负责的字段。
@@ -115,7 +115,7 @@ func LoadTproxyDstExceptions() []string {
 		if dst, ok := readStringSliceField(full, keyTproxyExceptionsOld); ok {
 			tproxyDstExceptionsCache = dst
 			if err := saveDstExceptions(dst); err != nil {
-				log.Printf("[TProxy] 迁移目的绕过失败: %v", err)
+				logx.Error(logx.ModuleTproxy, "failed to migrate destination bypass list: %v", err)
 			}
 			return dst
 		}
@@ -126,7 +126,7 @@ func LoadTproxyDstExceptions() []string {
 	dst := defaultDstExceptions()
 	tproxyDstExceptionsCache = dst
 	if err := saveDstExceptions(dst); err != nil {
-		log.Printf("[TProxy] 写入默认目的绕过失败: %v", err)
+		logx.Error(logx.ModuleTproxy, "failed to persist default destination bypass list: %v", err)
 	}
 	return dst
 }
@@ -163,7 +163,7 @@ func LoadTproxySrcExceptions() []string {
 	src := defaultSrcExceptions()
 	tproxySrcExceptionsCache = src
 	if err := saveSrcExceptions(src); err != nil {
-		log.Printf("[TProxy] 写入默认源绕过失败: %v", err)
+		logx.Error(logx.ModuleTproxy, "failed to persist default source bypass list: %v", err)
 	}
 	return src
 }
@@ -200,7 +200,7 @@ func LoadTproxyProxyLocal() bool {
 	// 缺失或类型异常：默认开启并落盘
 	tproxyProxyLocal = true
 	if err := saveProxyLocal(true); err != nil {
-		log.Printf("[TProxy] 写入默认本机代理开关失败: %v", err)
+		logx.Error(logx.ModuleTproxy, "failed to persist default proxy-local switch: %v", err)
 	}
 	return true
 }
@@ -241,7 +241,7 @@ func LoadTproxyIPv6() bool {
 
 	tproxyIPv6 = false
 	if err := saveTproxyIPv6(false); err != nil {
-		log.Printf("[TProxy] 写入默认 IPv6 接管开关失败: %v", err)
+		logx.Error(logx.ModuleTproxy, "failed to persist default IPv6 takeover switch: %v", err)
 	}
 	return false
 }
@@ -291,7 +291,7 @@ func SetTproxyEnabled(enabled bool) {
 	tproxyMu.Unlock()
 
 	if err := persistTproxyEnabled(enabled); err != nil {
-		log.Printf("[TProxy] 持久化开关状态失败: %v", err)
+		logx.Error(logx.ModuleTproxy, "failed to persist tproxy state: %v", err)
 	}
 }
 
@@ -310,6 +310,6 @@ func ResetOnStartup() {
 	SetTproxyEnabled(false)
 
 	if LoadTproxyEnabled() {
-		log.Printf("[TProxy] 上次为启用状态，已在冷启动时重置为关闭并清理残留规则")
+		logx.Info(logx.ModuleTproxy, "previous state was enabled: reset to disabled on cold start and stale rules were cleaned")
 	}
 }

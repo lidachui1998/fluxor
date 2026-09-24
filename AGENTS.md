@@ -104,8 +104,11 @@ backend/
     │   │                         #     + CustomNode（自定义模式的手工节点）+ CustomModeRules（自定义模式的自定义规则）
     │   │                         #     + 三种模式常量 ModeMerge/ModeSwitch/ModeCustom + 作用域常量 RuleScopeCustom
     │   ├── state.go              #   Current（当前配置快照）+ Mu（读写锁）
-    │   ├── paths.go              #   全部运行路径（Socket/PID/内核/面板/日志等）
-    │   ├── modes.go              #   fnos / openwrt 两套默认路径
+    │   ├── paths.go              #   全部运行路径（FluxorDataDir 统一运行数据目录 / Socket / 内核 / 面板等）
+    │   ├── modes.go              #   fnos / openwrt 两套默认路径；SetDataDir 由 FluxorDataDir 派生
+    │   │                         #     fluxor.json / fluxor.log（PID 文件默认同址，openwrt 经 pidDirPinned
+    │   │                         #     固定到 /var/run，不随数据目录变化）；这四个路径不再单独配置；
+    │   │                         #     fnos 默认取 TRIM_PKGVAR，未注入回退 /var/apps/Fluxor/var
     │   ├── name.go               #   订阅名校验与节点文件名清洗（防路径穿越）
     │   ├── nodes.go              #   CustomNode 名校验（非空/长度/无控制字符/重名）
     │   ├── rules.go              #   CustomRule 列表操作：同组内上/下移动、按生效顺序重排
@@ -148,7 +151,6 @@ backend/
     ├── core/                     # 内核进程生命周期
     │   ├── client.go             #   CoreRequest + cancelableReadCloser（Context 回收）
     │   ├── lifecycle.go          #   启动/停止/热重载（含内核 PID 身份校验）
-    │   ├── logger.go             #   内核操作日志记录器
     │   ├── tmpcore.go            #   DownloadWithTempCore：临时内核下载订阅节点文件
     │   │                         #     + CleanupStaleTempCores：启动清理残留临时内核
     │   └── handlers.go           #   /core/* HTTP 接口
@@ -225,6 +227,9 @@ backend/
     │   │                         #     当前版本取自 buildinfo）
     │   └── handler.go            #   /check-update（当前版本取自 buildinfo，无需 ?current=；
     │                             #     ?force=1 = 弹窗手动检查，无视 10 分钟缓存冷却并续期）
+    ├── logx/                     # 【叶子】统一日志出口（唯一日志文件 fluxor.log；见 3.13）
+    │   ├── doc.go                #   包说明：唯一出口/记录格式/模块与等级语义/正文英文等约定
+    │   └── logx.go               #   等级与模块常量、Setup/Close、Debug/Info/Warn/Error
     ├── buildinfo/                # 【叶子】构建期注入的版本号（-ldflags -X）
     │   ├── doc.go                #   包说明
     │   └── version.go            #   Version / Name() / IsKnown()
@@ -240,6 +245,7 @@ backend/
 main ──> 所有 internal 包
 
 【叶子层】 config     （无 internal 依赖）
+           logx       （无 internal 依赖；任何包都可依赖它输出日志）
            httpx      （无 internal 依赖）
            configcheck（无 internal 依赖，仅依赖 yaml.v3）
            buildinfo  （无 internal 依赖，版本号由 -ldflags 注入）
@@ -526,7 +532,30 @@ func (c *cancelableReadCloser) Close() error {
 
 ---
 
-## 4. 前端数据更新与缓存架构 (开发约束)
+### 3.13 日志规约（`logx`，唯一日志出口）
+
+后端**全部**运行日志经叶子包 `logx` 输出，唯一落盘文件是运行数据目录下的 `fluxor.log`（`config.FluxorLogFile`）。这一约定替换了此前三套并存的写法（stdlib `log` → stderr、`fmt.Printf` → stdout、`core.CoreLogger` 直接写文件），原因见 `internal/logx/doc.go`：那三套的落点取决于**启动方式**（fnOS 启动脚本把 stdout/stderr 重定向到日志文件、openwrt 的 procd 进 journal），于是「同一份日志在不同平台落在不同文件、内容还不一样」，甚至出现「面板有日志文件、里面只有几行错误」的误导。
+
+```go
+import "fluxor/internal/logx"
+
+logx.Info(logx.ModuleSub, "subscription updated: name=%q proxies=%d", name, n)
+logx.Error(logx.ModuleCore, "failed to start mihomo %s: %v", config.CoreBin, err)
+```
+
+1. **禁止旁路**：新增代码不得再用 `fmt.Print*` / `log.Print*` / 自建 `*log.Logger`。仅有两类例外——HTTP/WS **响应体**写入（`fmt.Fprintf(w, ...)`、`json.NewEncoder(w).Encode(...)`）与日志系统初始化**之前**的致命用法错误（`fmt.Fprintln(os.Stderr, ...)`）。
+2. **禁止外部重定向**：启动脚本不应再把面板的 stdout/stderr 重定向到日志文件，否则日志被拆成两份（后端一份、重定向一份），而两份的位置与内容都不保证一致。脚本自身的 `log_msg`（如 Starting process…）应另择落点或指向同一个 `fluxor.log` 由后端独占写入——两者不可同时写。
+3. **记录格式**：`2006-01-02 15:04:05.000 LEVEL [MODULE] message`——本地时间戳（毫秒）、等级（`DEBUG`/`INFO`/`WARN`/`ERROR`）、大功能模块标记、正文。等级由 `FLUXOR_LOG_LEVEL` 控制（debug/info/warn/error，缺省 info）。
+4. **正文一律英文**，变量内联（`%q` 名字、`%d` 数量、`%v` 错误，优先 `key=value`），单行输出（format 里**不要**带 `\n`）；注释仍保持中文。新增文案不要写成两行——需要多行时拆成多条记录。
+5. **模块标记只用 `logx.Module*` 常量**，粒度对齐后端功能域，不按文件细分：`MAIN`（进程/监听/信号）、`CONFIG`（fluxor.json 持久化）、`CORE`（内核生命周期与状态推送）、`SUB`（订阅下载/更新/元数据/定时器）、`GEN`（config.yaml 生成）、`RULE`（自定义规则注入）、`TUNNEL`（流量隧道注入）、`API`（内核 HTTP 反向代理）、`WS`（WebSocket 桥接）、`TPROXY`（防火墙与策略路由）、`NET`、`DELAY`、`QUALITY`、`UPDATE`、`WEB`。新增功能域先在本包登记常量，禁止手写字符串（否则 `grep '\[CORE\]'` 会漏）。
+6. **等级语义**（改日志时按此判级，不要一律 Info）：
+   - `DEBUG` 内部步骤与正常路径细节：缓存命中、跳过未启用项、定时器启停、条目按家族分流；
+   - `INFO` 有意义的状态变化：内核启动/停止、配置生成与热重载、订阅更新完成、规则与隧道落库生效、面板启停；
+   - `WARN` 可继续运行但偏离预期：无效项被跳过、直连失败回退临时内核、元数据获取失败但保留旧值、清理失败、开关关闭时忽略操作；
+   - `ERROR` 某次操作确实失败：生成/启动/写入/重载失败、持久化失败、nft/ip 命令执行失败。
+7. **`Setup` 失败不阻断启动**：日志文件打不开（目录不可写）时 `logx` 退回「只写 stderr」，由 `main.go` 把该错误报到 stderr 后继续运行——日志系统自身不可用不该让面板起不来。
+8. **写入口径**：`logx` 用单个 `*log.Logger` 串行写出，每条记录一次 `Write` 且 `O_APPEND`，行不会撕裂；`Setup` 之后才写入的调用方（用 `Enabled()` 自检）无需再加锁。
+
 
 为了保障页面切换时的流畅交互体验，并避免在后台静置运行时产生资源泄漏：
 

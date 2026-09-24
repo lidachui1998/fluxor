@@ -2,8 +2,8 @@ package tproxy
 
 import (
 	"bytes"
+	"fluxor/internal/logx"
 	"fmt"
-	"log"
 	"net"
 	"os/exec"
 	"strconv"
@@ -203,7 +203,7 @@ func isV6Net(n *net.IPNet) bool {
 // 通用日志，用户根本看不出「绕过没生效」——静默失效正是必须消除的行为。
 func warnSkippedV6Exceptions(dst, src []string) {
 	logSkipped := func(kind, rule string) {
-		log.Printf("[TProxy] %s绕过 %q 属于 IPv6，当前未开启「接管 IPv6 流量」，该规则未下发", kind, rule)
+		logx.Warn(logx.ModuleTproxy, "ipv6 %s bypass entry not applied: rule=%q (IPv6 tproxy is disabled)", kind, rule)
 	}
 	for _, rule := range dst {
 		rule = stripComment(rule)
@@ -211,7 +211,7 @@ func warnSkippedV6Exceptions(dst, src []string) {
 			continue
 		}
 		if typ, n, _, _, err := parseTproxyException(rule); err == nil && typ == "ip" && isV6Net(n) {
-			logSkipped("目的", rule)
+			logSkipped("destination", rule)
 		}
 	}
 	for _, rule := range src {
@@ -220,7 +220,7 @@ func warnSkippedV6Exceptions(dst, src []string) {
 			continue
 		}
 		if typ, n, _, _, err := parseTproxyException(rule); err == nil && typ == "ip" && isV6Net(n) {
-			logSkipped("源", rule)
+			logSkipped("source", rule)
 		}
 	}
 }
@@ -232,7 +232,7 @@ func warnSkippedV6Exceptions(dst, src []string) {
 func runCmd(name string, args ...string) error {
 	cmd := exec.Command(name, args...)
 	if err := cmd.Run(); err != nil {
-		log.Printf("[TProxy] 命令执行失败: %s %v, 错误: %v", name, args, err)
+		logx.Error(logx.ModuleTproxy, "command execution failed: name=%s args=%v err=%v", name, args, err)
 		return err
 	}
 	return nil
@@ -272,7 +272,7 @@ func EnableTProxyRules(port int) error {
 		return fmt.Errorf("%s", strings.Join(errs, "；"))
 	}
 
-	log.Printf("[TProxy] 规则应用成功（%s，含目的/源绕过及本机流量接管开关）", strings.Join(applied, " + "))
+	logx.Info(logx.ModuleTproxy, "tproxy rules applied (including dst/src bypass and proxy-local): families=%s", strings.Join(applied, " + "))
 	return nil
 }
 
@@ -313,7 +313,7 @@ func (f tproxyFamily) enable(port int, dstExceptions, srcExceptions []string) er
 	dnsRedirect := runCmd("nft", "add", "chain", f.nftFamily, f.nftTable, "dstnat", "{ type nat hook prerouting priority -100; policy accept; }") == nil
 	natOutput := runCmd("nft", "add", "chain", f.nftFamily, f.nftTable, "nat_output", "{ type nat hook output priority -100; policy accept; }") == nil
 	if !dnsRedirect {
-		log.Printf("[TProxy] %s：nat 链创建失败，已跳过该家族的 DNS 重定向（内核/nft 可能不支持 %s NAT）", f.label, f.label)
+		logx.Warn(logx.ModuleTproxy, "family=%s nat chain not created, dns redirect skipped for this family (kernel/nft may not support %s nat)", f.label, f.label)
 	}
 
 	// 6. 本机地址与私有网段绕过
@@ -329,7 +329,7 @@ func (f tproxyFamily) enable(port int, dstExceptions, srcExceptions []string) er
 		}
 		typ, ipNet, proto, portVal, err := parseTproxyException(rule)
 		if err != nil {
-			log.Printf("[TProxy] 跳过无效目的绕过规则 %q: %v", rule, err)
+			logx.Warn(logx.ModuleTproxy, "invalid destination bypass rule skipped: rule=%q err=%v", rule, err)
 			continue
 		}
 
@@ -377,7 +377,7 @@ func (f tproxyFamily) enable(port int, dstExceptions, srcExceptions []string) er
 		}
 		typ, ipNet, _, _, err := parseTproxyException(rule)
 		if err != nil || typ != "ip" {
-			log.Printf("[TProxy] 源绕过仅支持 IP/CIDR，忽略无效规则: %s", rule)
+			logx.Warn(logx.ModuleTproxy, "source bypass supports IP/CIDR only, invalid rule ignored: rule=%q", rule)
 			continue
 		}
 		if isV6Net(ipNet) != f.isV6 {
@@ -446,34 +446,34 @@ func DisableTProxyRules() {
 	for _, f := range tproxyFamilies {
 		if f.hasNftTable() {
 			if err := exec.Command("nft", "delete", "table", f.nftFamily, f.nftTable).Run(); err != nil {
-				log.Printf("[TProxy] 删除 %s nftables 表失败: %v", f.label, err)
+				logx.Error(logx.ModuleTproxy, "failed to delete nftables table: family=%s err=%v", f.label, err)
 			} else {
-				removed = append(removed, f.label+" nft 表")
+				removed = append(removed, f.label+" nft table")
 			}
 		}
 
 		if f.hasLocalRoute() {
 			if err := exec.Command("ip", f.ipFlag, "route", "del", "local", f.defaultRt, "dev", "lo", "table", tproxyTableID).Run(); err != nil {
-				log.Printf("[TProxy] 删除 %s 策略路由失败: %v", f.label, err)
+				logx.Error(logx.ModuleTproxy, "failed to delete policy route: family=%s err=%v", f.label, err)
 			} else {
-				removed = append(removed, f.label+" 策略路由")
+				removed = append(removed, f.label+" policy route")
 			}
 		}
 
 		if f.hasFwmarkRule() {
 			if err := exec.Command("ip", f.ipFlag, "rule", "del", "fwmark", tproxyFwmark, "table", tproxyTableID).Run(); err != nil {
-				log.Printf("[TProxy] 删除 %s 路由规则失败: %v", f.label, err)
+				logx.Error(logx.ModuleTproxy, "failed to delete routing rule: family=%s err=%v", f.label, err)
 			} else {
-				removed = append(removed, f.label+" 路由规则")
+				removed = append(removed, f.label+" routing rule")
 			}
 		}
 	}
 
 	if len(removed) == 0 {
-		log.Printf("[TProxy] 未发现残留规则，无需清理")
+		logx.Debug(logx.ModuleTproxy, "no leftover rules found, nothing to clean")
 		return
 	}
-	log.Printf("[TProxy] 已清理: %s", strings.Join(removed, "、"))
+	logx.Info(logx.ModuleTproxy, "cleanup done: removed=%s", strings.Join(removed, ", "))
 }
 
 // stripComment 去除行尾 # 注释，并 trim 空格，返回纯净的规则部分

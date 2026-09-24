@@ -2,9 +2,9 @@ package subscription
 
 import (
 	"fluxor/internal/config"
+	"fluxor/internal/logx"
 	"fluxor/internal/subscription/download"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 )
@@ -85,22 +85,22 @@ func fetchAndPatchSubscription(snap subscriptionSnapshot, subName string) (updat
 		return "", nil, targetFile, fmt.Errorf("删除旧文件失败: %w", err)
 	}
 
-	log.Printf("[UPDATE] 开始下载订阅 %s，目标文件: %s", subName, targetFile)
+	logx.Debug(logx.ModuleSub, "downloading subscription %q to %s", subName, targetFile)
 
 	updatedAt, subInfo, err = download.DownloadSubscriptionFile(snap.sub, snap.idx, targetFile)
 	if err != nil {
-		log.Printf("[UPDATE] 下载订阅 %s 失败: %v", subName, err)
+		logx.Error(logx.ModuleSub, "download of subscription %q failed: %v", subName, err)
 		return "", nil, targetFile, fmt.Errorf("下载失败: %w", err)
 	}
-	log.Printf("[UPDATE] 元数据已更新: updatedAt=%s", updatedAt)
+	logx.Debug(logx.ModuleSub, "metadata updated: updated_at=%s", updatedAt)
 
 	// 打补丁。补丁只依赖快照中的标量配置，无需（也不应）持有全局锁。
-	log.Printf("[UPDATE] 开始打补丁: %s", targetFile)
+	logx.Debug(logx.ModuleSub, "patching subscription file: %s", targetFile)
 	if err := patchSubscriptionFile(targetFile, snap.cfg); err != nil {
-		log.Printf("[UPDATE] 打补丁失败: %v", err)
+		logx.Error(logx.ModuleSub, "patching subscription file %s failed: %v", targetFile, err)
 		return "", nil, targetFile, fmt.Errorf("打补丁失败: %w", err)
 	}
-	log.Printf("[UPDATE] 补丁完成")
+	logx.Debug(logx.ModuleSub, "subscription file patched")
 	return updatedAt, subInfo, targetFile, nil
 }
 
@@ -122,18 +122,18 @@ func updateSubscriptionInSwitchMode(subName string) (needsReload bool, err error
 
 	// 如果该订阅是当前激活的订阅，则复制到 configTarget，并标记需要重载
 	if snap.isActive {
-		log.Printf("[UPDATE] 当前订阅为激活订阅，开始写入运行配置 %s", config.ConfigTarget)
+		logx.Debug(logx.ModuleSub, "subscription %q is active, writing runtime config %s", subName, config.ConfigTarget)
 		// 自定义规则与隧道取锁内快照（snap.customRules / snap.tunnels），避免在锁外引用全局切片
 		result, err := writeRuntimeConfig(subName, snap.customRules, snap.tunnels)
 		if err != nil {
-			log.Printf("[UPDATE] 写入运行配置失败: %v", err)
+			logx.Error(logx.ModuleSub, "writing runtime config failed: %v", err)
 			return false, err
 		}
-		log.Printf("[UPDATE] 运行配置写入完成（自定义规则 %d 条，跳过 %d 条）",
+		logx.Info(logx.ModuleSub, "runtime config written: custom_rules_applied=%d custom_rules_skipped=%d",
 			result.Applied, len(result.Skipped))
 		return true, nil // 需要重载
 	}
 
-	log.Printf("[UPDATE] 当前订阅非激活订阅，跳过复制和重载")
+	logx.Debug(logx.ModuleSub, "subscription %q is not active, skipping runtime config copy and reload", subName)
 	return false, nil
 }

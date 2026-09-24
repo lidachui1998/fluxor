@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fluxor/internal/core"
 	"fluxor/internal/httpx"
+	"fluxor/internal/logx"
 	"fluxor/internal/tproxy"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 )
@@ -43,7 +43,7 @@ func HandleConfigsAPI(w http.ResponseWriter, r *http.Request) {
 					if tproxy.GetTproxyState() && tpPort > 0 {
 						tproxy.DisableTProxyRules()
 						if err := tproxy.EnableTProxyRules(int(tpPort)); err != nil {
-							log.Printf("[TProxy] 端口变更后应用规则失败: %v", err)
+							logx.Error(logx.ModuleTproxy, "failed to apply tproxy rules after port change: %v", err)
 						}
 					} else {
 						tproxy.DisableTProxyRules()

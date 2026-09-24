@@ -6,7 +6,7 @@ import (
 	"fluxor/internal/configgen"
 	"fluxor/internal/core"
 	"fluxor/internal/httpx"
-	"log"
+	"fluxor/internal/logx"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -47,9 +47,9 @@ func HandleGenerateConfig(w http.ResponseWriter, r *http.Request) {
 			targetFile := filepath.Join(config.CoreWorkDir, "proxies", fileName)
 			if _, err := os.Stat(targetFile); err == nil {
 				if err := os.Remove(targetFile); err != nil {
-					log.Printf("[DELETE] 物理删除配置文件失败 %s: %v", targetFile, err)
+					logx.Error(logx.ModuleSub, "physical delete of subscription file %s failed: %v", targetFile, err)
 				} else {
-					log.Printf("[DELETE] 成功物理删除配置文件: %s", targetFile)
+					logx.Info(logx.ModuleSub, "subscription file physically deleted: %s", targetFile)
 				}
 			}
 		}
@@ -87,7 +87,7 @@ func HandleGenerateConfig(w http.ResponseWriter, r *http.Request) {
 			config.Current = cfg
 			config.Mu.Unlock()
 			if err := config.SaveSubscribeConfig(); err != nil {
-				log.Printf("保存订阅配置失败: %v", err)
+				logx.Error(logx.ModuleSub, "saving subscription config failed: mode=switch subscription=none err=%v", err)
 			}
 			// 重置定时器（无订阅时需停止所有定时器）
 			StopAllTimers()
@@ -143,7 +143,7 @@ func HandleGenerateConfig(w http.ResponseWriter, r *http.Request) {
 		config.Current = cfg
 		config.Mu.Unlock()
 		if err := config.SaveSubscribeConfig(); err != nil {
-			log.Printf("保存订阅配置失败: %v", err)
+			logx.Error(logx.ModuleSub, "saving subscription config failed: mode=switch err=%v", err)
 		}
 		// 重置定时器
 		StopAllTimers()
@@ -187,7 +187,7 @@ func HandleGenerateConfig(w http.ResponseWriter, r *http.Request) {
 
 	if cfg.MetaBackendURL != "" {
 		if err := modifyMetaConfig(cfg.MetaBackendURL); err != nil {
-			log.Printf("[WARN] 修改 MetaCubeXD 后端地址失败: %v", err)
+			logx.Warn(logx.ModuleSub, "updating MetaCubeXD backend URL failed: %v", err)
 		}
 	}
 
@@ -205,7 +205,7 @@ func HandleGenerateConfig(w http.ResponseWriter, r *http.Request) {
 	config.Current = cfg
 	config.Mu.Unlock()
 	if err := config.SaveSubscribeConfig(); err != nil {
-		log.Printf("保存订阅配置失败: %v", err)
+		logx.Error(logx.ModuleSub, "saving subscription config failed: mode=merge err=%v", err)
 	}
 
 	httpx.RespondJSON(w, http.StatusOK, map[string]string{

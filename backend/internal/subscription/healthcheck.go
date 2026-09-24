@@ -3,7 +3,7 @@ package subscription
 import (
 	"fluxor/internal/config"
 	"fluxor/internal/dashapi"
-	"log"
+	"fluxor/internal/logx"
 	"sync"
 	"time"
 )
@@ -119,7 +119,7 @@ func performHealthChecks() {
 
 	groups, err := dashapi.GetAllProxyGroups()
 	if err != nil {
-		log.Printf("[HealthCheck] 获取策略组失败: %v", err)
+		logx.Warn(logx.ModuleSub, "fetching proxy groups failed, skipping this round: %v", err)
 		return
 	}
 	if len(groups) == 0 {

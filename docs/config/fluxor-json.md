@@ -6,7 +6,7 @@ Fluxor 的设计核心之一是不引入复杂的数据库系统。所有的全�
 
 ## 配置文件路径
 
-默认保存在 `/var/apps/Fluxor/var/fluxor.json`（真实落点为 `/vol1/@appdata/Fluxor/fluxor.json`）。
+默认保存在运行数据目录 `FLUXOR_DATA_DIR` 下的 `fluxor.json`，飞牛 OS 即 `/var/apps/Fluxor/var/fluxor.json`（真实落点为 `/vol1/@appdata/Fluxor/fluxor.json`）。该目录同时存放 `fluxor.log`（后端运行日志），以及默认情况下的 `fluxor.pid` 与 `core.pid`（openwrt 下两个 PID 文件固定在 `/var/run/`），详见[目录与路径配置](file-structure.md)。
 
 | 事项 | 说明 |
 |------|------|

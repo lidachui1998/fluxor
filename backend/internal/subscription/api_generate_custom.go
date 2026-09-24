@@ -5,7 +5,7 @@ import (
 	"fluxor/internal/configgen"
 	"fluxor/internal/core"
 	"fluxor/internal/httpx"
-	"log"
+	"fluxor/internal/logx"
 	"net/http"
 )
 
@@ -43,7 +43,7 @@ func generateCustomConfig(w http.ResponseWriter, cfg config.SubscribeConfig) {
 
 	if cfg.MetaBackendURL != "" {
 		if err := modifyMetaConfig(cfg.MetaBackendURL); err != nil {
-			log.Printf("[WARN] 修改 MetaCubeXD 后端地址失败: %v", err)
+			logx.Warn(logx.ModuleSub, "updating MetaCubeXD backend URL failed: %v", err)
 		}
 	}
 

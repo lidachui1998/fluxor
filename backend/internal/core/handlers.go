@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/json"
 	"fluxor/internal/httpx"
+	"fluxor/internal/logx"
 	"net/http"
 )
 
@@ -50,9 +51,7 @@ func HandleCoreRestart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := ReloadCore(); err != nil {
-		if CoreLogger != nil {
-			CoreLogger.Printf("[RESTART][ERROR] 内核热重启失败: %v\n", err)
-		}
+		logx.Error(logx.ModuleCore, "config reload request failed: %v", err)
 		httpx.WriteJSONError(w, http.StatusInternalServerError, "内核热重启失败: "+err.Error())
 		return
 	}

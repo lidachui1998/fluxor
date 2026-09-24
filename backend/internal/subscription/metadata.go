@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"fluxor/internal/config"
 	"fluxor/internal/core"
+	"fluxor/internal/logx"
 	"fluxor/internal/subscription/download"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"time"
@@ -77,20 +77,20 @@ func updateAllSubscriptionsMetadata(cfg *config.SubscribeConfig) {
 			if err == nil {
 				break
 			}
-			log.Printf("获取订阅 %s 元数据失败 (尝试 %d/%d): %v", name, attempt+1, 3, err)
+			logx.Warn(logx.ModuleSub, "fetching metadata for subscription %q failed (attempt %d/%d): %v", name, attempt+1, 3, err)
 		}
 
 		if err != nil {
 			// 获取失败：尝试保留旧数据
 			if old, ok := oldSubs[name]; ok {
 				updatedAt, subInfo = old.UpdatedAt, old.SubscriptionInfo
-				log.Printf("保留订阅 %s 的旧元数据（获取失败）", name)
+				logx.Warn(logx.ModuleSub, "keeping previous metadata for subscription %q after fetch failure", name)
 			} else {
 				updatedAt, subInfo = "", nil
-				log.Printf("订阅 %s 无历史元数据，保留为空", name)
+				logx.Warn(logx.ModuleSub, "subscription %q has no previous metadata, keeping it empty", name)
 			}
 		} else {
-			log.Printf("更新订阅 %s 元数据成功", name)
+			logx.Info(logx.ModuleSub, "metadata for subscription %q updated", name)
 		}
 
 		results = append(results, metaResult{name: name, updatedAt: updatedAt, subInfo: subInfo})
