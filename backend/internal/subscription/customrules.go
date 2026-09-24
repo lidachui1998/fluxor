@@ -453,6 +453,7 @@ func buildCustomRulesPayload(name string, cfg config.SubscribeConfig, sub config
 		Rules:     []customRuleView{},
 		Tunnels:   []tunnelView{},
 		Groups:    []string{},
+		Nodes:     []string{},
 		Builtins:  configcheck.BuiltinRuleTargets(),
 		Providers: []string{},
 		RuleTypes: configcheck.RuleSpecs(),
@@ -477,6 +478,9 @@ func buildCustomRulesPayload(name string, cfg config.SubscribeConfig, sub config
 
 	payload.FileReady = true
 	payload.Groups = ctx.GroupNames()
+	// 订阅文件的节点（内联 $proxies$）可以像自定义模式那样直接作为规则目标，
+	// 界面上单独成组：实测内核接受指向它们的规则（融合模式的 provider 节点则不行）。
+	payload.Nodes = ctx.NodeNames()
 	payload.Providers = ctx.ProviderNames()
 	payload.Tunnels = buildTunnelViews(sub.Tunnels, ctx, "")
 	for _, rule := range config.SortCustomRulesForDisplay(sub.CustomRules) {

@@ -399,9 +399,6 @@ const messages = {
     'subscription.custom_rules_title': '自定义规则 · {name}',
     'subscription.custom_rules_merge_title': '自定义规则 · 融合模式',
     'subscription.custom_rules_merge_hint': '融合模式按规则集档位分别保存；切换模式在各自的订阅上添加自定义规则。',
-    // 切换模式下规则弹窗的提示：规则与隧道由专用接口「写一条保存一条」，
-    // 与「保存并应用」是两条链路（拆分持久化后分别存在 rules.json / tunnels.json）
-    'subscription.custom_rules_sub_hint': '规则与隧道写一条保存一条，不参与「保存并应用」；重建运行配置时自动叠加进 config.yaml。',
     // 模式改动未保存时点「自定义规则」的指引：后端按已保存的模式校验作用域入口
     'subscription.mode_unsaved_hint': '模式改动尚未生效，请先保存并应用',
     // ---------- 自定义模式：节点列表与添加节点弹窗 ----------
@@ -424,7 +421,7 @@ const messages = {
     'subscription.node_protocol_deprecated': '该协议已过时，不建议使用',
     'subscription.node_protocol_tunnel_hint': '隧道协议，建议搭配自定义规则使用（按目标网段引流）',
     'subscription.custom_rules_custom_title': '自定义规则 · 自定义模式',
-    'subscription.custom_rules_custom_hint': '自定义模式固定使用标准规则集；规则单独保存，与融合模式的规则互不影响。目标可选内置代理组与自定义节点（新增节点请先「保存并应用」）。',
+    'subscription.custom_rules_custom_hint': '自定义模式固定使用标准规则集。',
     'subscription.custom_no_nodes_confirm': '节点列表为空，保存后配置中将不包含任何节点，是否继续？',
     // ---------- 协议字段标签（键名与后端 nodespec 字段键一致）----------
     'subscription.node_field.accept-dns': '接受 DNS 配置',
@@ -1102,7 +1099,6 @@ const messages = {
     'subscription.custom_rules_title': 'Custom Rules · {name}',
     'subscription.custom_rules_merge_title': 'Custom Rules · Merge mode',
     'subscription.custom_rules_merge_hint': 'Merge mode stores rules per rule‑set tier; in switch mode add custom rules on each subscription.',
-    'subscription.custom_rules_sub_hint': 'Rules and tunnels are saved one by one and are not part of "save & apply"; they are re-applied to config.yaml when the runtime config is rebuilt.',
     'subscription.mode_unsaved_hint': 'Mode change is not applied yet, please save and apply first',
     // ---------- Custom mode: node list & add-node dialog ----------
     'subscription.mode_custom': 'Custom',
@@ -1124,7 +1120,7 @@ const messages = {
     'subscription.node_protocol_deprecated': 'This protocol is deprecated and not recommended',
     'subscription.node_protocol_tunnel_hint': 'Tunnel protocol — best used with a custom rule to route its target subnets',
     'subscription.custom_rules_custom_title': 'Custom Rules · Custom mode',
-    'subscription.custom_rules_custom_hint': 'Custom mode always uses the base rule set; its rules are stored separately and do not affect merge mode. Targets can be built-in proxy groups or your custom nodes (save & apply new nodes first).',
+    'subscription.custom_rules_custom_hint': 'Custom mode always uses the base rule set.',
     'subscription.custom_no_nodes_confirm': 'The node list is empty — the saved configuration will contain no nodes. Continue?',
     // ---------- Protocol field labels (keyed by backend nodespec field keys) ----------
     'subscription.node_field.accept-dns': 'Accept DNS',

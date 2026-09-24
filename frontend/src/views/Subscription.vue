@@ -95,9 +95,7 @@ const openSubRulesDialog = (name: string) => {
   rulesTunnelEndpoint.value = '/subscribe/custom-tunnels'
   rulesScopes.value = [{ key: name, label: name, effective: name === currentConfig.value.active_subscription }]
   rulesTitle.value = t('subscription.custom_rules_title', { name })
-  // 规则/隧道由专用接口「写一条保存一条」（后端分别存在 rules.json / tunnels.json），
-  // 与「保存并应用」是两条链路——不说明的话用户会以为要先保存并应用才生效
-  rulesHint.value = t('subscription.custom_rules_sub_hint')
+  rulesHint.value = ''
   showRulesModal.value = true
 }
 

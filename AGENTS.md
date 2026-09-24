@@ -464,10 +464,10 @@ func (c *cancelableReadCloser) Close() error {
 3. **必须幂等**：订阅每次更新（含定时更新）都会重放一次注入，因此要先按规则文本去重再插入，重复调用产物必须逐字节一致。
 4. **目标解析失败必须跳过而不是写进去**：内核遇到无法解析的目标会拒绝加载**整份**配置（实测 `rules[0] [DOMAIN,x.com,G] error: proxy [G] not found`）。机场更新后代理组改名属常态，此时静默跳过该条（日志 + 返回 `ApplyResult.Skipped`，前端在列表中标注原因）远优于让配置整体不可用。同理，`RULE-SET` 的取值必须存在于该订阅的 `rule-providers`。
 5. **规则类型走白名单**：`configcheck/rulespec.go` 的清单以实测 `-t` 通过为准（该内核版本不支持 `PROTOCOL`），只收录「单载荷 + 单目标」类型；`AND/OR/NOT/SUB-RULE`（需嵌套语法）与 `MATCH`（会截断其后全部规则）不开放给表单。
-6. **合法目标随模式而异，且「可选目标」与「校验目标」不是同一集合**：前端目标下拉列**代理组**——切换模式取自订阅文件的 `proxy-groups`，融合/自定义模式取自**该模板**的代理组（`configgen.MergeRuleSetEnv` 直接解析生成用的同一批模板常量，模板一改、界面与校验自动跟随，不另维护清单）。节点名按模式区分：
+6. **合法目标随模式而异，且「可选目标」与「校验目标」不是同一集合**：前端目标下拉列**代理组**——切换模式取自订阅文件的 `proxy-groups`，融合/自定义模式取自**该模板**的代理组（`configgen.MergeRuleSetEnv` 直接解析生成用的同一批模板常量，模板一改、界面与校验自动跟随，不另维护清单）；**节点**只在「配置里有内联 `proxies`」的两种模式下可选（下表按模式区分）。
    - **自定义模式**（`configgen.CustomModeRuleContext`）：手工节点写死在 `config.yaml` 的 `proxies` 里，规则指向节点名内核能解析，因此节点名**既是可选目标也是校验目标**，在目标下拉里单列一个「节点」分组（接口 `nodes` 字段，来自已保存的 `CustomNodes`，新增节点要先「保存并应用」）。节点改名后旧目标会**留在下拉里**（`ruleTargetExtra`：不自动改写历史目标，用户也可能把名字改回去），但表单里选着它时必须在下方给出红字提示（`custom_rule_target_unknown`）——否则用户只会反复撞后端的 400 而不知道该改哪里；
-   - **融合模式**（`configgen.MergeRuleSetContext`）：节点来自 `proxy-providers`、运行时才加载，静态校验看不到，引用节点名会让内核拒绝加载整份配置，因此节点名不进下拉、也不算合法目标；
-   - **切换模式**：节点名不进下拉，但**校验**集合保留它——内核确实接受指向订阅节点的规则，把节点排除会让用户既有规则被判为失效并静默跳过。
+   - **融合模式**（`configgen.MergeRuleSetContext`）：节点来自 `proxy-providers`、运行时才加载，**内核在配置校验阶段尚未展开这些节点**——实测即便 provider 文件已在本地、节点名确实存在，`-t` 仍报 `rules[0] [DOMAIN,x.example,NODE1] error: proxy [NODE1] not found` 并拒绝整份配置。因此节点名既不进下拉也不算合法目标（`Nodes` 恒为空）；用户确实要按节点分流时应改用切换模式或写 `RULE-SET`/代理组。
+   - **切换模式**：节点名**既进下拉（单独成组）也参与校验**——订阅文件就是 `config.yaml` 的副本，节点是内联静态 `proxies`，实测 `DOMAIN,x.com,节点A` 可通过内核 `-t`；此前只保留在校验集合里（怕用户选了节点而内核不认），实测证明该顾虑只对 provider 成立，故补上下拉项（`RuleContext.Nodes` 由 `LoadRuleContext` 从订阅文件的 `proxies` 填充）。
 7. **融合模式两档必须分开存放与生效**：`base` 与 `full` 的代理组、规则集、内置规则都不同（`base` 没有 `rule-providers`，因此该档位下 `RULE-SET` 不可用），同一份列表放在两档下必然有一半规则指向不存在的目标。生成时只取 `cfg.MergeCustomRulesFor(cfg.RuleGroup)` 那一份——另一档保持惰性，等切档后再生效。判重也要带上该档位的内置模板规则（`MergeRuleSetRuleLines`），否则自定义规则与模板同形时会被幂等注入静默跳过。
 8. **排序只在同插入位置分组内进行**：`before` 与 `after` 在 `config.yaml` 中的落点相差甚远（最前 vs MATCH 之前），跨组交换会让「界面顺序」与「生效顺序」不一致，因此 `config.MoveCustomRule` 只在同组内与相邻规则交换，到边界时返回 `moved=false`（接口回 400，而不是假装成功）。
 9. **写盘顺序**：`writeRuntimeConfig` 是「复制 → 解析 → 注入 → 写回」，注入失败不落盘，避免留下内核加载不了的半成品 `config.yaml`；无自定义规则时完全跳过读写，保持副本的逐字节一致。

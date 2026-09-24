@@ -620,3 +620,57 @@ func TestRuleSkips(t *testing.T) {
 		t.Fatalf("应恰好统计出 1 条失效规则，实际: %v", skipped)
 	}
 }
+
+// TestLoadRuleContextListsSubscriptionNodes 切换模式的节点进入界面用列表。
+//
+// 订阅文件就是 config.yaml 的副本，节点是内联的静态 proxies：实测
+// `DOMAIN,x.com,节点A` 能通过内核 `-t` 校验，因此节点既参与校验、也该在界面上
+// 单独成组（与自定义模式一致），不再只藏在校验集合里。
+//
+// 对照组是融合模式：节点来自 proxy-providers，内核校验规则时尚未展开，
+// 实测会被判为 `proxy [X] not found`，因此融合模式的 Nodes 必须恒为空。
+func TestLoadRuleContextListsSubscriptionNodes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sub.yaml")
+	content := []byte(`proxies:
+  - {name: 香港01, type: ss, server: 1.2.3.4, port: 8388, cipher: aes-128-gcm, password: x}
+  - {name: 日本02, type: ss, server: 5.6.7.8, port: 8388, cipher: aes-128-gcm, password: y}
+proxy-groups:
+  - {name: 节点选择, type: select, proxies: [香港01, 日本02]}
+rules:
+  - MATCH,节点选择
+`)
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatalf("写入订阅文件失败: %v", err)
+	}
+
+	ctx, err := LoadRuleContext(path)
+	if err != nil {
+		t.Fatalf("LoadRuleContext: %v", err)
+	}
+
+	nodes := ctx.NodeNames()
+	if len(nodes) != 2 || nodes[0] != "香港01" || nodes[1] != "日本02" {
+		t.Fatalf("订阅文件的节点应进入 Nodes（且已排序）: %v", nodes)
+	}
+	for _, name := range nodes {
+		if !ctx.Env.ContainsTarget(name) {
+			t.Fatalf("节点 %s 应同时是合法目标", name)
+		}
+	}
+	// 代理组仍单独列出，不与节点混在一起
+	if groups := ctx.GroupNames(); len(groups) != 1 || groups[0] != "节点选择" {
+		t.Fatalf("代理组列表异常: %v", groups)
+	}
+
+	// 融合模式：provider 节点内核不认，Nodes 必须为空
+	for _, tier := range []string{RuleGroupBase, RuleGroupFull} {
+		mergeCtx, err := MergeRuleSetContext(tier)
+		if err != nil {
+			t.Fatalf("MergeRuleSetContext(%s): %v", tier, err)
+		}
+		if len(mergeCtx.NodeNames()) != 0 {
+			t.Fatalf("%s 档位的 Nodes 应恒为空（provider 节点不可作为目标）: %v", tier, mergeCtx.NodeNames())
+		}
+	}
+}

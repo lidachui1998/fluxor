@@ -53,10 +53,14 @@ type RuleContext struct {
 	Doc *configcheck.Doc
 	// Env 合法目标与规则集名称（校验用；自定义模式下额外含手工节点名）。
 	Env configcheck.RuleEnv
-	// Nodes 自定义模式下额外可选的目标：用户手工添加的节点名。
+	// Nodes 节点目标：与代理组一样是合法目标（内核校验配置时它们已在配置里），
+	// 但在界面上单独成组陈列，因此这里单列一份而不是混进代理组。
 	//
-	// 它们与代理组一样是合法目标（自定义模式的节点是 config.yaml 里静态的 proxies，
-	// 内核加载时能解析），但在界面上单独成组陈列，因此这里单列一份而不是混进代理组。
+	//   - 切换模式：来自订阅文件的 `proxies`（该文件就是 config.yaml 的副本，节点是
+	//     内联的静态代理），实测 `DOMAIN,x.com,节点A` 能通过内核 `-t` 校验；
+	//   - 自定义模式：来自用户手工添加的节点（同样写死在 config.yaml 的 proxies 里）；
+	//   - 融合模式：**恒为空**——节点来自 proxy-providers，内核校验规则时这些节点
+	//     尚未展开，实测 `proxy [节点A] not found` 导致整份配置加载失败。
 	Nodes    []string
 	existing map[string]struct{}
 }
@@ -82,7 +86,11 @@ func LoadRuleContext(path string) (*RuleContext, error) {
 			lines = append(lines, item.Value)
 		}
 	}
-	return NewRuleContext(doc, configcheck.RuleEnvFromDoc(doc), lines), nil
+	ctx := NewRuleContext(doc, configcheck.RuleEnvFromDoc(doc), lines)
+	// 订阅文件的 proxies 是内联静态代理，界面上可以像自定义模式一样把节点单列成组：
+	// 实测指向它们的规则可通过内核 `-t` 校验（融合模式的 provider 节点则会被拒绝）。
+	ctx.Nodes = doc.NodeNames("proxies")
+	return ctx, nil
 }
 
 // NewRuleContext 用现成的文档、规则目标集合与「已存在的规则行」构造上下文。
@@ -116,7 +124,7 @@ func (c *RuleContext) HasRuleLine(line string) bool {
 // 注意与校验集合的差别：RuleEnv.Targets 仍包含节点名——内核确实接受指向节点的
 // 规则，若校验时把节点排除，用户已有的「指向节点」的规则会被判为失效而静默跳过。
 func (c *RuleContext) GroupNames() []string {
-	// 切换模式：直接从订阅文件读代理组（只列组，不列节点）
+	// 切换模式：直接从订阅文件读代理组（节点由 NodeNames 单独列出，不混进这里）
 	if c.Doc != nil {
 		groups := make(map[string]struct{})
 		for _, name := range c.Doc.NodeNames("proxy-groups") {
