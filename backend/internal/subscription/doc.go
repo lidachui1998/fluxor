@@ -9,7 +9,6 @@ package subscription
 //   - api.go               /subscribe/config 读写
 //   - api_generate.go      /subscribe/generate：生成/复制 config.yaml 并热重载
 //   - api_update.go        /subscribe/update/{name}
-//   - api_updateinfo.go    /subscribe/update-info/{name}
 //   - active.go            校验 active_subscription 是否为当前订阅列表的真实成员
 //   - patch.go             往订阅节点文件注入 Fluxor 必需的端口/密钥/DNS 字段
 //   - ensure.go            切换模式下确保所有订阅文件就绪

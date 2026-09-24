@@ -302,7 +302,6 @@ func main() {
 	mux.HandleFunc(config.BaseURL+"/subscribe/config", subscription.HandleSubscribeConfigAPI)
 	mux.HandleFunc(config.BaseURL+"/subscribe/generate", subscription.HandleGenerateConfig)
 	mux.HandleFunc(config.BaseURL+"/subscribe/update/", subscription.HandleSubscribeUpdate)
-	mux.HandleFunc(config.BaseURL+"/subscribe/update-info/", subscription.HandleUpdateSubscriptionInfo)
 	// 自定义模式：可添加的协议与字段表（前端按此渲染动态表单，默认模板由后端单点维护）
 	mux.HandleFunc(config.BaseURL+"/subscribe/node-protocols", subscription.HandleNodeProtocolsAPI)
 	// 切换模式：订阅级自定义规则（查询 / 新增 / 修改 / 排序 / 删除，即时持久化并同步运行配置）

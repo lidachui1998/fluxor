@@ -364,6 +364,7 @@ const messages = {
     'subscription.hide_url': '隐藏链接',
     'subscription.name_placeholder': '请输入名称',
     'subscription.duplicate_name': '订阅名称已存在，请使用其他名称',
+    'subscription.rename_url_change_confirm': '改名同时修改链接会丢失该订阅的自定义规则与隧道（后端按「链接不变」识别改名）。确定继续？',
     'subscription.name_invalid': '订阅名只能包含中文、英文、数字和 emoji，不能含空格或标点',
     'subscription.name_too_long': '订阅名过长（最多 32 个字符）',
     'subscription.mode_merge': '融合',
@@ -398,6 +399,9 @@ const messages = {
     'subscription.custom_rules_title': '自定义规则 · {name}',
     'subscription.custom_rules_merge_title': '自定义规则 · 融合模式',
     'subscription.custom_rules_merge_hint': '融合模式按规则集档位分别保存；切换模式在各自的订阅上添加自定义规则。',
+    // 切换模式下规则弹窗的提示：规则与隧道由专用接口「写一条保存一条」，
+    // 与「保存并应用」是两条链路（拆分持久化后分别存在 rules.json / tunnels.json）
+    'subscription.custom_rules_sub_hint': '规则与隧道写一条保存一条，不参与「保存并应用」；重建运行配置时自动叠加进 config.yaml。',
     // ---------- 自定义模式：节点列表与添加节点弹窗 ----------
     'subscription.mode_custom': '自定义',
     'subscription.node_list': '节点列表',
@@ -1061,6 +1065,7 @@ const messages = {
     'subscription.hide_url': 'Hide URL',
     'subscription.name_placeholder': 'Please enter name',
     'subscription.duplicate_name': 'Subscription name already exists, please use a different name',
+    'subscription.rename_url_change_confirm': 'Renaming while also changing the URL loses this subscription\'s custom rules and tunnels (rename detection relies on an unchanged URL). Continue?',
     'subscription.name_invalid': 'Name may only contain Chinese, English, digits and emoji — no spaces or punctuation',
     'subscription.name_too_long': 'Name is too long (max 32 characters)',
     'subscription.mode_merge': 'Merge',
@@ -1095,6 +1100,7 @@ const messages = {
     'subscription.custom_rules_title': 'Custom Rules · {name}',
     'subscription.custom_rules_merge_title': 'Custom Rules · Merge mode',
     'subscription.custom_rules_merge_hint': 'Merge mode stores rules per rule‑set tier; in switch mode add custom rules on each subscription.',
+    'subscription.custom_rules_sub_hint': 'Rules and tunnels are saved one by one and are not part of "save & apply"; they are re-applied to config.yaml when the runtime config is rebuilt.',
     // ---------- Custom mode: node list & add-node dialog ----------
     'subscription.mode_custom': 'Custom',
     'subscription.node_list': 'Node List',

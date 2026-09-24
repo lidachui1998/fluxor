@@ -35,15 +35,84 @@ const mockSubConfig = {
       update_interval: 3600,
       health_interval: 300,
       prefix: '',
-      info: {
+      // 与真机一致：元数据（机场流量/到期）不随订阅注册表返回，而是由后端从
+      // subscription-meta.json 合并进 GET 响应；前端再把它组装成展示用的 info
+      subscription_info: {
         upload: 1204850123,
         download: 58941094120,
         total: 107374182400,
-        expire: Math.floor(Date.now() / 1000) + 864000,
-        updatedAt: new Date().toISOString()
-      }
+        expire: Math.floor(Date.now() / 1000) + 864000
+      },
+      updated_at: new Date().toISOString()
     }
   ]
+}
+
+// 后端「设置」类字段：/subscribe/config 与 /subscribe/generate 只承载这些内容
+// （settings.json）。规则与隧道分别由 /subscribe/*-custom-rules 与 /subscribe/*-tunnels
+// 维护，机场元数据由更新流程写入，mock 里各自独立存放——因此保存请求即使带着过期的
+// 规则/隧道/元数据回来也不会覆盖它们，与后端「忽略而非合并」的语义一致。
+const MOCK_SETTINGS_KEYS = [
+  'proxy_port', 'tproxy_port', 'panel_port', 'panel_secret', 'rule_group',
+  'ui_panel', 'meta_backend_url', 'mode', 'active_subscription', 'custom_nodes',
+] as const
+
+// 订阅注册表项（settings.json 里的 subscriptions[]）：规则/隧道/元数据都不在其中
+const MOCK_SUBSCRIPTION_REGISTRY_KEYS = ['name', 'url', 'update_interval', 'health_interval', 'prefix'] as const
+
+// applyMockSettings 模拟后端 SaveSettings：只取设置类字段，
+// 订阅注册表按「注册表字段 + 服务端保留的元数据」重建，并顺带做改名搬迁与孤儿回收。
+const applyMockSettings = (payload: any) => {
+  for (const key of MOCK_SETTINGS_KEYS) {
+    if (key in payload) (mockSubConfig as any)[key] = payload[key]
+  }
+  if (!Array.isArray(payload.subscriptions)) return
+
+  const prev = new Map<string, any>((mockSubConfig.subscriptions as any[]).map(sub => [sub.name, sub]))
+  const renamedFrom = new Map<string, string>() // 新名 → 旧名
+  for (const sub of payload.subscriptions) {
+    if (prev.has(sub.name)) continue
+    // 旧表独有、且 URL 相同 → 视为改名（与后端 detectRenames 的判据一致）
+    const candidates = [...prev.values()].filter(prevSub =>
+      !payload.subscriptions.some((next: any) => next.name === prevSub.name) && prevSub.url === sub.url)
+    if (candidates.length === 1) renamedFrom.set(sub.name, candidates[0].name)
+  }
+
+  mockSubConfig.subscriptions = payload.subscriptions.map((sub: any) => {
+    const kept: any = {}
+    for (const key of MOCK_SUBSCRIPTION_REGISTRY_KEYS) kept[key] = sub[key]
+    // 元数据由服务端保留（mock 用同一对键名，等价于 subscription-meta.json）；
+    // 改名时从旧名字那一项取，与后端「搬家」的行为一致
+    const old = prev.get(renamedFrom.get(sub.name) ?? sub.name)
+    if (old?.subscription_info) {
+      kept.subscription_info = old.subscription_info
+      kept.updated_at = old.updated_at
+    }
+    return kept
+  })
+
+  // 改名：规则与隧道跟着搬家（键都是订阅名）
+  for (const [to, from] of renamedFrom) {
+    if (mockCustomRulesBySub[from]) {
+      mockCustomRulesBySub[to] = mockCustomRulesBySub[from]
+      delete mockCustomRulesBySub[from]
+    }
+    if (mockTunnelsByScope[`sub:${from}`]) {
+      mockTunnelsByScope[`sub:${to}`] = mockTunnelsByScope[`sub:${from}`]
+      delete mockTunnelsByScope[`sub:${from}`]
+    }
+  }
+
+  // 孤儿回收：注册表里已不存在的订阅，其规则与隧道一并清掉（后端由 GCResources 负责）
+  const names = new Set((mockSubConfig.subscriptions as any[]).map(sub => sub.name))
+  for (const name of Object.keys(mockCustomRulesBySub)) {
+    if (!names.has(name)) delete mockCustomRulesBySub[name]
+  }
+  for (const scopeKey of Object.keys(mockTunnelsByScope)) {
+    if (scopeKey.startsWith('sub:') && !names.has(scopeKey.slice('sub:'.length))) {
+      delete mockTunnelsByScope[scopeKey]
+    }
+  }
 }
 
 // 自定义模式可添加的协议与字段表。
@@ -605,21 +674,53 @@ export function handleMockFetch(path: string, options: RequestInit = {}): Respon
   if (cleanPath.endsWith('/subscribe/node-protocols')) {
     return reply({ protocols: mockNodeProtocols })
   }
+  // 手动更新单个订阅：/subscribe/update/{name}
+  //
+  // 与后端一致：切换模式同步返回更新后的元数据（前端直接刷新卡片），融合模式先回
+  // processing、后台更新完成后再让元数据的 updated_at 变化（前端每 2s 轮询
+  // /subscribe/config 直到看到变化）。元数据在 mock 里与订阅注册表同处一项，
+  // 但由更新流程单独写入——对应后端 subscription-meta.json 由更新流程维护。
+  if (cleanPath.includes('/subscribe/update/')) {
+    const subName = decodeURIComponent(cleanPath.split('/subscribe/update/')[1] || '')
+    const sub = (mockSubConfig.subscriptions as any[]).find(item => item.name === subName)
+    if (!sub) {
+      return reply({ status: 'error', message: '未找到该订阅' }, 404)
+    }
+    const refreshMeta = () => {
+      const prev = sub.subscription_info || {}
+      sub.subscription_info = {
+        upload: prev.upload || 0,
+        download: (prev.download || 0) + 1024 * 1024,
+        total: prev.total || 0,
+        expire: prev.expire || 0,
+      }
+      sub.updated_at = new Date().toISOString()
+    }
+    if (mockSubConfig.mode === 'switch') {
+      refreshMeta()
+      return reply({
+        status: 'ok',
+        message: '订阅更新成功',
+        info: { ...sub.subscription_info, updatedAt: sub.updated_at },
+      })
+    }
+    // 融合模式：异步，2 秒后元数据才变化（前端轮询期间会看到 updatedAt 更新）
+    setTimeout(refreshMeta, 2000)
+    return reply({ status: 'processing', message: '订阅更新已在后台启动' })
+  }
   if (cleanPath.endsWith('/subscribe/config')) {
     if (method === 'POST') {
-      Object.assign(mockSubConfig, JSON.parse(options.body as string || '{}'))
+      applyMockSettings(JSON.parse(options.body as string || '{}'))
       return reply({ status: 'ok' })
     }
     return reply(mockSubConfig)
   }
   if (cleanPath.endsWith('/subscribe/generate')) {
-    // 与后端一致：保存订阅配置并落库，使随后的 /subscribe/config 能读到最新订阅列表；
-    // 自定义模式还会把节点列表一起落库（custom_nodes 由本页面整体覆盖提交）
+    // 与后端一致：只落「设置」类字段（全局参数 + 订阅注册表 + 手工节点），
+    // 请求体里的规则/隧道/元数据一律忽略；delete_physical 是仅本次有效的临时字段。
     if (method === 'POST') {
       const payload = JSON.parse(options.body as string || '{}')
-      // delete_physical 是临时字段，后端不会持久化
-      delete payload.delete_physical
-      Object.assign(mockSubConfig, payload)
+      applyMockSettings(payload)
       return reply({ status: 'ok', message: payload.mode === 'custom' ? '自定义节点配置已生成并成功重载内核' : '配置文件已生成并成功重载内核' })
     }
     return reply({ status: 'ok' })

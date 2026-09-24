@@ -7,6 +7,7 @@ import { useGlobalStore } from '../store/global'
 import { storeToRefs } from 'pinia'
 import {
   useSubscriptionStore,
+  buildSettingsPayload,
   type SubscriptionItem,
   type CustomNode,
 } from '../store/subscription'
@@ -78,7 +79,9 @@ const openSubRulesDialog = (name: string) => {
   rulesTunnelEndpoint.value = '/subscribe/custom-tunnels'
   rulesScopes.value = [{ key: name, label: name, effective: name === currentConfig.value.active_subscription }]
   rulesTitle.value = t('subscription.custom_rules_title', { name })
-  rulesHint.value = ''
+  // 规则/隧道由专用接口「写一条保存一条」（后端分别存在 rules.json / tunnels.json），
+  // 与「保存并应用」是两条链路——不说明的话用户会以为要先保存并应用才生效
+  rulesHint.value = t('subscription.custom_rules_sub_hint')
   showRulesModal.value = true
 }
 
@@ -355,8 +358,9 @@ const openSubModal = (index: number = -1) => {
   if (index >= 0) {
     modalTitle.value = t('subscription.edit_modal_title')
     const sub = currentConfig.value.subscriptions[index]
-    // 复制整个订阅对象而非逐字段重建：custom_rules（订阅级自定义规则）等
-    // 字段必须原样带回列表，否则「保存并应用」时会被配置生成流程丢掉。
+    // 复制整个订阅对象而非逐字段重建：列表项上还有展示用的 info（流量/到期）等字段，
+    // 重命名或改链接时不该把它们弄丢。规则/隧道属于服务端持有（见 store 的
+    // SettingsPayload），保存请求体只挑注册表字段，因此这里带上它们只是保持列表完整。
     editForm.value = { ...sub, custom_rules: sub.custom_rules ?? [] }
   } else {
     modalTitle.value = t('subscription.add_modal_title')
@@ -377,7 +381,7 @@ const closeSubModal = () => {
 }
 
 // 保存至订阅列表
-const saveSubToList = () => {
+const saveSubToList = async () => {
   const { name, url } = editForm.value
   if (!name.trim() || !url.trim()) {
     globalStore.showToast(t('common.name_required'), 'error')
@@ -400,12 +404,30 @@ const saveSubToList = () => {
     globalStore.showToast(t('subscription.duplicate_name'), 'error')
     return
   }
+  // 后端按「旧订阅名消失 × 新订阅名出现 × 链接相同」识别改名，并据此搬运该订阅的
+  // 规则/隧道（rules.json / tunnels.json 里的条目以订阅名为键）。改名同时改链接时无法
+  // 判定是同一个订阅，旧条目会被当作孤儿回收——这里先确认，避免静默丢规则。
+  if (editingIndex.value >= 0) {
+    const editing = currentConfig.value.subscriptions[editingIndex.value]
+    const renaming = !!editing && editing.name !== name.trim()
+    const urlChanged = !!editing && editing.url !== url.trim()
+    const hasResources = (editing?.custom_rules?.length || 0) > 0 || (editing?.tunnels?.length || 0) > 0
+    if (renaming && urlChanged && hasResources) {
+      const ok = await globalStore.showConfirm({
+        title: t('subscription.edit_modal_title'),
+        message: t('subscription.rename_url_change_confirm'),
+        type: 'warning',
+      })
+      if (!ok) return
+    }
+  }
   const subData = { ...editForm.value }
   const wasEmpty = (currentConfig.value.subscriptions || []).length === 0
   if (editingIndex.value >= 0) {
     // 重命名时必须同步迁移选中态：active_subscription 以订阅名为键，
     // 若停留在旧名，切换模式下会「看起来没选中」却仍按旧名保存（复制旧文件）。
-    const oldName = currentConfig.value.subscriptions[editingIndex.value]?.name
+    const oldSub = currentConfig.value.subscriptions[editingIndex.value]
+    const oldName = oldSub?.name
     currentConfig.value.subscriptions[editingIndex.value] = subData
     if (oldName && oldName !== subData.name && currentConfig.value.active_subscription === oldName) {
       currentConfig.value.active_subscription = subData.name
@@ -521,35 +543,10 @@ const saveAndApply = async () => {
 
   isApplying.value = true
   try {
-    // 将前端的 subscriptions 转换为后端期望的格式
-    const subscriptionsForBackend = currentConfig.value.subscriptions.map(sub => {
-      // 解构出前端自定义字段 info 和其余属性
-      const { info, ...rest } = sub
-
-      // 如果 info 存在，构造 subscription_info；否则为 undefined（序列化时忽略）
-      const subscription_info = info ? {
-        upload: info.upload || 0,
-        download: info.download || 0,
-        total: info.total || 0,
-        expire: info.expire || 0,
-      } : undefined
-
-      // 提取 updatedAt 作为 updated_at
-      const updated_at = info?.updatedAt || undefined
-
-      return {
-        ...rest,
-        updated_at,
-        subscription_info,
-      }
-    })
-
-    // 构造完整 payload，包含转换后的订阅列表和待物理删除列表
-    const payload = {
-      ...currentConfig.value,
-      subscriptions: subscriptionsForBackend,
-      delete_physical: pendingPhysicalDeletes.value,
-    }
+    // 请求体只含设置类字段（全局参数 + 订阅注册表 + 手工节点），由 store 统一挑字段：
+    // 规则/隧道/机场元数据由各自的专用接口维护，不再随「保存并应用」提交
+    //（后端即使收到也会忽略；此处不发送是为了让契约显式化，也少传一份元数据）
+    const payload = buildSettingsPayload(currentConfig.value, pendingPhysicalDeletes.value)
 
     const resp = await apiFetch('/subscribe/generate', {
       method: 'POST',

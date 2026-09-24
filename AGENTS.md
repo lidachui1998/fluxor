@@ -174,7 +174,6 @@ backend/
     │   ├── api_generate.go       #   /subscribe/generate（按 mode 分派到切换 / 融合 / 自定义三条生成链路）
     │   ├── api_generate_custom.go#   自定义模式的「保存并应用」：归一化节点 → 落库 → GenerateCustomConfig → 重载内核
     │   ├── api_update.go         #   /subscribe/update/{name}
-    │   ├── api_updateinfo.go     #   /subscribe/update-info/{name}
     │   ├── nodesapi.go           #   /subscribe/node-protocols：下发协议字段表（前端动态表单的唯一来源）
     │   ├── customnodes.go        #   自定义节点归一化：名称/重名/与模板组名与内置目标冲突校验 + 补 ID
     │   ├── customrules.go        #   /subscribe/custom-rules/{name}：切换模式 订阅级自定义规则 读/增/改/排序/删
@@ -319,7 +318,6 @@ func (c *cancelableReadCloser) Close() error {
 | `/subscribe/config` | GET/POST | `subscription.HandleSubscribeConfigAPI` | 订阅配置读写（持久化到 subscribe.json） |
 | `/subscribe/generate` | POST | `subscription.HandleGenerateConfig` | 保存配置 + 生成 config.yaml + 重载内核 |
 | `/subscribe/update/{name}` | GET/POST | `subscription.HandleSubscribeUpdate` | 手动更新指定订阅节点数据 |
-| `/subscribe/update-info/{name}` | POST | `subscription.HandleUpdateSubscriptionInfo` | 更新订阅元信息（名称、链接、检测间隔等） |
 | `/subscribe/node-protocols` | GET | `subscription.HandleNodeProtocolsAPI` | 自定义模式可添加的协议与字段表（类型/默认值/可选值/必填/高级），前端据此渲染动态表单；字段表由后端 `nodespec` 单点维护 |
 | `/subscribe/custom-rules/{name}` | GET/POST/PUT/PATCH/DELETE | `subscription.HandleCustomRulesAPI` | 切换模式下该订阅的自定义规则：查询 / 新增 / 修改（body 带 `id`）/ 排序（`{id,direction:up\|down}`）/ 删除（`?id=`）；所有写操作即时持久化，激活订阅改动后重写 config.yaml 并重载内核 |
 | `/subscribe/merge-custom-rules/{ruleGroup}` | GET/POST/PUT/PATCH/DELETE | `subscription.HandleMergeCustomRulesAPI` | **仅融合模式**：按规则集档位（`base`/`full`）分开存放的模板级自定义规则，方法与语义同上；改动当前生效档位时重新生成 config.yaml 并重载内核 |
@@ -405,7 +403,7 @@ func (c *cancelableReadCloser) Close() error {
 4. **不得嵌套两把锁**：写入口内部会取 `config.Mu` 重组装，因此**持有 `config.Mu` 时不得调用任何 `Save*/Update*`**；也不得在 `Store.View` 回调里调用该 store 的 `Update`（`sync.Mutex` 不可重入，会自死锁——本项目踩过一次）。
 5. **原子落盘与损坏保护**：写盘统一走 `writeFileAtomic`（临时文件 + `fsync` + `rename`，显式 0644）。文件内容无法解析时：备份为 `<file>.corrupt-<时间戳>`、内存态回落默认值、**拒绝后续写入**（返回「内容损坏」错误让接口如实回 500），而不是以空值继续——静默继续会覆盖掉用户手工编辑的内容。
 6. **默认值不落盘**：只在用户真正改过时才写文件。标量默认值靠 `Store.Init`（读盘前填充，键存在即被覆盖；端口 0 表示禁用，只有 `Init` 能区分「缺失」与「显式 0」）；容器类靠 `Store.Normalize`（读盘后修 `null`）。tproxy 的两条绕过列表用 `nil` 表示「用代码里的预填模板」，`LoadTproxyState` 会把与模板一致的列表从文件里移除——预填的上万字节注释不该进用户文件。
-7. **按订阅名存的数据要能自愈**：`rules.json` / `tunnels.json` / `subscription-meta.json` 里的条目以订阅名为键。订阅**改名**时由 `SaveSettings` 识别（判据是「旧表独有 × 新表独有且 URL 相同」）并搬运；订阅**删除**后的孤儿由 `GCResources()` 回收（启动时 + 每次 `SaveSettings` 后），且只在确有删除时才落盘。孤儿进不了生成链路（生成按订阅名查找），因此回收是清理而非正确性要求——正因如此，拆文件才不需要跨文件事务。
+7. **按订阅名存的数据要能自愈**：`rules.json` / `tunnels.json` / `subscription-meta.json` 里的条目以订阅名为键。订阅**改名**时由 `SaveSettings` 识别（判据是「旧表独有 × 新表独有且 URL 相同」）并搬运；订阅**删除**后的孤儿由 `GCResources()` 回收（启动时 + 每次 `SaveSettings` 后），且只在确有删除时才落盘。孤儿进不了生成链路（生成按订阅名查找），因此回收是清理而非正确性要求——正因如此，拆文件才不需要跨文件事务。前端在「改名的同时修改链接且该订阅确有规则/隧道」时会先弹一次确认（`subscription.rename_url_change_confirm`）——这种组合无法被识别为改名，旧条目会被当作孤儿回收。
 8. **不变量留在同一文件内**：唯一需要原子的跨字段约束是「`active_subscription` 必须是 `subscriptions` 的成员」，两者同在 `settings.json`。新增字段时若发现需要跨文件原子性，先重新划分归属，而不是引入跨文件事务。
 9. **元数据是唯一允许「写失败即留空」的一类**：`subscription-meta.json` 的内容可从机场重抓，因此更新流程里抓取失败**不落库**（保持 store 里的旧值），只在本地视图沿用旧值以保证本次生成/响应一致。
 
@@ -478,6 +476,8 @@ func (c *cancelableReadCloser) Close() error {
     这是旧 `config.AdoptServerOwnedFields`（「以服务端为准」的深拷贝合并）的**替代**，而不是它的简化版：以前的判据是「键是否出现」，挡得住漏带却挡不住过期（实测过「刚删掉的规则在保存并应用后复活」「刚新增的规则被旧列表覆盖」）；现在「过期快照」与「服务端状态」根本不在同一个存储里，覆盖路径不存在。
 
     代价是契约收紧：**新建订阅时不能顺带提交规则/隧道**（以前靠「服务端不认识的新订阅名保留请求体内容」兜着）。规则与隧道只能在订阅/作用域存在之后，通过各自的专用接口添加——前端本来就是这么用的（规则弹窗只对已存在的订阅或模板作用域开放）。
+
+    前端对应改成**显式组装请求体**：`store/subscription.ts` 的 `buildSettingsPayload()` 只挑设置类字段（全局参数 + 订阅注册表 + 手工节点），不再用 `{...currentConfig}` 整份铺开。这样契约在两端口径一致，也不会把（可能很大的）机场元数据随每次保存来回搬运。
 
 > 规则写操作（增/改/排序/删）的事务顺序统一为：`config.UpdateSubscriptionRules` / `config.UpdateTemplateRules`（**锁内读—改—写** rules.json + 自动重组装 `Current`）→ 若命中的作用域当前生效（切换：激活订阅；融合：当前档位；自定义：恒为标准档位）则同步运行配置（切换走 `writeRuntimeConfig`，融合走 `configgen.GenerateConfig`，自定义走 `configgen.GenerateCustomConfig`）+ `ReloadCore()`。内核未运行时只更新 `config.yaml`（下次启动生效），并把「已保存但未同步」的情况作为 warning 如实回给前端。
 > 「修改」是就地替换（保持列表位置），「排序」是同组内相邻交换（`config/rules.go` 的 `MoveCustomRule`），两者都不改变其他规则的相对顺序。

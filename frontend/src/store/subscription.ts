@@ -80,10 +80,12 @@ export interface SubscriptionItem {
   health_interval: number
   prefix: string
   info?: SubscriptionInfo | null
-  // 订阅级自定义规则（切换模式）：编辑订阅时必须原样带回，否则保存并应用会丢规则
+  // 订阅级自定义规则（切换模式）与流量隧道。
+  //
+  // 这两个字段**由后端持有**（rules.json / tunnels.json），只出现在 GET 响应里供展示：
+  // 它们的增删改走各自的专用接口（写一条保存一条），「保存并应用」不会提交它们
+  // （见 SettingsPayload）。因此前端不要把它们的正确性当成自己的责任。
   custom_rules?: CustomRule[]
-  // 订阅级流量隧道（切换模式）。后端在「保存并应用」时会以服务端状态为准，
-  // 因此这里只需原样带回（不丢字段），不必在前端维护其正确性
   tunnels?: Tunnel[]
 }
 
@@ -158,14 +160,80 @@ export interface SubscriptionConfigData {
   meta_backend_url: string
   mode: string
   active_subscription: string
-  // 融合模式按规则集档位存放的自定义规则，由专用接口维护；前端只做原样透传，
-  // 但必须带回请求体，否则「保存并应用」会把它们丢掉（后端另有继承兜底）
+  // 融合模式按规则集档位存放的自定义规则。
+  //
+  // 与订阅级规则一样由后端持有（rules.json），只用于展示；保存请求不再提交它
+  // （后端即使收到也会忽略，见 SettingsPayload）。
   merge_custom_rules?: Record<string, CustomRule[]>
   subscriptions: SubscriptionItem[]
   // 自定义模式的手工节点列表：由本页面整体覆盖提交，「保存并应用」时才落库生效
   custom_nodes: CustomNode[]
   tproxy_port: number
 }
+
+/**
+ * 「保存并应用」提交的请求体：只含后端 settings.json 承载的字段。
+ *
+ * 拆分持久化后，`/subscribe/config` 与 `/subscribe/generate` 只负责**设置**——
+ * 全局参数、订阅注册表（名称/链接/间隔/前缀）与自定义模式的手工节点。
+ * 规则、隧道、机场元数据分别落在后端的 rules.json / tunnels.json /
+ * subscription-meta.json，由各自的专用接口维护（写一条保存一条）：
+ * 这两个接口即使收到那些字段也会**直接忽略**，因此前端不再把它们塞进请求体——
+ * 既避免「以为保存并应用能持久化规则」的误解，也省掉一份可能很大的元数据。
+ *
+ * 注意：`delete_physical` 是仅此一次请求有效的临时字段（后端处理完即丢弃），
+ * 不属于 settings.json 的持久化内容。
+ */
+export interface SettingsPayload {
+  proxy_port: number
+  tproxy_port: number
+  panel_port: number
+  panel_secret: string
+  rule_group: string
+  ui_panel: string
+  meta_backend_url: string
+  mode: string
+  active_subscription: string
+  subscriptions: SettingsSubscription[]
+  custom_nodes: CustomNode[]
+  delete_physical?: string[]
+}
+
+/** 订阅注册表项：只有这些字段属于「设置」；规则/隧道/元数据一概不在其中。 */
+export interface SettingsSubscription {
+  name: string
+  url: string
+  update_interval: number
+  health_interval: number
+  prefix: string
+}
+
+/**
+ * 由本地配置组装「保存并应用」的请求体。
+ *
+ * 逐字段挑出设置类字段，而不是 `{...cfg}` 整份铺开：后端已按数据类别拆分存储，
+ * 请求体里混入规则/隧道/元数据既无意义，也容易让后来者误以为它们会被保存。
+ */
+export const buildSettingsPayload = (cfg: SubscriptionConfigData, deletePhysical: string[] = []): SettingsPayload => ({
+  proxy_port: cfg.proxy_port,
+  tproxy_port: cfg.tproxy_port,
+  panel_port: cfg.panel_port,
+  panel_secret: cfg.panel_secret,
+  rule_group: cfg.rule_group,
+  ui_panel: cfg.ui_panel,
+  meta_backend_url: cfg.meta_backend_url,
+  mode: cfg.mode,
+  active_subscription: cfg.active_subscription,
+  custom_nodes: cfg.custom_nodes || [],
+  subscriptions: (cfg.subscriptions || []).map(sub => ({
+    name: sub.name,
+    url: sub.url,
+    update_interval: sub.update_interval,
+    health_interval: sub.health_interval,
+    prefix: sub.prefix,
+  })),
+  delete_physical: deletePhysical,
+})
 
 export const useSubscriptionStore = defineStore('subscription', () => {
   // 订阅配置参数
@@ -218,9 +286,9 @@ export const useSubscriptionStore = defineStore('subscription', () => {
           const subs = cfg.subscriptions || []
           savedSubNames.value = new Set(subs.map((s: any) => s.name))
           currentConfig.value = {
-            // 先铺开后端返回的原始字段：像 merge_custom_rules 这类由专用接口维护、
-            // 前端不直接编辑的字段必须原样带回，否则「保存并应用」的请求体里就没有它们
-            //（后端虽有继承兜底，前端也不该主动丢字段）
+            // 铺开后端返回的原始字段：本地视图需要它们做展示（订阅卡片、规则入口的
+            // 可用性判断等）。但保存请求体不由整份视图拼成——见 buildSettingsPayload，
+            // 它只挑设置类字段，因此这里多留几个只读字段不会造成「误保存」。
             ...cfg,
             proxy_port: cfg.proxy_port || 7890,
             panel_port: cfg.panel_port || 9090,
@@ -240,7 +308,10 @@ export const useSubscriptionStore = defineStore('subscription', () => {
                 expire: s.subscription_info.expire || 0,
                 updatedAt: s.updated_at || null,
               } : null
-              return { ...s, info }
+              // 后端把元数据单独存在 subscription-meta.json，GET 时按订阅名合并进来；
+              // 本地只保留展示用的 info，不再保留原始两个字段（它们不参与保存）
+              const { subscription_info: _info, updated_at: _updatedAt, ...rest } = s
+              return { ...rest, info }
             })
           }
           isConfigLoaded.value = true
