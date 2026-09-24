@@ -254,6 +254,14 @@ export const useSubscriptionStore = defineStore('subscription', () => {
   // 已保存应用的订阅名称白名单
   const savedSubNames = ref<Set<string>>(new Set())
 
+  // 已保存应用（在当前内核配置里生效）的模式。
+  //
+  // 与 savedSubNames 同理：界面上的模式选择器可以改动而未保存，而后端按**已保存的
+  // 模式**校验「规则/隧道作用域入口」的可用性；若按界面上那个未保存的模式去点按钮，
+  // 必然被后端按旧模式拒绝（提示「仅在融合模式下可用」而用户其实已经在自定义模式）。
+  // 因此模式相关的入口一律以这个值为准。
+  const savedMode = ref('merge')
+
   // 自定义模式可添加的协议与字段表（后端单点维护，前端只按声明渲染表单）。
   // 懒加载一次并缓存：只在用户打开「添加节点」弹窗时才请求。
   const nodeProtocols = ref<NodeProtocolSpec[]>([])
@@ -285,6 +293,7 @@ export const useSubscriptionStore = defineStore('subscription', () => {
           const cfg = await resp.json()
           const subs = cfg.subscriptions || []
           savedSubNames.value = new Set(subs.map((s: any) => s.name))
+          savedMode.value = cfg.mode || 'merge' 
           currentConfig.value = {
             // 铺开后端返回的原始字段：本地视图需要它们做展示（订阅卡片、规则入口的
             // 可用性判断等）。但保存请求体不由整份视图拼成——见 buildSettingsPayload，
@@ -369,6 +378,7 @@ export const useSubscriptionStore = defineStore('subscription', () => {
   return {
     currentConfig,
     savedSubNames,
+    savedMode,
     loadConfig,
     isConfigLoaded,
     refreshConfig,

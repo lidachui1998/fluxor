@@ -452,7 +452,7 @@ func (c *cancelableReadCloser) Close() error {
 | 融合 | `rules.json` → `merge.<base\|full>` | 该档位是 `rule_group` | `GenerateConfig`：`appendRuleSet` 之后、写盘之前注入 |
 | 自定义 | `rules.json` → `custom_mode`（不按档位分表） | 恒生效（该模式固定用标准规则集） | `GenerateCustomConfig`：`appendRuleSet(base)` 之后、写盘之前注入 |
 
-接口入口同样按模式分开：切换=`/subscribe/custom-rules/{name}`、融合=`/subscribe/merge-custom-rules/{base\|full}`、自定义=`/subscribe/custom-mode-rules/custom`；每个入口只服务自己那一种模式，跨模式访问统一回 400 并指明去哪儿改。
+接口入口同样按模式分开：切换=`/subscribe/custom-rules/{name}`、融合=`/subscribe/merge-custom-rules/{base\|full}`、自定义=`/subscribe/custom-mode-rules/custom`；每个入口只服务自己那一种模式，跨模式访问统一回 400 并指明去哪儿改。「跨模式」判定针对**接口的全部方法**（含 GET）——只拦写操作会出现「查询能打开、第一次写才被拒」的不一致。错误提示由 `modeMismatchHint` 补上「当前生效模式：X；若刚在界面上改过模式，请先点击「保存并应用」」：界面上的模式选择器允许改动而不保存，用户看到一句「仅在融合模式下可用」时最可能的真实原因是模式还没生效（实测反馈过）。前端另有一道闸门：`store/subscription.ts` 的 `savedMode` 记录已生效模式，模式未生效时点击规则/隧道入口直接给出上述指引，不发请求（`subscription.mode_unsaved_hint`）。
 
 **三种作用域互不影响**：各存各的、各有各的入口与校验集合，写一边绝不会出现在另一边。公共流程（增/改/排序/删 → 持久化 → 按需重新生成 → 热重载）由 `subscription/templaterules.go` 的 `ruleScope` 抽象承载，融合档位与自定义模式只是它的两个实例——两份拷贝迟早会在某次改动后不一致。
 

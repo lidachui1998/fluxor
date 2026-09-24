@@ -402,6 +402,8 @@ const messages = {
     // 切换模式下规则弹窗的提示：规则与隧道由专用接口「写一条保存一条」，
     // 与「保存并应用」是两条链路（拆分持久化后分别存在 rules.json / tunnels.json）
     'subscription.custom_rules_sub_hint': '规则与隧道写一条保存一条，不参与「保存并应用」；重建运行配置时自动叠加进 config.yaml。',
+    // 模式改动未保存时点「自定义规则」的指引：后端按已保存的模式校验作用域入口
+    'subscription.mode_unsaved_hint': '模式改动尚未生效，请先保存并应用',
     // ---------- 自定义模式：节点列表与添加节点弹窗 ----------
     'subscription.mode_custom': '自定义',
     'subscription.node_list': '节点列表',
@@ -1101,6 +1103,7 @@ const messages = {
     'subscription.custom_rules_merge_title': 'Custom Rules · Merge mode',
     'subscription.custom_rules_merge_hint': 'Merge mode stores rules per rule‑set tier; in switch mode add custom rules on each subscription.',
     'subscription.custom_rules_sub_hint': 'Rules and tunnels are saved one by one and are not part of "save & apply"; they are re-applied to config.yaml when the runtime config is rebuilt.',
+    'subscription.mode_unsaved_hint': 'Mode change is not applied yet, please save and apply first',
     // ---------- Custom mode: node list & add-node dialog ----------
     'subscription.mode_custom': 'Custom',
     'subscription.node_list': 'Node List',

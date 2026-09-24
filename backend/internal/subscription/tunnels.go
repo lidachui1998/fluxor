@@ -228,8 +228,9 @@ func HandleCustomModeTunnelsAPI(w http.ResponseWriter, r *http.Request) {
 
 // serveTunnelRequest 隧道接口的统一入口：校验可编辑性后按方法分发。
 func serveTunnelRequest(w http.ResponseWriter, r *http.Request, scope tunnelScope) {
-	if !scope.editable(ruleConfigSnapshot()) {
-		httpx.WriteJSONError(w, http.StatusBadRequest, scope.disabledHint)
+	cfg := ruleConfigSnapshot()
+	if !scope.editable(cfg) {
+		httpx.WriteJSONError(w, http.StatusBadRequest, modeMismatchHint(scope.disabledHint, cfg.Mode))
 		return
 	}
 

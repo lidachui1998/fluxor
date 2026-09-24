@@ -95,6 +95,15 @@ func HandleCustomRulesAPI(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteJSONError(w, http.StatusNotFound, "订阅不存在: "+name)
 			return
 		}
+		// 查询也要过模式校验：该入口只服务切换模式（切换模式的规则挂在订阅上，
+		// 其可选目标来自订阅文件本身；融合/自定义模式走模板级入口）。漏掉这一步会
+		// 出现「GET 能打开、第一次写就被 400 拦下」的不一致，也违背「跨模式访问统一
+		// 回 400」的约定。
+		if cfg.Mode != "switch" {
+			httpx.WriteJSONError(w, http.StatusBadRequest,
+				modeMismatchHint("自定义规则仅在切换模式下可用", cfg.Mode))
+			return
+		}
 		httpx.RespondJSON(w, http.StatusOK, buildCustomRulesPayload(name, cfg, sub))
 
 	case http.MethodPost:
@@ -124,7 +133,8 @@ func handleAddCustomRule(w http.ResponseWriter, r *http.Request, name string) {
 	// 自定义规则只在切换模式下有意义：融合模式的规则由模板生成，且订阅文件
 	// 不会被下载（ensureSubscriptionFiles 在 merge 下直接返回），无从校验目标。
 	if cfg.Mode != "switch" {
-		httpx.WriteJSONError(w, http.StatusBadRequest, "自定义规则仅在切换模式下可用")
+		httpx.WriteJSONError(w, http.StatusBadRequest,
+			modeMismatchHint("自定义规则仅在切换模式下可用", cfg.Mode))
 		return
 	}
 
@@ -172,7 +182,8 @@ func handleUpdateCustomRule(w http.ResponseWriter, r *http.Request, name string)
 		return
 	}
 	if cfg.Mode != "switch" {
-		httpx.WriteJSONError(w, http.StatusBadRequest, "自定义规则仅在切换模式下可用")
+		httpx.WriteJSONError(w, http.StatusBadRequest,
+			modeMismatchHint("自定义规则仅在切换模式下可用", cfg.Mode))
 		return
 	}
 
@@ -255,7 +266,8 @@ func handleMoveCustomRule(w http.ResponseWriter, r *http.Request, name string) {
 		return
 	}
 	if cfg.Mode != "switch" {
-		httpx.WriteJSONError(w, http.StatusBadRequest, "自定义规则仅在切换模式下可用")
+		httpx.WriteJSONError(w, http.StatusBadRequest,
+			modeMismatchHint("自定义规则仅在切换模式下可用", cfg.Mode))
 		return
 	}
 

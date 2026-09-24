@@ -8,6 +8,7 @@ import (
 	"fluxor/internal/core"
 	"fluxor/internal/httpx"
 	"fluxor/internal/logx"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -98,10 +99,34 @@ func customModeRuleScope() ruleScope {
 	}
 }
 
+// modeLabel 把模式标识转成界面用语：错误提示里要说清「此刻生效的是哪个模式」。
+func modeLabel(mode string) string {
+	switch mode {
+	case config.ModeMerge:
+		return "融合"
+	case config.ModeSwitch:
+		return "切换"
+	case config.ModeCustom:
+		return "自定义"
+	}
+	return mode
+}
+
+// modeMismatchHint 给「作用域与当前生效模式不符」的提示补上现场状态。
+//
+// 界面上的模式选择器可以改动而未保存，此时按钮按**界面上的模式**进入口、后端按
+// **已保存的模式**校验，于是用户看到一句「仅在融合模式下可用」却不知道问题出在
+// 「还没保存并应用」——实测反馈过这个错配。因此提示里补上当前生效模式与下一步动作。
+func modeMismatchHint(hint, mode string) string {
+	return fmt.Sprintf("%s（当前生效模式：%s；若刚在界面上改过模式，请先点击「保存并应用」）",
+		hint, modeLabel(mode))
+}
+
 // serveRuleRequest 是模板级规则接口的统一入口：校验可编辑性后按方法分发。
 func serveRuleRequest(w http.ResponseWriter, r *http.Request, scope ruleScope) {
-	if !scope.editable(ruleConfigSnapshot()) {
-		httpx.WriteJSONError(w, http.StatusBadRequest, scope.disabledHint)
+	cfg := ruleConfigSnapshot()
+	if !scope.editable(cfg) {
+		httpx.WriteJSONError(w, http.StatusBadRequest, modeMismatchHint(scope.disabledHint, cfg.Mode))
 		return
 	}
 

@@ -74,8 +74,23 @@ const rulesTitle = ref('')
 // 自定义规则弹窗的作用域提示：融合模式的规则挂在规则集档位上，切换模式在各订阅卡片上，文案随模式切换
 const rulesHint = ref('')
 
+// modeApplied 判断「界面上的模式是否已经生效（已保存应用）」。
+//
+// 三种模式的规则/隧道作用域是分开的，后端按 settings.json 里已保存的 mode 校验入口；
+// 界面上的模式选择器却可以改了不保存，于是「界面已切到自定义模式、按钮仍按自定义入口
+// 发请求、后端按融合模式拒绝」——用户只会看到一句「自定义规则仅在融合模式下可用」，
+// 完全不知道问题出在还没保存并应用。这里在发请求之前就把下一步说清楚。
+const modeApplied = () => currentConfig.value.mode === savedMode.value
+
+const ensureModeApplied = () => {
+  if (modeApplied()) return true
+  globalStore.showToast(t('subscription.mode_unsaved_hint'), 'error')
+  return false
+}
+
 // 打开订阅级（切换模式）自定义规则：作用域即该订阅名，单作用域 → 不渲染页签
 const openSubRulesDialog = (name: string) => {
+  if (!ensureModeApplied()) return
   rulesEndpoint.value = '/subscribe/custom-rules'
   rulesTunnelEndpoint.value = '/subscribe/custom-tunnels'
   rulesScopes.value = [{ key: name, label: name, effective: name === currentConfig.value.active_subscription }]
@@ -91,6 +106,7 @@ const openSubRulesDialog = (name: string) => {
 //   - 自定义模式：走独立的作用域与接口（/subscribe/custom-mode-rules/custom），规则与
 //     融合模式各存各的、互不影响；作用域段固定为 custom，因此只开一个（不渲染页签）。
 const openRulesDialog = () => {
+  if (!ensureModeApplied()) return
   if (currentConfig.value.mode === 'custom') {
     rulesEndpoint.value = '/subscribe/custom-mode-rules'
     rulesTunnelEndpoint.value = '/subscribe/custom-mode-tunnels'
@@ -164,7 +180,7 @@ const selectSubscription = (name: string) => {
 
 const rulesStore = useRulesStore()
 const subscriptionStore = useSubscriptionStore()
-const { currentConfig, savedSubNames, nodeProtocols } = storeToRefs(subscriptionStore)
+const { currentConfig, savedSubNames, savedMode, nodeProtocols } = storeToRefs(subscriptionStore)
 
 // 是否处于自定义模式：自定义模式用「节点列表」替代「订阅列表」
 const isCustomMode = computed(() => currentConfig.value.mode === 'custom')
@@ -788,7 +804,9 @@ onUnmounted(() => {
           <button
             v-if="currentConfig.mode === 'merge' || isCustomMode"
             @click="openRulesDialog"
+            :title="modeApplied() ? undefined : t('subscription.mode_unsaved_hint')"
             class="px-3.5 py-1.5 bg-accent hover:bg-accent-hover text-white text-xs font-semibold rounded-lg shadow-sm transition-all flex items-center gap-1.5"
+            :class="modeApplied() ? '' : 'opacity-60'"
           >
             <OptionsOutline class="w-4 h-4" /> {{ t('subscription.custom_rules') }}
           </button>
