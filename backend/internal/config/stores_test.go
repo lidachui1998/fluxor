@@ -450,3 +450,45 @@ func TestSettingsViewDoesNotPersistDerivedFields(t *testing.T) {
 		t.Fatalf("订阅注册表异常: %v", raw["subscriptions"])
 	}
 }
+
+// TestEmptyMetaKeepsPrevious 空元数据既不写也不删：保留上一次已知的流量/到期。
+//
+// 触发场景（实测过）：切换到融合模式后内核尚未加载/拉取这些 provider，或机场不下发
+// subscription-userinfo——此时抓取会「成功但内容为空」。若把它当作清空，卡片上原本
+// 用缓存兜着的流量与到期会一起被抹掉，而这正是最该显示上次已知值的时刻。
+func TestEmptyMetaKeepsPrevious(t *testing.T) {
+	setupTempDataDir(t)
+
+	if err := SaveSettings(SubscribeConfig{
+		Subscriptions: []Subscription{{Name: "机场A", URL: "https://example.com/a"}},
+	}); err != nil {
+		t.Fatalf("SaveSettings: %v", err)
+	}
+	if err := SaveSubscriptionMeta("机场A", "2026-01-01T00:00:00Z", map[string]any{"total": 42}); err != nil {
+		t.Fatalf("SaveSubscriptionMeta: %v", err)
+	}
+
+	// 两种空形态：完全为空 / 空 map（解析出 0 个字段）
+	if err := SaveSubscriptionMeta("机场A", "", nil); err != nil {
+		t.Fatalf("SaveSubscriptionMeta(empty): %v", err)
+	}
+	if err := SaveSubscriptionMeta("机场A", "", map[string]any{}); err != nil {
+		t.Fatalf("SaveSubscriptionMeta(empty map): %v", err)
+	}
+
+	updatedAt, info := SubscriptionMetaOf("机场A")
+	if updatedAt != "2026-01-01T00:00:00Z" || info["total"] != 42 {
+		t.Fatalf("空元数据不应覆盖旧值: updatedAt=%q info=%v", updatedAt, info)
+	}
+	if _, ok := readJSON[MetaFile](t, FluxorMetaFile).Subscriptions["机场A"]; !ok {
+		t.Fatal("空元数据不应删除条目")
+	}
+
+	// 有内容时正常覆盖
+	if err := SaveSubscriptionMeta("机场A", "2026-02-02T00:00:00Z", map[string]any{"total": 99}); err != nil {
+		t.Fatalf("SaveSubscriptionMeta: %v", err)
+	}
+	if updatedAt, info := SubscriptionMetaOf("机场A"); updatedAt != "2026-02-02T00:00:00Z" || info["total"] != 99 {
+		t.Fatalf("有效元数据应正常覆盖: updatedAt=%q info=%v", updatedAt, info)
+	}
+}

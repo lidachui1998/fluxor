@@ -77,18 +77,23 @@ func updateAllSubscriptionsMetadata(cfg *config.SubscribeConfig) {
 			logx.Warn(logx.ModuleSub, "fetching metadata for subscription %q failed (attempt %d/%d): %v", name, attempt+1, 3, err)
 		}
 
-		ok := err == nil
-		if err != nil {
-			// 获取失败：旧元数据不再取自入参快照，而是从 store 读（store 里仍是旧值，
-			// 因此本次不写入新数据）。本地 cfg 沿用旧值，保证本次生成/响应与之一致；
-			// store 里也没有旧值时本地置空。
+		// 「拿到内容」才叫成功：内核 provider 存在但还没拉取到 subscription-userinfo 时
+		// 会返回 200 + 空内容，这与抓取失败一样不该覆盖已存下的元数据，也不该报「已更新」
+		ok := err == nil && (updatedAt != "" || len(subInfo) > 0)
+		if err != nil || !ok {
+			// 旧元数据从 store 读（store 里仍是旧值，因此本次不写入新数据）。本地 cfg 沿用
+			// 旧值，保证本次生成/响应与之一致；store 里也没有旧值时本地置空。
 			oldUpdatedAt, oldInfo := config.SubscriptionMetaOf(name)
 			if oldUpdatedAt == "" && oldInfo == nil {
 				updatedAt, subInfo = "", nil
 				logx.Warn(logx.ModuleSub, "subscription %q has no previous metadata, keeping it empty", name)
 			} else {
 				updatedAt, subInfo = oldUpdatedAt, oldInfo
-				logx.Warn(logx.ModuleSub, "keeping previous metadata for subscription %q after fetch failure", name)
+				if err != nil {
+					logx.Warn(logx.ModuleSub, "keeping previous metadata for subscription %q after fetch failure", name)
+				} else {
+					logx.Warn(logx.ModuleSub, "core returned no metadata for subscription %q, keeping previous", name)
+				}
 			}
 		} else {
 			logx.Info(logx.ModuleSub, "metadata for subscription %q updated", name)

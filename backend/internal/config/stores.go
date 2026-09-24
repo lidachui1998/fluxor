@@ -390,11 +390,16 @@ func SaveSubscriptionMeta(name, updatedAt string, info map[string]any) error {
 	if name == "" {
 		return fmt.Errorf("保存订阅元数据失败：缺少订阅名")
 	}
+	// 空结果（时间与内容都没有）= 本轮没有任何可用信息，**不写也不删**。
+	//
+	// 融合模式下内核刚重载完就抓元数据、或机场不下发 subscription-userinfo 时都会得到
+	// 空值；旧实现把这种情况当作「清空」删掉条目，于是上次已知的流量/到期被抹掉，
+	// 卡片立刻变成「流量信息不可用」——而这正是最该用已知值兜住的时刻。
+	if updatedAt == "" && len(info) == 0 {
+		logx.Debug(logx.ModuleConfig, "no metadata to save for subscription %q, keeping previous values", name)
+		return nil
+	}
 	if err := metaStore.Update(func(f *MetaFile) error {
-		if updatedAt == "" && info == nil {
-			delete(f.Subscriptions, name)
-			return nil
-		}
 		f.Subscriptions[name] = SubscriptionMeta{UpdatedAt: updatedAt, Info: copyAnyMap(info)}
 		return nil
 	}); err != nil {

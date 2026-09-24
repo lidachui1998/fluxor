@@ -9,6 +9,7 @@ import {
   useSubscriptionStore,
   buildSettingsPayload,
   type SubscriptionItem,
+  type SubscriptionInfo,
   type CustomNode,
 } from '../store/subscription'
 import CustomRulesDialog from '../components/CustomRulesDialog.vue'
@@ -247,22 +248,38 @@ const clearPoll = (index: number) => {
   }
 }
 
-// 获取订阅显示信息（融合模式优先使用动态数据）
-const getSubscriptionDisplayInfo = (sub: SubscriptionItem) => {
-  if (currentConfig.value.mode === 'merge') {
-    const info = providerInfos.value[sub.name]
-    if (info && info.subscriptionInfo) {
-      return {
-        upload: info.subscriptionInfo.Upload || 0,
-        download: info.subscriptionInfo.Download || 0,
-        total: info.subscriptionInfo.Total || 0,
-        expire: info.subscriptionInfo.Expire || 0,
-        updatedAt: info.updatedAt || null,
-      }
-    }
-    return null
+// providerInfoToDisplay 把内核 /providers/proxies 返回的 provider 元数据转成展示用的 info。
+//
+// 键名是内核的写法（大写 Upload/Download/Total/Expire），与持久化元数据的小写键不同——
+// 两种来源的归一化都收敛在这里，避免各处各写一份。
+const providerInfoToDisplay = (provider: any): SubscriptionInfo | null => {
+  if (!provider?.subscriptionInfo) return null
+  const info = provider.subscriptionInfo
+  return {
+    upload: info.Upload || 0,
+    download: info.Download || 0,
+    total: info.Total || 0,
+    expire: info.Expire || 0,
+    updatedAt: provider.updatedAt || null,
   }
-  // 切换模式仍使用持久化数据
+}
+
+// 获取订阅显示信息。
+//
+// 融合模式优先用内核 provider 的实时数据；实时数据拿不到时**回退到持久化元数据**
+// （后端 subscription-meta.json 里的那份，经 GET /subscribe/config 以 sub.info 返回）：
+//   - 刚从切换模式切到融合模式时，内核里还没有这些 provider（要等「保存并应用」重新
+//     生成配置并重载），此时前者必然为空——过去这里直接返回 null，卡片就整块变成
+//     「流量信息不可用」，而其实上一次更新（切换模式或上一轮融合）存下的流量/到期
+//     完全可用；
+//   - 内核已加载 provider 但该机场没下发 userinfo 时同样回退，卡片里的「更新于」显示的
+//     是缓存那次的时间戳，用户能分辨这是上次已知值而不是实时值。
+// 切换模式没有 provider 可查，一直用持久化数据。
+const getSubscriptionDisplayInfo = (sub: SubscriptionItem): SubscriptionInfo | null => {
+  if (currentConfig.value.mode === 'merge') {
+    const live = providerInfoToDisplay(providerInfos.value[sub.name])
+    if (live) return live
+  }
   return sub.info || null
 }
 

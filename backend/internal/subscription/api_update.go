@@ -71,6 +71,14 @@ func HandleSubscribeUpdate(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
+			// 内核 provider 更新成功但没带回元数据（机场不下发 subscription-userinfo，
+			// 或内核还没来得及重新拉取）时，保留上一次已知值并如实记一条：
+			// SaveSubscriptionMeta 对这种空值本就不写，但也不能再报「已保存」。
+			if updatedAt == "" && len(subInfo) == 0 {
+				logx.Warn(logx.ModuleSub, "core returned no metadata for subscription %q after update, keeping previous", subName)
+				return
+			}
+
 			// 持久化该订阅的元数据（SaveSubscriptionMeta 只写 subscription-meta.json，
 			// 内部落盘并重组装 Current，故不得在持 config.Mu 时调用）
 			if err := config.SaveSubscriptionMeta(subName, updatedAt, subInfo); err != nil {

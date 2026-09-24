@@ -406,6 +406,7 @@ func (c *cancelableReadCloser) Close() error {
 7. **按订阅名存的数据要能自愈**：`rules.json` / `tunnels.json` / `subscription-meta.json` 里的条目以订阅名为键。订阅**改名**时由 `SaveSettings` 识别（判据是「旧表独有 × 新表独有且 URL 相同」）并搬运；订阅**删除**后的孤儿由 `GCResources()` 回收（启动时 + 每次 `SaveSettings` 后），且只在确有删除时才落盘。孤儿进不了生成链路（生成按订阅名查找），因此回收是清理而非正确性要求——正因如此，拆文件才不需要跨文件事务。前端在「改名的同时修改链接且该订阅确有规则/隧道」时会先弹一次确认（`subscription.rename_url_change_confirm`）——这种组合无法被识别为改名，旧条目会被当作孤儿回收。
 8. **不变量留在同一文件内**：唯一需要原子的跨字段约束是「`active_subscription` 必须是 `subscriptions` 的成员」，两者同在 `settings.json`。新增字段时若发现需要跨文件原子性，先重新划分归属，而不是引入跨文件事务。
 9. **元数据是唯一允许「写失败即留空」的一类**：`subscription-meta.json` 的内容可从机场重抓，因此更新流程里抓取失败**不落库**（保持 store 里的旧值），只在本地视图沿用旧值以保证本次生成/响应一致。
+   同理，**抓到但内容为空**（内核 provider 还没重新拉取、或机场不下发 `subscription-userinfo`）也不算成功：`SaveSubscriptionMeta(name, "", nil/空 map)` 既不写也不删，`updateAllSubscriptionsMetadata` / 异步更新分支据此保留旧值并记一条 WARN。把它当成「清空」会抹掉用户上次已知的流量与到期——切到融合模式后卡片会立刻变成「流量信息不可用」，而这正是最需要旧值兜底的时刻（前端在实时数据缺失时回退显示 `sub.info`，见 `getSubscriptionDisplayInfo`）。
 
 ### 3.6 定时器生命周期规约
 
