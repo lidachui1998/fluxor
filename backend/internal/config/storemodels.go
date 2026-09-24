@@ -100,12 +100,21 @@ func NewMetaFile() MetaFile {
 // 由 tproxy 包用自己的 Store 读写（该文件的读写者只有它一个），结构体放在这里是为了
 // 让迁移能在同一处完成拆分——它只是**持久化布局**，防火墙语义仍归 tproxy 包。
 //
-// 两条列表用 omitempty：nil 表示「未自定义，用代码里的预填模板」，因此预填内容
-// 不会落盘（旧实现把 20+ 行中文注释写进用户文件，占掉了文件体积的九成）。
+// 两条列表**不能**用 omitempty。它们在语义上要区分三种取值，而 omitempty 会把
+// 「空列表」和「未设置」都序列化成「键缺失」，把两者合并成同一个状态：
+//   - nil        → 写出 `null`      → 读回 nil  → 用代码里的预填模板；
+//   - 空列表     → 写出 `[]`        → 读回 `[]`  → 用户显式清空，一条绕过都不要；
+//   - 非空列表   → 写出内容本身。
+//
+// 加上 omitempty 后，「用户把列表清空」在磁盘上等于「键缺失」，重启时预填模板会
+// 静默回来——用户明确表达的「不使用任何绕过」被无声撤销，前后两次运行行为不一致。
+//
+// 预填内容仍然不落盘：与模板完全一致的列表由 tproxy 包的 normalizeExceptions
+// 收敛为 nil，因此文件体积不会因为去掉 omitempty 而变大。
 type TproxyFile struct {
 	Enabled       bool     `json:"enabled"`
 	ProxyLocal    bool     `json:"proxy_local"`
 	IPv6          bool     `json:"ipv6"`
-	DstExceptions []string `json:"dst_exceptions,omitempty"`
-	SrcExceptions []string `json:"src_exceptions,omitempty"`
+	DstExceptions []string `json:"dst_exceptions"`
+	SrcExceptions []string `json:"src_exceptions"`
 }

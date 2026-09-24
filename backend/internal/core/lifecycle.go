@@ -2,13 +2,12 @@ package core
 
 import (
 	"bytes"
-	"encoding/json"
 	"fluxor/internal/config"
 	"fluxor/internal/configgen"
+	"fluxor/internal/httpx"
 	"fluxor/internal/logx"
 	"fluxor/internal/tproxy"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -28,31 +27,26 @@ func ReloadCore() error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := httpx.ReadAllLimited(resp.Body, httpx.MaxUpstreamBody)
 		logx.Error(logx.ModuleCore, "reload rejected by mihomo: status=%d body=%s", resp.StatusCode, string(respBody))
 		return fmt.Errorf("内核返回错误状态 %d: %s", resp.StatusCode, string(respBody))
 	}
 	logx.Info(logx.ModuleCore, "core config reloaded: %s", config.ConfigTarget)
 
-	// 重载成功后，异步更新 nftables TProxy 规则
+	// 重载成功后，异步重建 nftables TProxy 规则。
+	//
+	// 异步是刻意的：内核刚接到重载请求，它自己的 tproxy 监听需要一点时间才重新就绪，
+	// 立刻下发规则会指向一个还没起来的端口。但不能因此把结果丢掉——此前这里直接查
+	// 内核的 tproxy-port 并调用 EnableTProxyRules 且**丢弃返回值**，一旦失败就留下
+	// 「面板显示已启用、系统里其实一条规则都没有」的静默错配。
+	//
+	// 端口来源统一为 settings.json（config.Current.TproxyPort）：内核的 config.yaml
+	// 就是按它生成的，因此它既是规则的来源也是内核的来源，不存在第二个真相。
 	go func() {
 		time.Sleep(500 * time.Millisecond)
-		resp2, err2 := CoreRequest("GET", "/configs", nil)
-		if err2 == nil {
-			defer resp2.Body.Close()
-			var info map[string]interface{}
-			if err2 := json.NewDecoder(resp2.Body).Decode(&info); err2 == nil {
-				if tp, ok := info["tproxy-port"]; ok {
-					if tpf, ok := tp.(float64); ok {
-						if tpf > 0 && tproxy.GetTproxyState() {
-							tproxy.DisableTProxyRules()
-							tproxy.EnableTProxyRules(int(tpf))
-						} else {
-							tproxy.DisableTProxyRules()
-						}
-					}
-				}
-			}
+		if err := tproxy.ReapplyTproxyRules(); err != nil {
+			logx.Error(logx.ModuleCore,
+				"failed to re-apply tproxy rules after reload; the bypass rules were removed and the TProxy switch was turned off: %v", err)
 		}
 	}()
 
@@ -120,6 +114,12 @@ func pidLooksLikeCore(pid int) bool {
 	return filepath.Base(exe) == filepath.Base(want)
 }
 
+// coreStartGracePeriod 启动内核后等待多久来确认它没有立刻退出。
+//
+// 取值权衡：配置写坏时 mihomo 在毫秒级就会带错误退出，1 秒足够；再长只会拖慢
+// 「点了启动却起不来」的反馈。超过这段时间仍在运行即认为启动成功。
+const coreStartGracePeriod = 1 * time.Second
+
 // StartCore 启动内核进程
 func StartCore() error {
 	if IsCoreRunning() {
@@ -127,9 +127,12 @@ func StartCore() error {
 		return fmt.Errorf("内核已在运行")
 	}
 
-	// 确保配置文件存在，若不存在则使用 subscribeConfig 生成；若存在则强制补齐网关属性
+	// 确保配置文件存在，若不存在则使用 subscribeConfig 生成；若存在则强制补齐网关属性。
+	//
+	// 走 CurrentSnapshot 而不是直接读 config.Current：本函数由 /core/start 处理器调用，
+	// 可以和并发的 /subscribe/generate（内部会写 Current）同时执行，无锁读是数据竞争。
 	if _, err := os.Stat(config.ConfigTarget); os.IsNotExist(err) {
-		if err := configgen.GenerateConfig(config.Current); err != nil {
+		if err := configgen.GenerateConfig(config.CurrentSnapshot()); err != nil {
 			logx.Error(logx.ModuleCore, "failed to generate config.yaml, start aborted: %v", err)
 			return fmt.Errorf("生成配置文件失败: %w", err)
 		}
@@ -144,12 +147,21 @@ func StartCore() error {
 		return fmt.Errorf("启动内核失败: %v, stderr: %s", err, stderr.String())
 	}
 
-	// 等待 1 秒，检查进程是否存活
-	time.Sleep(1 * time.Second)
-	err := cmd.Process.Signal(syscall.Signal(0))
-	if err != nil {
+	// 等进程退出（唯一一次 Wait）并把结果交给下面的判定与后台清理 goroutine 共用。
+	//
+	// 不能再用 cmd.Process.Signal(syscall.Signal(0)) 判断存活：子进程退出后在**被 Wait
+	// 回收之前处于僵尸态**，而 kill(pid, 0) 对僵尸进程仍然返回成功，于是「是否存活」
+	// 恒为真——下面那段「启动后立即退出」的诊断永远不会触发。它恰恰是配置写坏时唯一
+	// 能告诉用户原因的信息（mihomo 的 stderr 里写着哪一行不合法）。
+	//
+	// 顺带修掉一处数据竞争：stderr 是 exec 内部 goroutine 在写的 bytes.Buffer，
+	// 只有 Wait 返回后才可安全读取；旧代码先读 stderr 再 Wait，读的是正在被写的缓冲。
+	waitCh := make(chan error, 1)
+	go func() { waitCh <- cmd.Wait() }()
+
+	select {
+	case waitErr := <-waitCh:
 		stderrContent := stderr.String()
-		waitErr := cmd.Wait()
 		if waitErr != nil {
 			stderrContent += " (Wait err: " + waitErr.Error() + ")"
 		}
@@ -158,13 +170,15 @@ func StartCore() error {
 		}
 		logx.Error(logx.ModuleCore, "mihomo exited immediately after start: %s", stderrContent)
 		return fmt.Errorf("内核启动后立即退出: %s", stderrContent)
+	case <-time.After(coreStartGracePeriod):
+		// 一秒内没有退出：认为启动成功，继续登记 PID 与广播状态
 	}
 
 	pid := cmd.Process.Pid
 	os.MkdirAll(filepath.Dir(config.CorePidFile), 0755)
 	if err := os.WriteFile(config.CorePidFile, []byte(strconv.Itoa(pid)), 0644); err != nil {
 		cmd.Process.Kill()
-		cmd.Wait()
+		<-waitCh // 等回收，避免留下僵尸进程（Wait 已在上面那次 goroutine 里调用）
 		logx.Error(logx.ModuleCore, "failed to write pid file %s: %v", config.CorePidFile, err)
 		return fmt.Errorf("写入 PID 文件失败: %v", err)
 	}
@@ -174,7 +188,7 @@ func StartCore() error {
 	// 内核可能自行退出（崩溃、被外部 kill -9、OOM），此时 PID 文件需要清理，
 	// 并且必须向外广播「已停止」——否则前端会一直以为内核仍在运行。
 	go func() {
-		cmd.Wait()
+		<-waitCh
 		os.Remove(config.CorePidFile)
 		PublishCoreState(false)
 	}()

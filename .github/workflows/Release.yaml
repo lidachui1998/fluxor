@@ -141,13 +141,29 @@ jobs:
         with:
           path: artifacts
 
+      # 面板自更新会下载 checksums.txt 并校验产物的 sha256 后才安装。
+      # 清单必须在所有产物都到齐后集中生成（每个矩阵 job 只看得到自己那一个架构），
+      # 且条目里只写**文件名**——面板是按资产名（fluxor-amd64）查找条目的，
+      # 带上 artifacts/<artifact>/ 这样的目录前缀会对不上。
+      - name: 生成校验和清单 checksums.txt
+        run: |
+          : > checksums.txt
+          while IFS= read -r f; do
+            ( cd "$(dirname "$f")" && sha256sum "$(basename "$f")" ) >> checksums.txt
+          done < <(find artifacts -type f -name 'fluxor-*' | sort)
+          echo "生成的校验和清单："
+          cat checksums.txt
+
       - name: 创建或更新 Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.get_version.outputs.VERSION }}
           name: ${{ steps.get_version.outputs.VERSION }}
           body: ${{ steps.get_notes.outputs.NOTES }}
-          files: artifacts/**/fluxor-*
+          # checksums.txt 必须一并发布：面板只从 Release 资产里取它
+          files: |
+            artifacts/**/fluxor-*
+            checksums.txt
           draft: false
           prerelease: false
           allow_updates: true

@@ -3,9 +3,7 @@ package subscription
 import (
 	"fluxor/internal/config"
 	"fluxor/internal/logx"
-	"fluxor/internal/subscription/download"
 	"fmt"
-	"os"
 	"path/filepath"
 )
 
@@ -13,15 +11,7 @@ import (
 type subscriptionSnapshot struct {
 	sub        config.Subscription
 	idx        int
-	mode       string
-	isActive   bool
 	proxiesDir string
-	// customRules / tunnels 是该订阅自定义规则与流量隧道的锁内副本。
-	//
-	// 必须在锁内复制：config.Current.Subscriptions 的底层数组由全局锁保护，
-	// 若在锁外直接遍历该切片读取规则/隧道，会与并发的增删构成数据竞争。
-	customRules []config.CustomRule
-	tunnels     []config.Tunnel
 	// cfg 是锁内对 config.Current 的值拷贝，供锁外打补丁时读取标量字段
 	// （端口/密钥/面板等）。注意其 Subscriptions 与全局共享同一底层数组，
 	// 因此锁外只允许读取标量字段，不得遍历该切片。
@@ -37,7 +27,6 @@ func takeSubscriptionSnapshot(subName string) (subscriptionSnapshot, bool) {
 
 	snap := subscriptionSnapshot{
 		idx:        -1,
-		mode:       config.Current.Mode,
 		proxiesDir: filepath.Join(config.CoreWorkDir, "proxies"),
 		cfg:        config.Current,
 	}
@@ -51,9 +40,6 @@ func takeSubscriptionSnapshot(subName string) (subscriptionSnapshot, bool) {
 	if snap.idx == -1 {
 		return snap, false
 	}
-	snap.isActive = snap.mode == "switch" && config.Current.ActiveSubscription == subName
-	snap.customRules = copyCustomRules(config.Current, subName)
-	snap.tunnels = copyCustomTunnels(config.Current, subName)
 	return snap, true
 }
 
@@ -78,14 +64,12 @@ func applySubscriptionMetadata(subName, updatedAt string, subInfo map[string]int
 func fetchAndPatchSubscription(snap subscriptionSnapshot, subName string) (updatedAt string, subInfo map[string]interface{}, targetFile string, err error) {
 	targetFile = filepath.Join(snap.proxiesDir, config.SanitizeSubscriptionFileName(subName))
 
-	// 强制删除已有文件（确保重新下载）
-	if err := os.Remove(targetFile); err != nil && !os.IsNotExist(err) {
-		return "", nil, targetFile, fmt.Errorf("删除旧文件失败: %w", err)
-	}
-
+	// 不再「先删旧文件再下载」：下载走原子替换（downloadToFile 写入同目录临时文件后
+	// rename），失败时本地那份可用副本原样保留。旧实现的 os.Remove 会让一次网络抖动
+	// 直接抹掉用户唯一可用的节点文件——而 config.yaml 的生成与内核重启都依赖它。
 	logx.Debug(logx.ModuleSub, "downloading subscription %q to %s", subName, targetFile)
 
-	updatedAt, subInfo, err = download.DownloadSubscriptionFile(snap.sub, snap.idx, targetFile)
+	updatedAt, subInfo, err = downloadToFile(snap.sub, snap.idx, targetFile)
 	if err != nil {
 		logx.Error(logx.ModuleSub, "download of subscription %q failed: %v", subName, err)
 		return "", nil, targetFile, fmt.Errorf("下载失败: %w", err)
@@ -100,6 +84,24 @@ func fetchAndPatchSubscription(snap subscriptionSnapshot, subName string) (updat
 	}
 	logx.Debug(logx.ModuleSub, "subscription file patched")
 	return updatedAt, subInfo, targetFile, nil
+}
+
+// runtimeSourceIsActive 复查「该订阅此刻仍是切换模式下的激活订阅」，并返回此刻的
+// 规则/隧道副本。
+//
+// 复查是必需的：下载最长可达约 30 秒，期间用户完全可以切走激活订阅、改模式或删掉
+// 这个订阅，而 snap 是下载**开始前**取的快照。若直接按 snap 里的判断写 config.yaml，
+// 运行配置会被覆盖成「已经不是激活订阅」的那一份并触发内核重载——界面显示 A、
+// 实际生效 B，且没有任何提示。
+func runtimeSourceIsActive(subName string) (rules []config.CustomRule, tunnels []config.Tunnel, active bool) {
+	config.Mu.RLock()
+	defer config.Mu.RUnlock()
+
+	if config.Current.Mode != config.ModeSwitch || config.Current.ActiveSubscription != subName {
+		return nil, nil, false
+	}
+	// 在锁内复制：Current 的切片由全局锁保护，锁外不得引用其底层数组
+	return copyCustomRules(config.Current, subName), copyCustomTunnels(config.Current, subName), true
 }
 
 // updateSubscriptionInSwitchMode 切换模式下的订阅更新逻辑，返回 needsReload 表示是否需要重载内核。
@@ -118,20 +120,19 @@ func updateSubscriptionInSwitchMode(subName string) (needsReload bool, err error
 	}
 	applySubscriptionMetadata(subName, updatedAt, subInfo)
 
-	// 如果该订阅是当前激活的订阅，则复制到 configTarget，并标记需要重载
-	if snap.isActive {
-		logx.Debug(logx.ModuleSub, "subscription %q is active, writing runtime config %s", subName, config.ConfigTarget)
-		// 自定义规则与隧道取锁内快照（snap.customRules / snap.tunnels），避免在锁外引用全局切片
-		result, err := writeRuntimeConfig(subName, snap.customRules, snap.tunnels)
-		if err != nil {
-			logx.Error(logx.ModuleSub, "writing runtime config failed: %v", err)
-			return false, err
-		}
-		logx.Info(logx.ModuleSub, "runtime config written: custom_rules_applied=%d custom_rules_skipped=%d",
-			result.Applied, len(result.Skipped))
-		return true, nil // 需要重载
+	rules, tunnels, stillActive := runtimeSourceIsActive(subName)
+	if !stillActive {
+		logx.Debug(logx.ModuleSub, "subscription %q is not the active one any more, runtime config left untouched", subName)
+		return false, nil
 	}
 
-	logx.Debug(logx.ModuleSub, "subscription %q is not active, skipping runtime config copy and reload", subName)
-	return false, nil
+	logx.Debug(logx.ModuleSub, "subscription %q is active, writing runtime config %s", subName, config.ConfigTarget)
+	result, err := writeRuntimeConfig(subName, rules, tunnels)
+	if err != nil {
+		logx.Error(logx.ModuleSub, "writing runtime config failed: %v", err)
+		return false, err
+	}
+	logx.Info(logx.ModuleSub, "runtime config written: custom_rules_applied=%d custom_rules_skipped=%d",
+		result.Applied, len(result.Skipped))
+	return true, nil // 需要重载
 }

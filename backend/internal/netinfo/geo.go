@@ -3,7 +3,7 @@ package netinfo
 import (
 	"context"
 	"encoding/json"
-	"io"
+	"fluxor/internal/httpx"
 	"net/http"
 	"sync"
 	"time"
@@ -104,7 +104,7 @@ func fetchGeoInfo(ctx context.Context, ip string) (string, string, string) {
 				RegionName string `json:"regionName"`
 				Isp        string `json:"isp"`
 			}
-			bodyBytes, _ := io.ReadAll(resp.Body)
+			bodyBytes, _ := httpx.ReadAllLimited(resp.Body, httpx.MaxUpstreamBody)
 			resp.Body.Close()
 			if err := json.Unmarshal(bodyBytes, &data); err == nil {
 				country = data.Country

@@ -311,13 +311,22 @@ func handleDeleteCustomRule(w http.ResponseWriter, r *http.Request, name string)
 		httpx.WriteJSONError(w, http.StatusBadRequest, "缺少规则 id")
 		return
 	}
-	_, _, found := findSubscription(name)
+	cfg, _, found := findSubscription(name)
 	if !found {
 		httpx.WriteJSONError(w, http.StatusNotFound, "订阅不存在: "+name)
 		return
 	}
+	// 跨模式访问的判定必须覆盖**接口的全部方法**（含 GET 与 DELETE）。
+	// 此前只有 GET/POST/PUT/PATCH 校验了模式，DELETE 漏掉：融合或自定义模式下调用
+	// 该入口仍会把订阅的规则删掉，而这份规则要等切回切换模式才用得上——用户是在
+	// 一个「界面上根本进不去」的入口上丢掉了数据。
+	if cfg.Mode != "switch" {
+		httpx.WriteJSONError(w, http.StatusBadRequest,
+			modeMismatchHint("自定义规则仅在切换模式下可用", cfg.Mode))
+		return
+	}
 
-	// 过滤在写锁内完成：found 由闭包给出，删除不存在的 id 仍按 404 如实告知
+	// 过滤在写锁内完成：removed 由闭包给出，删除不存在的 id 仍按 404 如实告知
 	var removed bool
 	err := config.UpdateSubscriptionRules(name, func(cur []config.CustomRule) ([]config.CustomRule, error) {
 		kept := make([]config.CustomRule, 0, len(cur))

@@ -40,35 +40,43 @@ type coreStateEvent struct {
 
 var coreEventHub = &coreEventHubT{subscribers: make(map[chan coreStateEvent]struct{})}
 
-// snapshot 返回当前已知状态。
-func (h *coreEventHubT) snapshot() (running, known bool) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.running, h.known
-}
+// subscriberBuffer 每个订阅者的事件通道缓冲深度。
+//
+// 状态事件只在「真正变化」时产生，正常情况下一条连接整个生命周期也收不到几条；
+// 缓冲的意义仅在于「发布路径永不阻塞」。再大的缓冲也没有额外收益——前端只关心最新状态。
+const subscriberBuffer = 4
 
 // subscribe 注册订阅者，返回事件通道与注销函数。
+//
+// 注册与「接入快照」在同一个临界区内完成，注销与「关闭通道」也在同一个临界区内完成——
+// 这两点都是必需的：
+//   - 快照与注册分开时，订阅者可能先收到增量事件、再收到一个更旧的快照，把状态写反；
+//   - 关闭通道若发生在锁外，publish 就可能在「取出订阅者」与「投递」之间撞上 close，
+//     向已关闭的通道发送会 panic（`default` 分支挡不住 panic，它只处理「无人接收」）。
+//     该 panic 一旦落在 lifecycle 里等待内核退出的那个 goroutine（非 HTTP handler，
+//     没有 net/http 的 recover 兜底）就会直接终止整个面板进程。
 func (h *coreEventHubT) subscribe() (<-chan coreStateEvent, func()) {
-	ch := make(chan coreStateEvent, 4) // 缓冲 4 条，抵御慢客户端
+	ch := make(chan coreStateEvent, subscriberBuffer)
+
 	h.mu.Lock()
 	h.subscribers[ch] = struct{}{}
-	h.mu.Unlock()
-
-	// 接入即下发当前已知状态
-	if running, known := h.snapshot(); known {
+	// 接入即下发当前已知状态；通道满则丢弃快照，前端仍可由 GET /core/status 兜底
+	if h.known {
 		select {
-		case ch <- coreStateEvent{Running: running, TS: time.Now().UnixMilli()}:
-		default: // 通道满则丢弃快照，前端仍可由 GET /core/status 兜底
+		case ch <- coreStateEvent{Running: h.running, TS: time.Now().UnixMilli()}:
+		default:
 		}
 	}
+	h.mu.Unlock()
 
 	var once sync.Once
 	unsubscribe := func() {
 		once.Do(func() {
 			h.mu.Lock()
 			delete(h.subscribers, ch)
-			h.mu.Unlock()
+			// close 与 publish 的发送共用 h.mu，因此不存在「向已关闭通道发送」的窗口
 			close(ch)
+			h.mu.Unlock()
 		})
 	}
 	return ch, unsubscribe
@@ -78,28 +86,26 @@ func (h *coreEventHubT) subscribe() (<-chan coreStateEvent, func()) {
 //
 // 仅当「首次确定状态」或「状态值与上次不同」时才推送，因此可安全地多次调用
 // （例如 StartCore 与 StopCore 都会广播，但不会产生重复事件）。
+//
+// 投递在 h.mu 内完成（而非先取快照再锁外发送）：发送一律是非阻塞的 select，
+// 临界区长度只与订阅者数量成正比，不会因为某个慢客户端而阻塞；换来的是与
+// unsubscribe 的 close 互斥，杜绝向已关闭通道发送的 panic。
 func (h *coreEventHubT) publish(running bool) {
 	// 串行化整个发布过程，避免并发启停时事件乱序
 	h.pubMu.Lock()
 	defer h.pubMu.Unlock()
 
 	h.mu.Lock()
+	defer h.mu.Unlock()
+
 	if h.known && h.running == running {
-		h.mu.Unlock()
 		return // 无变化，不广播
 	}
 	h.known = true
 	h.running = running
 
-	// 在锁内取订阅者快照，随后在锁外投递，避免持锁阻塞
-	targets := make([]chan coreStateEvent, 0, len(h.subscribers))
-	for ch := range h.subscribers {
-		targets = append(targets, ch)
-	}
-	h.mu.Unlock()
-
 	ev := coreStateEvent{Running: running, TS: time.Now().UnixMilli()}
-	for _, ch := range targets {
+	for ch := range h.subscribers {
 		select {
 		case ch <- ev:
 		default:

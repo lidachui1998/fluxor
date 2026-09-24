@@ -8,7 +8,7 @@ import { useGlobalStore } from '../store/global'
 import { useConfigStore } from '../store/config'
 import { useSubscriptionStore } from '../store/subscription'
 import ProxyGroupCard from '../components/ProxyGroupCard.vue'
-import { apiFetch } from '../utils/api'
+import { apiFetch, readErrorMessage } from '../utils/api'
 import { modeI18nKey } from '../utils/i18n-keys'
 import { useViewActive } from '../composables/useViewActive'
 
@@ -143,9 +143,14 @@ const changeMode = async (mode: string) => {
     })
     if (resp.ok) {
       globalStore.showToast(t('config.mode_switched'), 'success')
+      // 运行模式是内核配置项之一，配置页也显示它；同样登记待办让那一页切过去时补拉
+      configStore.markCoreConfigStale()
     } else {
       configs.value.mode = originalMode
-      globalStore.showToast(t('common.operation_failed'), 'error')
+      globalStore.showToast(
+        `${t('common.operation_failed')}: ${await readErrorMessage(resp)}`,
+        'error'
+      )
     }
   } catch (e) {
     configs.value.mode = originalMode
@@ -220,6 +225,13 @@ onActivated(async () => {
     // store 也会保留旧快照）。放回标记让用户下次切入本页时自动重试，
     // 而不是把这份旧快照一直挂到刷新整个页面为止。
     if (!ok) proxyStore.markNeedsRefresh()
+  }
+  // 内核常规配置（本页的模式控件显示的就是内核的 Rule/Global/Direct）也可能被别处改掉：
+  // 订阅中心「保存并应用」会重写 config.yaml 并重载内核，而模板把 mode 固定写成 rule，
+  // 于是用户在这里选过的 Global/Direct 会被悄悄改回 rule —— 不补拉的话控件会一直高亮
+  // 一个内核已经不用的模式，点击时还会因为 `mode === configs.mode` 而直接短路。
+  if (configStore.consumeCoreConfigStale()) {
+    configStore.fetchConfigs(true, true)
   }
   proxyStore.ensureQualityScores()
 })

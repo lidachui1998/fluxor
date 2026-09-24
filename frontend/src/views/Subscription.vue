@@ -374,6 +374,9 @@ const handleUpdateSub = async (index: number) => {
       rulesStore.fetchRules(true)
       rulesStore.fetchProviders(true)
       proxyStore.fetchProxies(true)
+      // 切换模式下更新激活订阅会重写 config.yaml 并重载内核，而那份文件的 mode 等字段
+      // 来自机场：内核常规配置可能因此变化，登记待办让配置/代理/概览页补拉。
+      configStore.markCoreConfigStale()
     } else {
       globalStore.showToast(`${t('subscription.operation_failed')}: ${result.message || ''}`, 'error')
       isUpdating.value[index] = false
@@ -586,8 +589,19 @@ const saveAndApply = async () => {
     })
     const result = await resp.json()
 
-    if (resp.ok && result.status === 'ok') {
-      globalStore.showToast(result.message || t('subscription.apply_success'), 'success')
+    // 三态处理。后端在「配置已写盘、但热重载内核失败」时返回 200 + status:"warning"
+    // （内核未运行是最常见的原因）——那是「已保存、未生效」，不是失败：
+    //   - 若当成失败：提示语误导（用户以为没保存），且会跳过下面的状态回刷，
+    //     于是 savedMode 停留在旧值，紧接着打开规则/隧道弹窗会被「请先保存并应用」拦下，
+    //     而用户刚点过保存，只会反复困惑；
+    //   - 待物理删除列表也必须清空，否则下次保存会重复删除同名文件。
+    // 同一约定在 CustomRulesDialog 的 notifyMutation 里处理正确，这里补齐。
+    if (resp.ok && (result.status === 'ok' || result.status === 'warning')) {
+      const isWarning = result.status === 'warning'
+      globalStore.showToast(
+        result.message || (isWarning ? t('subscription.apply_unsynced') : t('subscription.apply_success')),
+        isWarning ? 'warning' : 'success'
+      )
       // 清空待物理删除列表
       pendingPhysicalDeletes.value = []
       // 重新加载配置，保持前后端数据一致（必须 force，否则只会读回本地旧快照）
@@ -596,6 +610,11 @@ const saveAndApply = async () => {
       rulesStore.fetchRules(true)
       rulesStore.fetchProviders(true)
       proxyStore.fetchProxies(true)
+      // 登记「内核常规配置已过期」：本次保存重写了 config.yaml 的 mixed-port /
+      // tproxy-port / secret / external-controller 并重载了内核，而配置页那一份
+      // /configs 快照不会自己更新——它可能在别处挂着，也可能用户随后才切过去。
+      // 只留待办，由配置页在 onActivated 里消费（同一套做法见 utils/staleFlag.ts）。
+      configStore.markCoreConfigStale()
     } else {
       globalStore.showToast(`${t('subscription.operation_failed')}: ${result.message || ''}`, 'error')
     }

@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, reactive } from 'vue'
+import { ref, onMounted, onUnmounted, onActivated, onDeactivated, computed, reactive } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { apiFetch } from '../utils/api'
+import { apiFetch, readErrorMessage } from '../utils/api'
 import { useViewActive } from '../composables/useViewActive'
 import {
   ArrowDownOutline,
@@ -391,9 +391,16 @@ const handleCloseConnection = async (id: string) => {
         })
       }
       activeConnections.value = activeConnections.value.filter(c => c.id !== id)
+    } else {
+      // 失败必须让用户看见：此前两个分支都不提示，点「断开」没反应时用户只会反复点，
+      // 而连接其实一条都没断。内核的直接原因（连接已消失 / 内核未运行）在响应体里。
+      globalStore.showToast(
+        `${t('common.operation_failed')}: ${await readErrorMessage(resp)}`,
+        'error'
+      )
     }
   } catch (e) {
-    console.error('断开连接失败', e)
+    globalStore.showToast(`${t('common.error')}: ${(e as Error).message}`, 'error')
   }
 }
 
@@ -416,9 +423,14 @@ const handleCloseAll = async () => {
           })
         })
         activeConnections.value = []
+      } else {
+        globalStore.showToast(
+          `${t('common.operation_failed')}: ${await readErrorMessage(resp)}`,
+          'error'
+        )
       }
     } catch (e) {
-      console.error('批量断开连接失败', e)
+      globalStore.showToast(`${t('common.error')}: ${(e as Error).message}`, 'error')
     }
   }
 }
@@ -461,11 +473,23 @@ const extraColumns = computed(() => {
 })
 
 onMounted(() => {
-  connStore.subscribe()
   window.addEventListener('resize', handleResize)
 })
 
+// 连接流跟随**视图激活态**而非挂载态：本视图在 <KeepAlive :max="7"> 内，切走只触发
+// onDeactivated，onUnmounted 要等缓存淘汰/应用销毁才触发。写在 onMounted/onUnmounted
+// 会让连接 WebSocket 在整个会话里一直开着（概览页也订阅了同一条流），持续推送全量
+// 连接快照。store 侧是引用计数 + 3s 去抖，天然适配页面级开关。
+onActivated(() => {
+  connStore.subscribe()
+})
+
+onDeactivated(() => {
+  connStore.unsubscribe()
+})
+
 onUnmounted(() => {
+  // 应用直接销毁时兜底释放（退订是引用计数、可重复调用）
   connStore.unsubscribe()
   window.removeEventListener('resize', handleResize)
 })

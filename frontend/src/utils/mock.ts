@@ -272,6 +272,52 @@ const mockProxies: any = {
   'REJECT': { name: 'REJECT', type: 'Reject', history: [] }
 }
 
+/** provider 里承载的节点名（与 mockProxies 中的节点保持一致） */
+const mockProviderNodeNames = ['香港 01 (XUDP)', '日本 01 [IPLc]']
+
+/**
+ * 组装 GET /providers/proxies 的响应，形状与内核下发的完全一致：
+ *
+ *   { providers: { <订阅名>: { ...元数据, proxies: [节点...] }, default: { proxies: [代理组...] } } }
+ *
+ * 前端的融合模式是这样消费它的：遍历 providers 收集所有节点（排除 default），
+ * 再从 providers.default 里挑出 type 为 Selector/URLTest/... 的代理组。形状不对
+ * （例如把 `{proxies: {...}}` 当成 provider 表）就会静默得到空列表。
+ *
+ * 节点的 `provider-name` 尤其重要：前端据此决定测速打 /proxies/{name}/delay
+ * 还是 /providers/proxies/{provider}/{node}/healthcheck——缺了它，融合模式下的
+ * 节点测速会走错接口。
+ */
+const buildMockProviders = (): Record<string, any> => {
+  const providers: Record<string, any> = {}
+
+  const declared = (mockSubConfig.subscriptions || []).map(s => s.name)
+  const providerNames = declared.length > 0 ? declared : ['离线模拟订阅']
+
+  providerNames.forEach((name, idx) => {
+    providers[name] = {
+      name,
+      vehicleType: 'HTTP',
+      type: 'Proxy',
+      updatedAt: new Date().toISOString(),
+      subscriptionInfo: mockSubConfig.subscriptions?.[idx]?.subscription_info || {},
+      proxies: mockProviderNodeNames.map(nodeName => ({
+        ...mockProxies[nodeName],
+        'provider-name': name
+      }))
+    }
+  })
+
+  // default 承载代理组（内核把 config.yaml 里静态的 proxy-groups 放在这里）
+  providers['default'] = {
+    name: 'default',
+    vehicleType: 'Compatible',
+    type: 'Proxy',
+    proxies: ['GLOBAL', '节点选择', '自动选择'].map(n => mockProxies[n])
+  }
+  return providers
+}
+
 const mockRuleProviders = {
   providers: {
     "AdBlock": { name: "AdBlock", type: "Rule", behavior: "classical", ruleCount: 1250, updatedAt: "2026-06-20T10:15:30Z" },
@@ -724,6 +770,34 @@ export function handleMockFetch(path: string, options: RequestInit = {}): Respon
       return reply({ status: 'ok', message: payload.mode === 'custom' ? '自定义节点配置已生成并成功重载内核' : '配置文件已生成并成功重载内核' })
     }
     return reply({ status: 'ok' })
+  }
+
+  // ===== provider 相关必须在 /proxies 之前判定 =====
+  //
+  // 后端的 /providers/proxies 与 /proxies 是两个接口，而这里原先只有一条
+  // `cleanPath.endsWith('/proxies')`——它同时匹配 '/proxies' 与 '/providers/proxies'，
+  // 于是融合模式（离线模拟的默认模式）拿到的是 `{proxies: {...}}` 而不是
+  // `{providers: {<订阅名>: {...}}}`，前端遍历 providers 得到空对象，代理页永远空白；
+  // /providers/proxies/{订阅}/{节点}/healthcheck 也因为同样的顺序问题落进了 delay 分支。
+  // 模拟器与真实后端契约不一致最危险的地方就在于：开发期看不出问题，上线才炸。
+  if (cleanPath.endsWith('/providers/proxies')) {
+    return reply({ providers: buildMockProviders() })
+  }
+  if (cleanPath.includes('/providers/proxies/')) {
+    const parts = cleanPath.split('/providers/proxies/')[1]?.split('/') || []
+    const providerName = decodeURIComponent(parts[0] || '')
+    // /providers/proxies/{订阅}/{节点}/healthcheck → 内核返回 {delay}
+    if (parts.length >= 3 && parts[2] === 'healthcheck') {
+      const nodeName = decodeURIComponent(parts[1] || '')
+      const delay = Math.floor(30 + Math.random() * 200)
+      if (mockProxies[nodeName]) {
+        mockProxies[nodeName].history = [{ time: new Date().toISOString(), delay }]
+      }
+      return reply({ delay })
+    }
+    const providers = buildMockProviders()
+    if (providers[providerName]) return reply(providers[providerName])
+    return reply({ message: `provider ${providerName} not found` }, 404)
   }
 
   if (cleanPath.endsWith('/proxies')) return reply({ proxies: mockProxies })

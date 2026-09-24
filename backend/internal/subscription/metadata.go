@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"fluxor/internal/config"
 	"fluxor/internal/core"
+	"fluxor/internal/httpx"
 	"fluxor/internal/logx"
 	"fluxor/internal/subscription/download"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"time"
@@ -24,7 +24,7 @@ func fetchSubscriptionMetadataFromCore(subName string) (updatedAt string, subInf
 	if resp.StatusCode != http.StatusOK {
 		return "", nil, fmt.Errorf("状态码: %d", resp.StatusCode)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := httpx.ReadAllLimited(resp.Body, httpx.MaxUpstreamBody)
 	if err != nil {
 		return "", nil, err
 	}

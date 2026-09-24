@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // staticFS 内嵌前端构建产物 (frontend/dist) 的文件系统根
@@ -42,6 +43,57 @@ func init() {
 		panic(err)
 	}
 	staticFS = sub
+}
+
+// HTTP 服务器的超时与限额。
+//
+// 面板没有任何认证，因此不能假设调用方都是善意的：裸 http.Serve 既不限制握手/读取
+// 时长，也不限制请求体大小，一个「只连不发」或「发超大 body」的客户端就能长期占用
+// 内存与连接。
+//
+// 取值取舍：
+//   - ReadHeaderTimeout 5s：只覆盖握手阶段，正常浏览器毫秒级完成，慢速攻击封顶；
+//   - ReadTimeout 60s：覆盖含请求体在内的整个请求读取。最慢的正常场景是弱网下提交
+//     「保存并应用」那几 KB 的 JSON，60s 余量充足；
+//   - WriteTimeout 不设：本服务同时承载 SSE（/core/events）与升级后的 WebSocket
+//     长连接，任何写超时都会把它们掐断。这两条链路的生命周期由各自的协议管理
+//     （SSE 有 25s 心跳，WS 由连接两端的读写错误退出），不需要服务器兜底；
+//   - IdleTimeout 60s：回收空闲的 keep-alive 连接。
+const (
+	serverReadHeaderTimeout = 5 * time.Second
+	serverReadTimeout       = 60 * time.Second
+	serverIdleTimeout       = 60 * time.Second
+	// maxRequestBody 请求体上限。所有写接口的载荷都是几 KB 的 JSON（订阅链接、自定义
+	// 规则/隧道、内核配置片段），1 MiB 留出两个数量级的余量；再大的请求不可能是合法
+	// 操作，直接由 MaxBytesReader 拒掉，不必先读进内存。
+	maxRequestBody int64 = 1 << 20
+	// maxRequestHeaderBytes 请求头上限（默认 1 MiB 过于宽松，本项目没有任何长头需求）。
+	maxRequestHeaderBytes = 1 << 16
+)
+
+// newHTTPServer 构造带超时的服务器。两个监听器（unix socket 与可选 TCP）各用一个。
+func newHTTPServer(h http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           h,
+		ReadHeaderTimeout: serverReadHeaderTimeout,
+		ReadTimeout:       serverReadTimeout,
+		IdleTimeout:       serverIdleTimeout,
+		MaxHeaderBytes:    maxRequestHeaderBytes,
+	}
+}
+
+// newServerHandler 给全部路由套一层请求体上限。
+//
+// 放在最外层而不是逐个 handler 里加，是为了不依赖「以后新增的接口记得自己加」：
+// 超限时 net/http 会向客户端回 413 并关闭连接，handler 侧读到的是一个明确的
+// "http: request body too large" 错误。
+func newServerHandler(mux http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
 
 func main() {
@@ -159,6 +211,8 @@ func main() {
 	tproxy.ResetOnStartup()
 	// 清理上次非优雅退出遗留的临时内核进程与临时文件
 	core.CleanupStaleTempCores()
+	// 清理下载中途被杀留下的 *.downloading.yaml（不参与任何流程，只占空间）
+	subscription.CleanupStaleDownloads()
 
 	if _, err := os.Stat(config.ConfigTarget); os.IsNotExist(err) {
 		// 按当前模式生成首份配置：
@@ -166,11 +220,14 @@ func main() {
 		//     基础配置，用户保存过的节点在重启后不生效）；
 		//   - 其余模式沿用融合式生成（无订阅时其内部会退化为基础配置）。
 		// 切换模式的首启仍走这条：此时订阅文件可能尚未下载，只能先生成骨架。
+		// 加锁取快照：启动阶段虽然还没开始服务，但定时更新 goroutine（StartAllTimers）
+		// 已经可能触发 assembleCurrent 写入 Current，无锁读同样是竞争。
+		snap := config.CurrentSnapshot()
 		generate := configgen.GenerateConfig
-		if config.Current.Mode == config.ModeCustom {
+		if snap.Mode == config.ModeCustom {
 			generate = configgen.GenerateCustomConfig
 		}
-		if err := generate(config.Current); err != nil {
+		if err := generate(snap); err != nil {
 			logx.Error(logx.ModuleGen, "failed to generate initial config.yaml: %v", err)
 		} else {
 			logx.Info(logx.ModuleGen, "initial config.yaml generated: %s", config.ConfigTarget)
@@ -420,21 +477,25 @@ func main() {
 	core.PublishCoreState(core.IsCoreRunning())
 
 	// === 启动服务 ===
-	if listener != nil {
+	//
+	// 用显式构造的 http.Server 取代裸 http.Serve：裸 Serve 没有读超时，一个只连不发的
+	// 客户端就能长期占住连接与 goroutine（面板无认证，默认可达范围取决于监听地址，
+	// 不能假设调用方都是善意的）。handler 外面再套一层请求体上限，见 newServerHandler。
+	serve := func(l net.Listener, label string) {
+		srv := newHTTPServer(newServerHandler(mux))
 		go func() {
-			err := http.Serve(listener, mux)
+			err := srv.Serve(l)
 			if err != nil && !strings.Contains(err.Error(), "use of closed network connection") {
-				logx.Error(logx.ModuleMain, "unix socket http server stopped unexpectedly: %v", err)
+				logx.Error(logx.ModuleMain, "%s http server stopped unexpectedly: %v", label, err)
 			}
 		}()
 	}
+	if listener != nil {
+		serve(listener, "unix socket")
+	}
 	if tcpListener != nil {
-		go func() {
-			logx.Info(logx.ModuleMain, "http server started on tcp address: %s", config.TcpAddr)
-			if err := http.Serve(tcpListener, mux); err != nil && !strings.Contains(err.Error(), "use of closed network connection") {
-				logx.Error(logx.ModuleMain, "tcp http server stopped unexpectedly: %v", err)
-			}
-		}()
+		logx.Info(logx.ModuleMain, "http server started on tcp address: %s", config.TcpAddr)
+		serve(tcpListener, "tcp")
 	}
 
 	// 等待退出信号

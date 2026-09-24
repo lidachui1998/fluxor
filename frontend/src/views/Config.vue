@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onActivated } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { apiFetch } from '../utils/api'
+import { apiFetch, readErrorMessage } from '../utils/api'
 import { OptionsOutline, HardwareChipOutline, ShieldCheckmarkOutline, BuildOutline, SearchOutline, SyncOutline, ColorPaletteOutline, SettingsOutline, InformationCircleOutline, DocumentTextOutline } from '@vicons/ionicons5'
 import { useGlobalStore } from '../store/global'
 import { storeToRefs } from 'pinia'
@@ -27,12 +27,6 @@ const coreVersion = computed(() => {
   if (stats.value.coreVersion === CORE_VERSION_UNKNOWN) return ''
   return 'v' + stats.value.coreVersion
 })
-
-const onTproxyPortClick = () => {
-  if (configStore.tproxyEnabled) {
-    globalStore.showToast(t('config.tproxy_port_readonly_warning'), 'warning')
-  }
-}
 
 export interface CoreStatus {
   running: boolean
@@ -184,7 +178,12 @@ const saveTproxyExceptions = async () => {
 }
 
 // 统一修改配置
-const patchConfig = async (payload: Partial<ConfigData>) => {
+//
+// 失败时必须**回读服务端**：调用方（FormSwitch / 端口输入框）已经用 v-model 把新值
+// 写进了 configs，而内核并没有接受它。若只弹一句提示、不做任何回读，界面上会留下一个
+// 「看起来已生效、实际没生效」的开关——比回滚成旧值更难发现。这里用 fetchConfigs 的
+// 静默模式把内核的真实状态拉回来覆盖本地，并在提示里带上后端给出的原因。
+const patchConfig = async (payload: Partial<ConfigData>): Promise<boolean> => {
   try {
     const resp = await apiFetch('/configs', {
       method: 'PATCH',
@@ -194,12 +193,32 @@ const patchConfig = async (payload: Partial<ConfigData>) => {
     if (resp.ok) {
       // 静默同步：仅就地更新开关/端口/选项状态，不触发整卡遮罩与重渲染
       fetchConfigs(false, true)
-    } else {
-      globalStore.showToast(t('common.operation_failed'), 'error')
+      return true
     }
+    globalStore.showToast(
+      `${t('common.operation_failed')}: ${await readErrorMessage(resp)}`,
+      'error'
+    )
+    // 强制回读（forceLoading=false 但 silent=false 会走整卡加载，此处仍用静默模式 +
+    // 显式 force，确保拿到的是内核此刻的真实取值）
+    fetchConfigs(true, true)
+    return false
   } catch (e) {
     globalStore.showToast(`${t('common.error')}: ${(e as Error).message}`, 'error')
+    fetchConfigs(true, true)
+    return false
   }
+}
+
+// tproxyPortBeforeEdit 记录「聚焦端口输入框那一刻」的取值。
+//
+// v-model 会在输入过程中直接改写 configs['tproxy-port']，等到 savePorts 执行时已经
+// 无法判断用户是否真的改过；而这个判断是必要的——端口表单是「一失焦就整体提交」的，
+// 只是点一下输入框再点走（移动端很容易发生）不该弹「已修改」的提示。
+const tproxyPortBeforeEdit = ref<number | null>(null)
+
+const onTproxyPortFocus = () => {
+  tproxyPortBeforeEdit.value = configs.value['tproxy-port'] ?? 0
 }
 
 const toggleAllowLan = () => {
@@ -251,14 +270,33 @@ const savePorts = async (e?: Event) => {
     return
   }
 
+  // TProxy 端口与前一次「聚焦时记下的取值」比较：只有真的改了才需要额外反馈
+  const tproxyPortChanged = configStore.tproxyEnabled
+    && tproxyPortBeforeEdit.value !== null
+    && tproxyPortBeforeEdit.value !== tproxyPort
+
   // 仅 PATCH 内核运行时配置，不触碰订阅配置的持久化和内存状态
-  await patchConfig({
+  const ok = await patchConfig({
     port,
     'socks-port': socksPort,
     'redir-port': redirPort,
     'tproxy-port': tproxyPort,
     'mixed-port': mixedPort
   })
+
+  if (tproxyPortChanged) {
+    // 失败时 patchConfig 已经弹过带后端原因的 error toast（例如「TPROXY 已启用，
+    // 不能把端口设为 0」），这里不再叠加一条。
+    if (ok) {
+      globalStore.showToast(t('config.tproxy_port_updated'), 'success')
+      tproxyPortBeforeEdit.value = tproxyPort
+    } else {
+      // 失败时后端已把端口回滚、上面的 fetchConfigs 会把内核真实取值拉回来，
+      // 此时「编辑前取值」已无意义：置空等下次聚焦重新记录，否则用户随即再失焦
+      // 会被判成「刚改过」而多弹一次成功提示。
+      tproxyPortBeforeEdit.value = null
+    }
+  }
 }
 
 const saveTun = async (e?: Event) => {
@@ -733,6 +771,22 @@ onMounted(async () => {
   fetchTproxyIPv6()
 })
 
+// 本页的 configs 来自启动时的那一次 GET /configs（onMounted 只拉网卡与两个 TProxy 开关），
+// 而 /configs 会被**别的页面**改掉：订阅中心「保存并应用」会重写 config.yaml 的
+// mixed-port / tproxy-port / secret / external-controller 并重载内核，代理页切 mode 也改内核配置。
+// 此前切回本页看到的仍是旧值（实测：订阅中心改 tproxy 端口后本页那一栏不刷新，而 nft 规则
+// 其实已按新端口重建）。这里消费别处留下的待办，静默补拉一次——silent 模式不触发整卡遮罩，
+// 用户看不到闪烁；没有待办时不发任何请求。
+onActivated(async () => {
+  if (!configStore.consumeCoreConfigStale()) return
+  // 内核的常规配置与 TProxy 开关状态一起对齐：重载后若规则重建失败，后端会把开关
+  // 回滚为关闭（ReapplyTproxyRules 的语义），只刷新 configs 会让开关显示不实。
+  await Promise.all([
+    fetchConfigs(true, true),
+    configStore.refreshTproxyState(),
+  ])
+})
+
 </script>
 
 <template>
@@ -862,14 +916,17 @@ onMounted(async () => {
             </div>
             <div class="flex flex-col gap-1 col-span-2">
               <label class="text-xs font-semibold text-slate-600 dark:text-slate-400">{{ t('config.tproxy_port') }}</label>
-              <input type="number" v-model.number="configs['tproxy-port']" 
+              <!-- 这里**不能**用 :readonly 来「保护」端口：移动端只读输入框点击后不会
+                   拉起虚拟键盘（它不是 disabled，所以点击事件照常触发），用户看到一句
+                   提示却永远改不成端口——真机上的表现就是「点了没反应、键盘不弹」。
+                   后端已支持「启用中改端口」：先落库、再改内核，内核拒绝就自动回滚，
+                   成功后才按新端口重建规则（失败还会关掉开关并如实报错）。
+                   改动的结果（成功/失败）由保存后的 toast 反馈，不再用内联文案占位。 -->
+              <input type="number" v-model.number="configs['tproxy-port']"
                 min="0" max="65535" step="1"
-                @blur="savePorts" @keyup.enter="savePorts" 
+                @focus="onTproxyPortFocus" @blur="savePorts" @keyup.enter="savePorts"
                 :placeholder="t('config.port_disabled_hint')"
-                :readonly="configStore.tproxyEnabled"
-                @click="onTproxyPortClick"
-                class="px-3 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 focus:ring-2 focus:ring-accent outline-none w-full"
-                :class="configStore.tproxyEnabled ? 'cursor-not-allowed opacity-60' : ''" />
+                class="px-3 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 focus:ring-2 focus:ring-accent outline-none w-full" />
             </div>
           </div>
         </div>

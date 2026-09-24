@@ -32,6 +32,29 @@ export async function apiFetch(path: string, options: RequestInit = {}): Promise
   }
 }
 
+/**
+ * 从错误响应里取出后端给出的原因。
+ *
+ * 后端每个失败分支都写了可读的原因（httpx.WriteJSONError 的形状是
+ * {"status":"error","message":"..."}，内核透传的失败也带 message），前端许多调用点
+ * 却只提示一句「操作失败」，把这条最有用的信息丢掉了。
+ *
+ * 用 resp.clone() 读取，避免消费掉调用方的响应体（同一个 Response 的 body 只能读一次）。
+ * 取不到时退回 `HTTP <status>`，至少能区分 400/404/500。
+ */
+export async function readErrorMessage(resp: Response): Promise<string> {
+  const fallback = `HTTP ${resp.status}`;
+  try {
+    const data = await resp.clone().json();
+    if (data && typeof data.message === 'string' && data.message.trim() !== '') {
+      return data.message;
+    }
+  } catch {
+    // 响应体不是 JSON（空体 / 上游错误页）：退回状态码
+  }
+  return fallback;
+}
+
 export interface WsHandlers {
   onOpen?: () => void;
   onError?: (ev: Event) => void;

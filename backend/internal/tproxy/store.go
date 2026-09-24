@@ -243,12 +243,16 @@ func SetTproxyEnabled(enabled bool) {
 // 因此在冷启动时无条件把状态归零，并清除任何残留规则，让内存态、磁盘态与
 // 内核态三者重新一致。用户需要 TProxy 时再手动开启。
 func ResetOnStartup() {
+	// 先取「上一次是否处于启用态」再归零：顺序反了就只能读到自己刚写的 false，
+	// 归零这件事在日志里永远静默（上一次非优雅退出留下的残留规则也就无从察觉）。
+	wasEnabled := LoadTproxyEnabled()
+
 	// 先清残留规则（不依赖当前布尔值，确保任何残留都被移除）
 	DisableTProxyRules()
 
 	SetTproxyEnabled(false)
 
-	if LoadTproxyEnabled() {
+	if wasEnabled {
 		logx.Info(logx.ModuleTproxy, "previous state was enabled: reset to disabled on cold start and stale rules were cleaned")
 	}
 }

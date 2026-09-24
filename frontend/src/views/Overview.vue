@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick, computed, watch } from 'vue'
+import { ref, onMounted, onUnmounted, onActivated, onDeactivated, nextTick, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { apiFetch } from '../utils/api'
 import { modeI18nKey } from '../utils/i18n-keys'
@@ -859,16 +859,44 @@ onMounted(() => {
     overviewStore.primeHistory(maxPoints)
     initCanvas()
     observeTheme()
-    overviewStore.subscribeStatus()
-    overviewStore.subscribeTraffic()
-    overviewStore.subscribeMemory()
-    connectionsStore.subscribe()
     refreshLocalGroup()
     refreshProxyGroup()
   })
 })
 
+// 数据订阅跟随**视图激活态**，而不是挂载态。
+//
+// 本视图在 <KeepAlive :max="7"> 内：切到别的标签页只触发 onDeactivated，onUnmounted
+// 要等缓存被淘汰或应用销毁才触发。把订阅写成 onMounted/onUnmounted 的后果是——只要
+// 用户进过一次概览页，流量、内存、连接三路 WebSocket 就在**整个会话**里一直开着：
+// 每次流量事件（秒级）都会触发历史入队与 Canvas 重绘，用户在别的页面上也在持续付出
+// CPU 与电量（移动端尤其明显）。store 侧本来就有引用计数与 3s 去抖，天然适配这种
+// 「页面级开关」；首次挂载时 onActivated 紧跟 onMounted 触发，因此不必在两处都订阅。
+onActivated(() => {
+  overviewStore.subscribeStatus()
+  overviewStore.subscribeTraffic()
+  overviewStore.subscribeMemory()
+  connectionsStore.subscribe()
+
+  // 本页也读内核常规配置（「代理模式」那一栏显示的就是 configs.mode），而它会被
+  // 别处改掉：订阅中心「保存并应用」会重写 config.yaml 并重载内核，模板把 mode 固定
+  // 写成 rule，于是用户选过的 Global/Direct 会被改回 rule。标记由三个页面共用，
+  // 谁先激活谁补拉，另外两页读的是同一份 store 状态，也就一起新鲜了。
+  if (configStore.consumeCoreConfigStale()) {
+    configStore.fetchConfigs(true, true)
+  }
+})
+
+onDeactivated(() => {
+  overviewStore.unsubscribeStatus()
+  overviewStore.unsubscribeTraffic()
+  overviewStore.unsubscribeMemory()
+  connectionsStore.unsubscribe()
+})
+
 onUnmounted(() => {
+  // 应用直接销毁（没有先触发 onDeactivated）时也要释放订阅；store 的退订是引用计数
+  // 且可重复调用，多调一次是安全的
   overviewStore.unsubscribeStatus()
   overviewStore.unsubscribeTraffic()
   overviewStore.unsubscribeMemory()

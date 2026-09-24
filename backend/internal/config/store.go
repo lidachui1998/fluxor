@@ -88,7 +88,15 @@ func (s *Store[T]) load() error {
 		if os.IsNotExist(err) {
 			return nil
 		}
-		return fmt.Errorf("读取 %s 失败: %w", s.Name, err)
+		// 读盘失败（EACCES / EIO / 目录不存在等）同样必须拒绝后续写入。
+		//
+		// 此时内存态已在上面回落到默认值，而磁盘上的原文件仍然完好。若继续放行写入，
+		// 下一次保存就会把「默认值」覆盖到用户的真实配置上——这是最隐蔽的一种数据丢失：
+		// 没有报错、没有备份，只是某次重启后配置变成了初始状态。
+		s.corrupt = true
+		logx.Error(logx.ModuleConfig, "failed to read %s, loaded defaults and disabled writes (fix permissions or restore the file, then restart): %v",
+			s.Name, err)
+		return fmt.Errorf("读取 %s 失败（已停止写入以免用默认值覆盖磁盘内容）: %w", s.Name, err)
 	}
 	if len(bytes.TrimSpace(data)) == 0 {
 		return nil
@@ -116,6 +124,20 @@ func (s *Store[T]) load() error {
 		s.Normalize(&s.value)
 	}
 	return nil
+}
+
+// Damaged 报告该 store 当前是否处于「内容不可信」状态：内容损坏（解析失败）或读盘失败。
+//
+// 两种情况都会让内存态回落到默认值，而磁盘上的原始内容并未被清空，因此**都不能**
+// 把内存态当作真相使用——尤其是 GCResources 这类「按内存态反推磁盘该删什么」的逻辑，
+// 一旦以默认值（订阅表为空）为基底，就会把别的文件里的数据全部判成孤儿。
+//
+// 与 Update 的拒绝写入是同一判据的两个面：内部拒绝写，外部（跨文件维护逻辑）据此
+// 决定要不要动手。
+func (s *Store[T]) Damaged() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.corrupt
 }
 
 // View 在锁内以只读方式访问内存态。

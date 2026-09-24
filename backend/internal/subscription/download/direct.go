@@ -2,8 +2,8 @@ package download
 
 import (
 	"fluxor/internal/config"
+	"fluxor/internal/httpx"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -51,7 +51,7 @@ func tryDirectDownload(sub config.Subscription, targetFile string) (updatedAt st
 	}
 
 	// 读取响应体
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := httpx.ReadAllLimited(resp.Body, httpx.MaxSubscriptionBody)
 	if err != nil {
 		return "", nil, err
 	}

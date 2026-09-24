@@ -113,8 +113,17 @@ func LoadAll() {
 	}
 
 	assembleCurrent()
-	// 订阅已被删除、或迁移前遗留的资源条目：启动时清一次
-	GCResources()
+	// 启动时**只探测不回收**。
+	//
+	// 回收需要「当前订阅表」作为判据，而它来自 settings.json：settings 不可信时
+	// （内容损坏 / 读盘失败）内存态是空订阅表，此时若照常回收，会把 rules.json /
+	// tunnels.json / subscription-meta.json 里所有按订阅名存放的条目判成孤儿并删除，
+	// 且这三份文件没有备份——一次解析失败就能毁掉用户全部自定义规则与隧道。
+	//
+	// 孤儿本身不进生成链路（生成按订阅名查找），回收只是「让文件干净」而非正确性要求，
+	// 因此完全可以推迟到下一次 SaveSettings（那时 settings 一定刚被成功写入）。
+	// 这里只记一条日志，让排障时知道文件里有待回收的条目。
+	probeOrphanResources()
 
 	Mu.RLock()
 	defer Mu.RUnlock()
@@ -495,14 +504,14 @@ func renameResources(pairs []renamePair) {
 //
 // 这些孤儿不会进入配置生成链路（生成按订阅名查找，查不到即不注入），因此回收是
 // 「让文件保持干净」而不是正确性要求——正因如此，拆文件才不需要跨文件事务。
+//
+// 调用方仅限 SaveSettings（settings 刚刚成功写入，订阅表一定是真相）。启动路径
+// 走 probeOrphanResources：那时 settings 可能不可信，用它反推该删什么会毁数据。
 func GCResources() {
-	var names map[string]struct{}
-	settingsStore.View(func(s *Settings) {
-		names = make(map[string]struct{}, len(s.Subscriptions))
-		for _, ref := range s.Subscriptions {
-			names[ref.Name] = struct{}{}
-		}
-	})
+	names, ok := subscriptionNamesForGC()
+	if !ok {
+		return
+	}
 
 	gcStore(rulesStore, names, func(f *RulesFile, keep map[string]struct{}) int {
 		return dropMissing(f.BySub, keep)
@@ -513,6 +522,60 @@ func GCResources() {
 	gcStore(metaStore, names, func(f *MetaFile, keep map[string]struct{}) int {
 		return dropMissing(f.Subscriptions, keep)
 	}, "orphan metadata")
+}
+
+// probeOrphanResources 只统计、不删除（启动路径用）。
+//
+// 与 GCResources 共用同一套判据，但把「发现孤儿」降级为一条日志：启动阶段 settings
+// 的可靠性无法保证，宁可让文件里多留几条用不到的条目，也不能拿一份可能失真的订阅表
+// 去删另一份文件里的数据。
+func probeOrphanResources() {
+	names, ok := subscriptionNamesForGC()
+	if !ok {
+		return
+	}
+	total := 0
+	for _, n := range []int{
+		probeStore(rulesStore, names, "orphan custom rules"),
+		probeStore(tunnelsStore, names, "orphan tunnels"),
+		probeStore(metaStore, names, "orphan metadata"),
+	} {
+		total += n
+	}
+	if total > 0 {
+		logx.Info(logx.ModuleConfig,
+			"found %d orphan resource entries left by removed subscriptions; they are unused and will be collected on the next settings save", total)
+	}
+}
+
+// probeStore 统计单个 store 的孤儿条目数并记日志（只读）。
+func probeStore[T any](store *Store[T], keep map[string]struct{}, label string) int {
+	n := 0
+	store.View(func(v *T) { n = probeOrphans(v, keep) })
+	if n > 0 {
+		logx.Info(logx.ModuleConfig, "orphan entries detected: %s in %s: count=%d", label, store.Name, n)
+	}
+	return n
+}
+
+// subscriptionNamesForGC 取出可作为回收判据的订阅名集合。
+//
+// ok=false 表示 settings 当前不可信（内容损坏或读盘失败，内存态是默认值），
+// 此时任何以它为 keep 集合的删除都必须放弃。
+func subscriptionNamesForGC() (map[string]struct{}, bool) {
+	if settingsStore.Damaged() {
+		logx.Error(logx.ModuleConfig,
+			"settings store is not healthy (corrupt or unreadable); skipping resource garbage collection "+
+				"to avoid deleting rules/tunnels/metadata that are still in use")
+		return nil, false
+	}
+	names := map[string]struct{}{}
+	settingsStore.View(func(s *Settings) {
+		for _, ref := range s.Subscriptions {
+			names[ref.Name] = struct{}{}
+		}
+	})
+	return names, true
 }
 
 // gcStore 执行一次「删除名字不在 keep 中的条目」，仅在确有删除时落盘。

@@ -13,13 +13,16 @@ import (
 func HandleSubscribeConfigAPI(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		config.Mu.RLock()
-		defer config.Mu.RUnlock()
-
-		// 自定义节点在磁盘上只存「与协议默认值不同的字段」，界面需要完整取值才能
-		// 正确预填表单，因此在读取路径上补齐（内存与磁盘仍保持精简）。
-		// 复制一份结构体再替换切片：不能就地改写 config.Current。
-		view := config.Current
+		// 锁内只做数据取用，**不**在网络写出期间持锁。
+		//
+		// 响应体包含全部订阅注册表与手工节点，MaterializeAll 还要为每个手工节点补齐
+		// 全量协议字段。若把 json.Encode 也留在锁内，一个不读响应（或链路极慢）的客户端
+		// 就能长期占住读锁；而 Go 的 RWMutex 在有写者排队后会阻塞后续读者，于是不只是
+		// 「保存并应用」要排队，core.CoreRequest / wsproxy / quality / tproxy 等十余处
+		// 读 Current 的路径会一起卡住。
+		//
+		// 取一份加锁快照、在锁外补齐并编码：复制结构体再替换切片，不就地改写 config.Current。
+		view := config.CurrentSnapshot()
 		view.CustomNodes = nodespec.MaterializeAll(view.CustomNodes)
 
 		w.Header().Set("Content-Type", "application/json")
@@ -31,6 +34,26 @@ func HandleSubscribeConfigAPI(w http.ResponseWriter, r *http.Request) {
 		var newConfig config.SubscribeConfig
 		if err := json.NewDecoder(r.Body).Decode(&newConfig); err != nil {
 			httpx.WriteJSONError(w, http.StatusBadRequest, "无效的请求格式: "+err.Error())
+			return
+		}
+		// 模式与档位先归一化再落库：落一个不存在的取值进 settings.json 之后，
+		// 生成链路、定时器启停会各自走进「既不是 A 也不是 B」的分支，行为无从预期。
+		mode, err := config.NormalizeMode(newConfig.Mode)
+		if err != nil {
+			httpx.WriteJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		newConfig.Mode = mode
+		ruleGroup, err := config.NormalizeRuleGroup(newConfig.RuleGroup, mode)
+		if err != nil {
+			httpx.WriteJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		newConfig.RuleGroup = ruleGroup
+		// 端口在写盘前校验：前端那套 1025-65535 + 不重复的规则只是体验，后端才是边界，
+		// 绕过前端写入的非法端口会让内核起不来（表现为「配置加载失败」，很难归因到端口）。
+		if err := config.ValidateLocalPorts(newConfig); err != nil {
+			httpx.WriteJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		if newConfig.MetaBackendURL != "" && !httpx.BackendURLRegex.MatchString(newConfig.MetaBackendURL) {

@@ -3,8 +3,8 @@ package netinfo
 import (
 	"context"
 	"encoding/json"
+	"fluxor/internal/httpx"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -49,7 +49,7 @@ func fetchPublicIP(ctx context.Context, apiURL, proxyAddr string) (string, error
 		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := httpx.ReadAllLimited(resp.Body, httpx.MaxUpstreamBody)
 	if err != nil {
 		return "", err
 	}

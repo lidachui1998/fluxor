@@ -6,9 +6,9 @@ import (
 	"errors"
 	"fluxor/internal/config"
 	"fluxor/internal/configcheck"
+	"fluxor/internal/httpx"
 	"fluxor/internal/logx"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -277,11 +277,11 @@ func runDownloadProcess(cmd *exec.Cmd, targetFile string, port int, subName stri
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, _ := httpx.ReadAllLimited(resp.Body, httpx.MaxUpstreamBody)
 		return "", nil, fmt.Errorf("获取元数据返回非200状态: %d, body: %s", resp.StatusCode, string(bodyBytes))
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := httpx.ReadAllLimited(resp.Body, httpx.MaxUpstreamBody)
 	if err != nil {
 		return "", nil, fmt.Errorf("读取响应失败: %w", err)
 	}

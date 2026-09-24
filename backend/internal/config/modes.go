@@ -46,7 +46,11 @@ func SetDefaults(mode string) {
 	case "openwrt":
 		SocketPath = ""
 		BaseURL = "/"
-		TcpAddr = "0.0.0.0:18080"
+		// 只绑定回环。面板自身没有任何认证，绑到 0.0.0.0 等于把「改订阅 / 停内核 /
+		// 自更新（下载并执行新二进制）」这些写接口开放给同网段任意主机访问。
+		// 需要从别的机器访问时，由用户显式指定 -a/--addr 或 FLUXOR_ADDR——
+		// 主动写下一个对外地址，比默认对外、出事后再收口安全得多。
+		TcpAddr = "127.0.0.1:18080"
 		FluxorBinDir = "/etc/fluxor/"
 		CoreBin = "/etc/fluxor/mihomo"
 		CoreSocket = "/etc/fluxor/core.sock"

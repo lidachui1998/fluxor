@@ -3,58 +3,45 @@ package subscription
 import (
 	"fluxor/internal/config"
 	"fluxor/internal/configgen"
-	"fluxor/internal/core"
 	"fluxor/internal/httpx"
 	"fluxor/internal/logx"
 	"net/http"
 )
 
 // generateCustomConfig 处理自定义模式的「保存并应用」：
-// 归一化节点 → 落库 → 生成 config.yaml → 重载内核。
+// 归一化节点 → 落库 → 用落库后的快照生成 config.yaml → 重载内核。
 //
 // 与其它两种模式的差异：
-//   - 不确保/不下载订阅文件（订阅不参与生成，定时器也要停掉）；
+//   - 不确保/不下载订阅文件（订阅不参与生成，定时器也不会启动）；
 //   - 不抓取订阅元数据（没有 provider 可查）；
 //   - 生成走 configgen.GenerateCustomConfig：模板骨架 + 标准规则集 + proxies 块。
-func generateCustomConfig(w http.ResponseWriter, cfg config.SubscribeConfig) {
-	nodes, err := normalizeCustomNodes(cfg.CustomNodes)
-	if err != nil {
-		httpx.WriteJSONError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	cfg.CustomNodes = nodes
-
-	// 保存设置、订阅注册表与手工节点（SaveSettings 内部落盘并重组装 Current）
-	if err := config.SaveSettings(cfg); err != nil {
+//
+// 与另两条链路一致，生成输入是**落库后**的快照而不是请求体：手工节点与自定义规则
+// 都要从快照里取（请求体里没有自定义规则），否则每次保存都会把该模式的规则与隧道
+// 从 config.yaml 里抹掉。
+func generateCustomConfig(w http.ResponseWriter, req config.SubscribeConfig) {
+	// 手工节点已在 decodeSettingsRequest 里归一化过，这里直接用
+	if err := config.SaveSettings(req); err != nil {
+		logx.Error(logx.ModuleSub, "saving settings failed: mode=custom err=%v", err)
 		httpx.WriteJSONError(w, http.StatusInternalServerError, "保存配置失败: "+err.Error())
 		return
 	}
 
 	// 重置定时器：自定义模式不使用订阅，StartAllTimers 会因 mode != switch 而全部不启动
-	StopAllTimers()
-	StartAllTimers()
+	resetTimers()
 
-	if err := configgen.GenerateCustomConfig(cfg); err != nil {
+	snap := config.CurrentSnapshot()
+
+	if err := configgen.GenerateCustomConfig(snap); err != nil {
 		httpx.WriteJSONError(w, http.StatusInternalServerError, "生成配置文件失败: "+err.Error())
 		return
 	}
 
-	if cfg.MetaBackendURL != "" {
-		if err := modifyMetaConfig(cfg.MetaBackendURL); err != nil {
+	if snap.MetaBackendURL != "" {
+		if err := modifyMetaConfig(snap.MetaBackendURL); err != nil {
 			logx.Warn(logx.ModuleSub, "updating MetaCubeXD backend URL failed: %v", err)
 		}
 	}
 
-	if err := core.ReloadCore(); err != nil {
-		httpx.RespondJSON(w, http.StatusOK, map[string]string{
-			"status":  "warning",
-			"message": "配置文件已生成，但重载内核失败: " + err.Error(),
-		})
-		return
-	}
-
-	httpx.RespondJSON(w, http.StatusOK, map[string]string{
-		"status":  "ok",
-		"message": "自定义节点配置已生成并成功重载内核",
-	})
+	finishGenerate(w, "自定义节点配置已生成并成功重载内核", "")
 }

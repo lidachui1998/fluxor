@@ -16,5 +16,8 @@ func HandleVersion(w http.ResponseWriter, _ *http.Request) {
 	}
 	defer resp.Body.Close()
 	w.Header().Set("Content-Type", "application/json")
+	// 转发内核状态码：恒回 200 会让前端的 resp.ok 形同虚设，
+	// 内核的错误响应体会被当成数据解析（例如把 {"message":...} 当规则列表）
+	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
 }

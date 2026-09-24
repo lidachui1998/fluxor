@@ -9,25 +9,39 @@ import (
 )
 
 // tproxyPort 读取当前生效的 TProxy 端口。
+//
+// 唯一真相是 settings.json（config.Current.TproxyPort）：内核 config.yaml 的
+// tproxy-port 由它生成，防火墙规则也必须由它构造。此前 /configs PATCH 用请求体里的
+// 值重建规则、开关路径用这里的值，两者一旦不同就会出现「规则指向 A 端口、内核听
+// B 端口」的断网；现在所有重建入口都收敛到本函数。
 func tproxyPort() int {
 	config.Mu.RLock()
 	defer config.Mu.RUnlock()
 	return config.Current.TproxyPort
 }
 
-// reapplyTproxyRules 在 TProxy 处于启用态时重建规则（开关项变更后调用）。
+// ReapplyTproxyRules 按当前 settings 里的端口重建 TProxy 规则（开关项变更、内核重载、
+// 端口变更后调用）。
 //
 // 语义：未启用或端口无效时什么也不做；否则先清理再按当前开关组合重新下发。
 // 失败时**回滚到底**——清掉可能已部分下发的规则并把开关置为关闭，并把错误交给
 // 调用方回报。这是必须的：重建流程已先删掉旧规则，若失败只记一行日志，系统里就会
 // 留下「面板显示已启用、实际只有一半规则（甚至完全没有）」的静默错配；而 enable
 // 是按家族逐个下发的（v4 成功、v6 失败即属此类）。
-func reapplyTproxyRules() error {
+func ReapplyTproxyRules() error {
 	if !GetTproxyState() {
 		return nil
 	}
 	port := tproxyPort()
 	if port <= 0 {
+		// 端口为 0 = 内核不再监听该端口，接管必然无法生效。此刻若还把开关留着「已启用」，
+		// 面板显示与实际就正好相反（规则若还在，流量会被导向无人监听的端口 = 断网）。
+		// 正常路径不会走到这里——启用接管要求端口 > 0，端口置 0 时 /configs PATCH 会直接
+		// 拒绝；只有手工改过 settings.json 之类的不一致状态才会落进来，因此这里做收敛
+		// 而不是报错：清规则 + 关开关，让三态（内存/磁盘/内核）重新一致。
+		logx.Warn(logx.ModuleTproxy, "tproxy port is 0 while the switch is on: disabling takeover to avoid a stale black-hole route")
+		DisableTProxyRules()
+		SetTproxyEnabled(false)
 		return nil
 	}
 
@@ -126,7 +140,7 @@ func HandleTproxyExceptions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// 如果 TProxy 启用则重载
-		if err := reapplyTproxyRules(); err != nil {
+		if err := ReapplyTproxyRules(); err != nil {
 			logx.Error(logx.ModuleTproxy, "failed to reapply tproxy rules after bypass list update: %v", err)
 			httpx.WriteJSONError(w, http.StatusInternalServerError, "重新应用规则失败（TProxy 已自动关闭）: "+err.Error())
 			return
@@ -154,7 +168,7 @@ func HandleTproxyProxyLocal(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// 如果 TProxy 当前启用，立即重新应用规则
-		if err := reapplyTproxyRules(); err != nil {
+		if err := ReapplyTproxyRules(); err != nil {
 			logx.Error(logx.ModuleTproxy, "failed to reapply tproxy rules: %v", err)
 			httpx.WriteJSONError(w, http.StatusInternalServerError, "重新应用规则失败（TProxy 已自动关闭）: "+err.Error())
 			return
@@ -186,7 +200,7 @@ func HandleTproxyProxyIPv6(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// 如果 TProxy 当前启用，立即重新应用规则（开启时新增 ip6 规则，关闭时清掉）
-		if err := reapplyTproxyRules(); err != nil {
+		if err := ReapplyTproxyRules(); err != nil {
 			// 规则没装成功就必须让调用方知道：此处不能默默吞掉，
 			// 否则面板会显示「已启用」而 IPv6 实际未被接管。
 			logx.Error(logx.ModuleTproxy, "failed to reapply tproxy rules after IPv6 takeover change: %v", err)

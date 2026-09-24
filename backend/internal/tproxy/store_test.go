@@ -32,7 +32,9 @@ func useTempTproxyFile(t *testing.T) string {
 // TestDefaultBypassTemplateNotPersisted 预填模板不落盘，只有用户改过才写文件。
 //
 // 旧实现把 20+ 行中文注释模板写进用户配置，空配置的文件体积九成都来自这里；
-// 现在 nil 表示「用代码里的默认值」，文件里不出现这两个键。
+// 现在 nil 表示「用代码里的默认值」，序列化成 null——**键仍然在**（无 omitempty），
+// 但值里不含任何模板正文。这里断言的是「模板正文不落盘」这个意图本身，
+// 而不是某个具体的键名形态，因此去掉 omitempty 后依然成立。
 func TestDefaultBypassTemplateNotPersisted(t *testing.T) {
 	dir := useTempTproxyFile(t)
 
@@ -50,16 +52,20 @@ func TestDefaultBypassTemplateNotPersisted(t *testing.T) {
 		t.Fatal("本机流量接管默认应为开启")
 	}
 
-	// 用户「恢复默认」= 保存一份与模板一致的列表 → 仍然不落盘
+	// 用户「恢复默认」= 保存一份与模板一致的列表 → 收敛为 nil，模板正文不落盘
 	if err := SaveTproxyDstExceptions(defaultDstExceptions()); err != nil {
 		t.Fatalf("SaveTproxyDstExceptions: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "tproxy.json"))
-	if err != nil {
-		t.Fatalf("保存开关后应生成文件: %v", err)
+	raw := readTproxyRaw(t, dir)
+	if strings.Contains(raw, "阿里公共 DNS") || strings.Contains(raw, "绕过") {
+		t.Fatalf("预填模板正文不应落盘: %s", raw)
 	}
-	if strings.Contains(string(data), "dst_exceptions") {
-		t.Fatalf("与预填模板一致的列表不应落盘: %s", string(data))
+	var stored config.TproxyFile
+	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+		t.Fatalf("反序列化失败: %v", err)
+	}
+	if stored.DstExceptions != nil {
+		t.Fatalf("与预填模板一致的列表应收敛为 null，实际 %v", stored.DstExceptions)
 	}
 
 	// 自定义列表则必须落盘并可重新载入
@@ -72,6 +78,56 @@ func TestDefaultBypassTemplateNotPersisted(t *testing.T) {
 	if len(got) != len(custom) || got[0] != custom[0] {
 		t.Fatalf("自定义列表未能往返: %v", got)
 	}
+}
+
+// TestExplicitEmptyBypassListPersists 用户把绕过列表清空时，重启后必须仍然是空的。
+//
+// 这是去掉 omitempty 的原因：空列表用 `[]` 落盘（「显式清空」），nil 用 `null` 落盘
+// （「未自定义，用预填模板」）。带 omitempty 时两者都写成「键缺失」，重启后预填模板
+// 会静默回来——用户明确表达的「一条绕过都不要」被无声撤销。
+func TestExplicitEmptyBypassListPersists(t *testing.T) {
+	dir := useTempTproxyFile(t)
+
+	LoadTproxyState()
+	if err := SaveTproxyDstExceptions([]string{}); err != nil {
+		t.Fatalf("SaveTproxyDstExceptions: %v", err)
+	}
+	if err := SaveTproxySrcExceptions([]string{}); err != nil {
+		t.Fatalf("SaveTproxySrcExceptions: %v", err)
+	}
+
+	raw := readTproxyRaw(t, dir)
+	var stored config.TproxyFile
+	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+		t.Fatalf("反序列化失败: %v", err)
+	}
+	if stored.DstExceptions == nil || len(stored.DstExceptions) != 0 {
+		t.Fatalf("显式清空应落盘为空数组，实际 %v（raw=%s）", stored.DstExceptions, raw)
+	}
+
+	// 重新载入：生效列表必须是空的，不能变回预填模板
+	exceptionsMu.Lock()
+	tproxyDstExceptionsCache = nil
+	tproxySrcExceptionsCache = nil
+	exceptionsMu.Unlock()
+	LoadTproxyState()
+
+	if got := dstExceptions(); len(got) != 0 {
+		t.Fatalf("重启后目的绕过列表应仍为空，实际 %d 条", len(got))
+	}
+	if got := srcExceptions(); len(got) != 0 {
+		t.Fatalf("重启后源绕过列表应仍为空，实际 %d 条", len(got))
+	}
+}
+
+// readTproxyRaw 读取 tproxy.json 的原始内容。
+func readTproxyRaw(t *testing.T, dir string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "tproxy.json"))
+	if err != nil {
+		t.Fatalf("读取 tproxy.json 失败: %v", err)
+	}
+	return string(data)
 }
 
 // TestLegacyDefaultTemplateIsDropped 迁移过来的旧默认模板在载入时被移除（自动瘦身）。
@@ -87,12 +143,16 @@ func TestLegacyDefaultTemplateIsDropped(t *testing.T) {
 
 	LoadTproxyState()
 
-	data, err := os.ReadFile(filepath.Join(dir, "tproxy.json"))
-	if err != nil {
-		t.Fatalf("读取失败: %v", err)
+	raw := readTproxyRaw(t, dir)
+	if strings.Contains(raw, "阿里公共 DNS") || strings.Contains(raw, "Docker 默认 bridge") {
+		t.Fatalf("旧文件里的默认模板正文应被移除: %s", raw)
 	}
-	if strings.Contains(string(data), "dst_exceptions") || strings.Contains(string(data), "src_exceptions") {
-		t.Fatalf("旧文件里的默认模板应被移除: %s", string(data))
+	var stored config.TproxyFile
+	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+		t.Fatalf("反序列化失败: %v", err)
+	}
+	if stored.DstExceptions != nil || stored.SrcExceptions != nil {
+		t.Fatalf("模板一致的列表应收敛为 null，实际 dst=%v src=%v", stored.DstExceptions, stored.SrcExceptions)
 	}
 	if len(dstExceptions()) != len(defaultDstExceptions()) {
 		t.Fatal("移除后生效列表应仍是默认模板")

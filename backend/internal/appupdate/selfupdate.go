@@ -2,7 +2,10 @@ package appupdate
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fluxor/internal/buildinfo"
@@ -36,6 +39,10 @@ const (
 	selfUpdateBinaryName = "fluxor"
 	// selfUpdateMaxBinarySize 解压产物上限，避免异常压缩包写满磁盘。
 	selfUpdateMaxBinarySize int64 = 256 << 20
+	// checksumsAssetName 发布产物放的校验和清单文件名（sha256sum 格式）。
+	checksumsAssetName = "checksums.txt"
+	// checksumsMaxSize 校验和清单的读取上限（它只有几行，200 字节量级）。
+	checksumsMaxSize int64 = 64 << 10
 )
 
 // selfUpdateTimeout 返回该下载方式的单次超时上限：经代理 15s，直连 30s。
@@ -181,7 +188,7 @@ func downloadReleaseAsset(dst *os.File, rawURL string, proxyAddr string) error {
 
 // fetchReleaseAsset 下载候选产物；若为压缩包则解出其中的二进制，
 // 返回可执行二进制的落盘路径。
-func fetchReleaseAsset(dir string, asset releaseAsset, proxyAddr string) (string, error) {
+func fetchReleaseAsset(dir string, asset releaseAsset, proxyAddr string, rel *githubRelease) (string, error) {
 	downloadPath := filepath.Join(dir, asset.name)
 	f, err := os.OpenFile(downloadPath, os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0600)
 	if err != nil {
@@ -195,15 +202,200 @@ func fetchReleaseAsset(dir string, asset releaseAsset, proxyAddr string) (string
 		return "", err
 	}
 
-	if !asset.archived {
-		return downloadPath, nil
+	// 先校验完整性再解压/安装：下载链路会经过「自身代理 → 直连」两条路径，产物是
+	// 可执行的完整面板二进制，装错或装坏的代价是面板再也起不来。
+	if err := verifyAssetChecksum(rel, asset.name, downloadPath, proxyAddr); err != nil {
+		return "", err
 	}
 
-	binaryPath := filepath.Join(dir, selfUpdateBinaryName)
-	if err := extractBinaryFromArchive(downloadPath, binaryPath); err != nil {
-		return "", fmt.Errorf("%s 解压失败: %w", asset.name, err)
+	// 两条路径都要过可执行文件校验：裸二进制直接就是安装源，压缩包则先解出二进制。
+	binaryPath := downloadPath
+	if asset.archived {
+		binaryPath = filepath.Join(dir, selfUpdateBinaryName)
+		if err := extractBinaryFromArchive(downloadPath, binaryPath); err != nil {
+			return "", fmt.Errorf("%s 解压失败: %w", asset.name, err)
+		}
+	}
+	if err := validateExecutableHeader(binaryPath); err != nil {
+		return "", fmt.Errorf("%s: %w", asset.name, err)
 	}
 	return binaryPath, nil
+}
+
+// verifyAssetChecksum 用发布产物里的 checksums.txt 校验已下载文件的 sha256。
+//
+// 返回值语义：
+//   - nil：校验通过，或该 Release 没有提供 checksums.txt（历史产物，无从校验）；
+//   - error：清单存在但校验不通过、或清单本身取不到——此时必须放弃安装。
+//
+// 「没有清单」只记警告并继续：把缺清单当成致命错误会让历史版本的更新链路直接断掉，
+// 而这道校验的目的是提高门槛，不是自锁。
+func verifyAssetChecksum(rel *githubRelease, assetName, path, proxyAddr string) error {
+	if rel == nil {
+		return nil
+	}
+	sum, found, err := lookupChecksum(rel, assetName, proxyAddr)
+	if err != nil {
+		return fmt.Errorf("读取 %s 失败: %w", checksumsAssetName, err)
+	}
+	if !found {
+		logx.Warn(logx.ModuleUpdate,
+			"release %s does not provide %s, skipping checksum verification for %s",
+			rel.TagName, checksumsAssetName, assetName)
+		return nil
+	}
+	got, err := fileSHA256(path)
+	if err != nil {
+		return fmt.Errorf("计算 %s 的校验和失败: %w", assetName, err)
+	}
+	if !strings.EqualFold(got, sum) {
+		return fmt.Errorf("%s 校验和不匹配（期望 %s，实际 %s），已放弃安装", assetName, sum, got)
+	}
+	logx.Info(logx.ModuleUpdate, "checksum verified: %s sha256=%s", assetName, got)
+	return nil
+}
+
+// lookupChecksum 下载 checksums.txt 并取出指定文件名的 sha256。
+//
+// 该文件由发布 CI 生成（sha256sum 的输出格式：<hex>  <文件名>），本函数两种常见写法
+// 都兼容（"name" 与 "*name"）。
+func lookupChecksum(rel *githubRelease, assetName, proxyAddr string) (string, bool, error) {
+	url := ""
+	for _, a := range rel.Assets {
+		if a.Name == checksumsAssetName {
+			url = a.BrowserDownloadURL
+			break
+		}
+	}
+	if url == "" {
+		return "", false, nil
+	}
+	content, err := downloadSmallFile(url, proxyAddr, checksumsMaxSize)
+	if err != nil {
+		return "", false, err
+	}
+	for _, line := range strings.Split(string(content), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		if strings.TrimPrefix(fields[1], "*") == assetName {
+			return fields[0], true, nil
+		}
+	}
+	// 清单在，但没有这一项：同样无法校验，按「没有清单」处理（记警告继续）
+	logx.Warn(logx.ModuleUpdate, "%s does not contain an entry for %s", checksumsAssetName, assetName)
+	return "", false, nil
+}
+
+// downloadSmallFile 下载一个小文件（鉴权清单），沿用主产物的两条链路：自身代理 → 直连。
+func downloadSmallFile(rawURL, proxyAddr string, max int64) ([]byte, error) {
+	tmp, err := os.CreateTemp("", "fluxor-meta-*")
+	if err != nil {
+		return nil, err
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		tmp.Close()
+		_ = os.Remove(tmpName)
+	}()
+
+	proxies := []string{}
+	if proxyAddr != "" {
+		proxies = append(proxies, proxyAddr)
+	}
+	proxies = append(proxies, "")
+
+	var lastErr error
+	for _, proxy := range proxies {
+		if err := downloadOnce(tmp, rawURL, proxy); err != nil {
+			lastErr = err
+			continue
+		}
+		if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+			return nil, err
+		}
+		return httpx.ReadAllLimited(tmp, max)
+	}
+	return nil, lastErr
+}
+
+// fileSHA256 计算文件的 sha256（十六进制小写）。
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// stageBinary 把下载好的二进制复制到**目标目录下**的临时文件，返回该临时文件路径。
+//
+// 刻意不用 /tmp：下一步要用 rename 原子就位，而 rename 只有在同一文件系统内才是原子的，
+// 很多部署里 /tmp 是独立的 tmpfs。写到目标目录也保证复制期间目标路径上的旧版本始终完好。
+//
+// 复制完成后 fsync：否则断电可能留下一个「长度正确但内容为零」的文件，而它随后会被
+// rename 成正式的可执行文件。
+func stageBinary(src, targetPath string) (string, error) {
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return "", err
+	}
+	defer srcFile.Close()
+
+	staged := targetPath + ".new"
+	out, err := os.OpenFile(staged, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0755)
+	if err != nil {
+		return "", err
+	}
+	cleanup := func(e error) (string, error) {
+		_ = out.Close()
+		_ = os.Remove(staged)
+		return "", e
+	}
+	if _, err := io.Copy(out, srcFile); err != nil {
+		return cleanup(err)
+	}
+	if err := out.Sync(); err != nil {
+		return cleanup(err)
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(staged)
+		return "", err
+	}
+	if err := os.Chmod(staged, 0755); err != nil {
+		_ = os.Remove(staged)
+		return "", err
+	}
+	return staged, nil
+}
+
+// validateExecutableHeader 校验文件确实是目标平台的可执行文件（ELF 魔数）。
+//
+// 补的是「解压回退」留下的口子：压缩包里取不到名为 fluxor 的成员时，会退而取
+// 「包内第一个非空常规文件」。若上游打包方式改变，第一个成员可能是 README 或 LICENSE，
+// 那样会把一个文本文件安装成 fluxor 并 chmod 0755，重启后 exec 失败——面板再也起不来。
+//
+// 本项目发布产物固定是 linux 二进制（CI 里 GOOS=linux），因此只认 ELF。
+func validateExecutableHeader(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	var magic [4]byte
+	if _, err := io.ReadFull(f, magic[:]); err != nil {
+		return fmt.Errorf("可执行文件头读取失败: %w", err)
+	}
+	if !bytes.Equal(magic[:], []byte{0x7f, 'E', 'L', 'F'}) {
+		return fmt.Errorf("下载到的文件不是可执行文件（ELF 魔数不匹配），已放弃安装")
+	}
+	return nil
 }
 
 // extractBinaryFromArchive 从 tar.gz 压缩包中提取二进制并写入 dstPath。
@@ -359,7 +551,7 @@ func HandleSelfUpdate(w http.ResponseWriter, r *http.Request) {
 	)
 	for _, cand := range candidates {
 		attempted = append(attempted, cand.name)
-		path, err := fetchReleaseAsset(tmpDir, cand, proxyAddr)
+		path, err := fetchReleaseAsset(tmpDir, cand, proxyAddr, rel)
 		if err != nil {
 			lastErr = err
 			continue
@@ -373,43 +565,42 @@ func HandleSelfUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := os.Chmod(binaryPath, 0755); err != nil {
-		httpx.WriteJSONError(w, http.StatusInternalServerError, "设置临时文件权限失败: "+err.Error())
+	// 安装：先把新二进制落到目标目录下的临时文件，再用两次 rename 完成「备份旧版本 +
+	// 就位新版本」。全过程目标路径要么指向完整的旧版本、要么指向完整的新版本，不存在
+	// 「被截断一半」的中间态——旧实现直接 os.Create(targetPath) 就地覆写，中途失败
+	// （磁盘满、进程被杀）会留下一个坏掉的 fluxor，面板重启即失败。
+	staged, err := stageBinary(binaryPath, targetPath)
+	if err != nil {
+		logx.Error(logx.ModuleUpdate, "failed to stage new binary: %v", err)
+		httpx.WriteJSONError(w, http.StatusInternalServerError, "准备新版本文件失败: "+err.Error())
 		return
 	}
 
-	// 备份旧文件
+	backupName := filepath.Join(backupDir, "fluxor")
+	hadPrevious := false
 	if _, err := os.Stat(targetPath); err == nil {
-		backupName := filepath.Join(backupDir, "fluxor")
 		if err := os.Rename(targetPath, backupName); err != nil {
+			_ = os.Remove(staged)
 			httpx.WriteJSONError(w, http.StatusInternalServerError, "备份旧文件失败: "+err.Error())
 			return
 		}
+		hadPrevious = true
 	}
 
-	// 复制新文件
-	srcFile, err := os.Open(binaryPath)
-	if err != nil {
-		httpx.WriteJSONError(w, http.StatusInternalServerError, "打开临时文件失败: "+err.Error())
+	if err := os.Rename(staged, targetPath); err != nil {
+		_ = os.Remove(staged)
+		// 就位失败就把备份放回去：宁可停在旧版本，也不能让目标路径空着
+		if hadPrevious {
+			if rbErr := os.Rename(backupName, targetPath); rbErr != nil {
+				logx.Error(logx.ModuleUpdate,
+					"failed to restore the previous binary after install failure; %s must be restored manually from %s: %v",
+					targetPath, backupName, rbErr)
+			}
+		}
+		httpx.WriteJSONError(w, http.StatusInternalServerError, "安装新版本失败: "+err.Error())
 		return
 	}
-	defer srcFile.Close()
 
-	dstFile, err := os.Create(targetPath)
-	if err != nil {
-		httpx.WriteJSONError(w, http.StatusInternalServerError, "创建目标文件失败: "+err.Error())
-		return
-	}
-	defer dstFile.Close()
-
-	if _, err := io.Copy(dstFile, srcFile); err != nil {
-		httpx.WriteJSONError(w, http.StatusInternalServerError, "复制文件失败: "+err.Error())
-		return
-	}
-	if err := dstFile.Close(); err != nil {
-		httpx.WriteJSONError(w, http.StatusInternalServerError, "写入目标文件失败: "+err.Error())
-		return
-	}
 	if err := os.Chmod(targetPath, 0755); err != nil {
 		httpx.WriteJSONError(w, http.StatusInternalServerError, "设置目标文件权限失败: "+err.Error())
 		return

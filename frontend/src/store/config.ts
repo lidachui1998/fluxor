@@ -2,6 +2,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { apiFetch } from '../utils/api'
+import { createStaleFlag } from '../utils/staleFlag'
 
 export interface TunConfig {
   enable: boolean
@@ -148,6 +149,24 @@ export const useConfigStore = defineStore('config', () => {
     return configsFetchPromise
   }
 
+  // ---------- 「内核常规配置已过期」标记 ----------
+  //
+  // /configs 的取值不只在配置页被改：订阅中心的「保存并应用」会重写 config.yaml 的
+  // mixed-port / tproxy-port / secret / external-controller 并重载内核；代理页切换
+  // mode 也会改内核配置。而配置页只在挂载时取过一次 /configs，改动方既不知道该页是否
+  // 已挂载、也不该替它发请求，于是切回来看到的仍是旧值（实测：订阅中心改 tproxy 端口
+  // 后，配置页那一栏不刷新，而 nft 规则其实已经按新端口重建了）。
+  //
+  // 与代理/规则两页同一套做法：改动方只登记待办，持有数据的页面在 KeepAlive 的
+  // onActivated 里消费它并静默补拉（读取即清除，用户不切过去就不产生请求）。
+  //
+  // 这份标记由**三个页面共用**（配置页 / 代理页 / 概览页都会读 configs），与
+  // utils/staleFlag.ts 里「每个数据域各持一份」的说法并不矛盾：那一条针对的是
+  // 「各页各自持有不同数据」的情形，共用会让先切过去的页面把别人的待办吃掉。
+  // 这里三个页面读的是**同一个 store 状态**，任何一方补拉一次，另外两页看到的
+  // 也就都是新值了——因此一份标记即可，谁先激活谁刷新。
+  const { markNeedsRefresh: markCoreConfigStale, consumeNeedsRefresh: consumeCoreConfigStale } = createStaleFlag()
+
   // ---------- 获取 TProxy 状态（缓存 + 防并发） ----------
   const fetchTproxyState = async (retries = 2) => {
     if (tproxyStateLoaded.value) {
@@ -216,6 +235,8 @@ export const useConfigStore = defineStore('config', () => {
     configsLoading,
     configsLoaded,
     fetchConfigs,
+    markCoreConfigStale,
+    consumeCoreConfigStale,
     tproxyEnabled,
     tproxyStateLoaded,
     fetchTproxyState,

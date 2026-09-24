@@ -212,7 +212,7 @@ func TestExtractBinaryFromArchiveRejectsOversizedEntry(t *testing.T) {
 
 // fetchReleaseAsset 的端到端覆盖：压缩包走「下载 + 解压」，裸二进制走「下载即用」。
 func TestFetchReleaseAssetArchiveAndBinary(t *testing.T) {
-	archivePath := buildTarGz(t, []tarEntry{{name: "fluxor", body: "ARCHIVED-BIN"}}, false)
+	archivePath := buildTarGz(t, []tarEntry{{name: "fluxor", body: elfFixture("ARCHIVED-BIN")}}, false)
 	archiveBytes, err := os.ReadFile(archivePath)
 	if err != nil {
 		t.Fatalf("读取测试压缩包失败: %v", err)
@@ -223,7 +223,7 @@ func TestFetchReleaseAssetArchiveAndBinary(t *testing.T) {
 		case "/fluxor-amd64.tar.gz":
 			w.Write(archiveBytes)
 		case "/fluxor-amd64":
-			fmt.Fprint(w, "RAW-BIN")
+			fmt.Fprint(w, elfFixture("RAW-BIN"))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -235,24 +235,24 @@ func TestFetchReleaseAssetArchiveAndBinary(t *testing.T) {
 		name:     "fluxor-amd64.tar.gz",
 		url:      srv.URL + "/fluxor-amd64.tar.gz",
 		archived: true,
-	}, "")
+	}, "", nil)
 	if err != nil {
 		t.Fatalf("压缩包路径应成功: %v", err)
 	}
-	if body, _ := os.ReadFile(got); string(body) != "ARCHIVED-BIN" {
-		t.Errorf("压缩包解出内容 = %q, 期望 ARCHIVED-BIN", body)
+	if body, _ := os.ReadFile(got); string(body) != elfFixture("ARCHIVED-BIN") {
+		t.Errorf("压缩包解出内容 = %q, 期望 ELF 夹具", body)
 	}
 
 	got, err = fetchReleaseAsset(dir, releaseAsset{
 		name:     "fluxor-amd64",
 		url:      srv.URL + "/fluxor-amd64",
 		archived: false,
-	}, "")
+	}, "", nil)
 	if err != nil {
 		t.Fatalf("裸二进制路径应成功: %v", err)
 	}
-	if body, _ := os.ReadFile(got); string(body) != "RAW-BIN" {
-		t.Errorf("裸二进制内容 = %q, 期望 RAW-BIN", body)
+	if body, _ := os.ReadFile(got); string(body) != elfFixture("RAW-BIN") {
+		t.Errorf("裸二进制内容 = %q, 期望 ELF 夹具", body)
 	}
 }
 
@@ -384,5 +384,103 @@ func TestDownloadReleaseAssetFallsBackToDirect(t *testing.T) {
 	got, _ := os.ReadFile(f.Name())
 	if string(got) != "DIRECT-OK" {
 		t.Errorf("回退直连内容 = %q", got)
+	}
+}
+
+// elfFixture 构造一段带 ELF 魔数的假二进制。
+//
+// 安装路径现在会校验可执行文件头（防止「解压回退」把 README 装成 fluxor），
+// 因此测试夹具必须看起来像 ELF，否则用例会被（正确地）拒绝。
+func elfFixture(tag string) string {
+	return "\x7fELF" + tag
+}
+
+// 非 ELF 内容必须被拒绝：这是「解压回退取包内第一个常规文件」的安全网。
+func TestFetchReleaseAssetRejectsNonExecutable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "just a README, not an executable")
+	}))
+	defer srv.Close()
+
+	_, err := fetchReleaseAsset(t.TempDir(), releaseAsset{
+		name:     "fluxor-amd64",
+		url:      srv.URL + "/fluxor-amd64",
+		archived: false,
+	}, "", nil)
+	if err == nil {
+		t.Fatal("非 ELF 内容应被拒绝")
+	}
+	if !strings.Contains(err.Error(), "可执行文件") {
+		t.Errorf("错误信息应说明不是可执行文件，实际: %v", err)
+	}
+}
+
+// 校验和不匹配时必须拒绝安装。
+func TestVerifyAssetChecksumMismatch(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "fluxor-amd64")
+	if err := os.WriteFile(file, []byte(elfFixture("PAYLOAD")), 0644); err != nil {
+		t.Fatalf("写文件失败: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 清单里给一个与文件内容不匹配的散列
+		fmt.Fprintf(w, "%s  fluxor-amd64\n", strings.Repeat("0", 64))
+	}))
+	defer srv.Close()
+
+	rel := &githubRelease{TagName: "9.9.9"}
+	rel.Assets = append(rel.Assets, struct {
+		Name               string `json:"name"`
+		BrowserDownloadURL string `json:"browser_download_url"`
+	}{Name: checksumsAssetName, BrowserDownloadURL: srv.URL + "/" + checksumsAssetName})
+
+	if err := verifyAssetChecksum(rel, "fluxor-amd64", file, ""); err == nil {
+		t.Fatal("校验和不匹配应报错")
+	}
+}
+
+// 正确散列必须通过。
+func TestVerifyAssetChecksumMatch(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "fluxor-amd64")
+	payload := []byte(elfFixture("PAYLOAD"))
+	if err := os.WriteFile(file, payload, 0644); err != nil {
+		t.Fatalf("写文件失败: %v", err)
+	}
+	sum, err := fileSHA256(file)
+	if err != nil {
+		t.Fatalf("fileSHA256: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "%s  fluxor-amd64\n", sum)
+	}))
+	defer srv.Close()
+
+	rel := &githubRelease{TagName: "9.9.9"}
+	rel.Assets = append(rel.Assets, struct {
+		Name               string `json:"name"`
+		BrowserDownloadURL string `json:"browser_download_url"`
+	}{Name: checksumsAssetName, BrowserDownloadURL: srv.URL + "/" + checksumsAssetName})
+
+	if err := verifyAssetChecksum(rel, "fluxor-amd64", file, ""); err != nil {
+		t.Fatalf("校验和匹配时不应报错: %v", err)
+	}
+}
+
+// 清单里没有对应条目 / 没有清单 → 记警告并放行（保持对历史 Release 的兼容）。
+func TestVerifyAssetChecksumSkippedWhenAbsent(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "fluxor-amd64")
+	if err := os.WriteFile(file, []byte(elfFixture("PAYLOAD")), 0644); err != nil {
+		t.Fatalf("写文件失败: %v", err)
+	}
+	// 完全没有清单资产
+	if err := verifyAssetChecksum(&githubRelease{TagName: "1.0.0"}, "fluxor-amd64", file, ""); err != nil {
+		t.Fatalf("缺少清单时应放行: %v", err)
+	}
+	// rel 为 nil（边界）
+	if err := verifyAssetChecksum(nil, "fluxor-amd64", file, ""); err != nil {
+		t.Fatalf("rel 为 nil 时应放行: %v", err)
 	}
 }
