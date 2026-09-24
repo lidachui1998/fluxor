@@ -94,7 +94,7 @@ func TestTunnelScopeActive(t *testing.T) {
 
 // TestTunnelScopesAreIsolated 四份存储互不串门：写一边绝不会出现在另一边。
 func TestTunnelScopesAreIsolated(t *testing.T) {
-	withCurrent(t, config.SubscribeConfig{
+	withStores(t, config.SubscribeConfig{
 		Subscriptions: []config.Subscription{{Name: "机场A"}, {Name: "机场B"}},
 	})
 
@@ -104,10 +104,27 @@ func TestTunnelScopesAreIsolated(t *testing.T) {
 	subA := subscriptionTunnelScope("机场A")
 	subB := subscriptionTunnelScope("机场B")
 
-	baseScope.storeTunnels([]config.Tunnel{tunnelOf("b1", "127.0.0.1:1", "1.1.1.1:53", "", "tcp")})
-	fullScope.storeTunnels([]config.Tunnel{tunnelOf("f1", "127.0.0.1:2", "1.1.1.1:53", "", "tcp")})
-	customScope.storeTunnels([]config.Tunnel{tunnelOf("c1", "127.0.0.1:3", "1.1.1.1:53", "", "tcp")})
-	subA.storeTunnels([]config.Tunnel{tunnelOf("sa", "127.0.0.1:4", "1.1.1.1:53", "", "tcp")})
+	// 四份存储各写各的：写入走生产同款的「锁内读—改—写」，写完 Current 由 store 重组装
+	if err := config.UpdateTemplateTunnels(baseScope.name, func([]config.Tunnel) ([]config.Tunnel, error) {
+		return []config.Tunnel{tunnelOf("b1", "127.0.0.1:1", "1.1.1.1:53", "", "tcp")}, nil
+	}); err != nil {
+		t.Fatalf("写入 base 档位隧道失败: %v", err)
+	}
+	if err := config.UpdateTemplateTunnels(fullScope.name, func([]config.Tunnel) ([]config.Tunnel, error) {
+		return []config.Tunnel{tunnelOf("f1", "127.0.0.1:2", "1.1.1.1:53", "", "tcp")}, nil
+	}); err != nil {
+		t.Fatalf("写入 full 档位隧道失败: %v", err)
+	}
+	if err := config.UpdateTemplateTunnels(customScope.name, func([]config.Tunnel) ([]config.Tunnel, error) {
+		return []config.Tunnel{tunnelOf("c1", "127.0.0.1:3", "1.1.1.1:53", "", "tcp")}, nil
+	}); err != nil {
+		t.Fatalf("写入自定义模式隧道失败: %v", err)
+	}
+	if err := config.UpdateSubscriptionTunnels(subA.name, func([]config.Tunnel) ([]config.Tunnel, error) {
+		return []config.Tunnel{tunnelOf("sa", "127.0.0.1:4", "1.1.1.1:53", "", "tcp")}, nil
+	}); err != nil {
+		t.Fatalf("写入订阅 A 隧道失败: %v", err)
+	}
 
 	cfg := ruleConfigSnapshot()
 	if got := tunnelIDs(baseScope.tunnels(cfg)); len(got) != 1 || got[0] != "b1" {
@@ -333,7 +350,7 @@ func TestServeTunnelRequestLifecycle(t *testing.T) {
 		config.FluxorConfigFile = oldConfigFile
 	}()
 
-	withCurrent(t, config.SubscribeConfig{
+	withStores(t, config.SubscribeConfig{
 		Mode:          config.ModeMerge,
 		RuleGroup:     config.RuleGroupBase,
 		Subscriptions: []config.Subscription{{Name: "机场A"}},
@@ -452,7 +469,7 @@ func TestServeTunnelRequestLifecycle(t *testing.T) {
 
 // TestServeTunnelRequestModeGuards 跨模式访问必须被拒且指出该去哪儿改。
 func TestServeTunnelRequestModeGuards(t *testing.T) {
-	withCurrent(t, config.SubscribeConfig{Mode: config.ModeCustom})
+	withStores(t, config.SubscribeConfig{Mode: config.ModeCustom})
 
 	scope, _ := mergeTunnelScope(config.RuleGroupBase)
 	rec := httptest.NewRecorder()

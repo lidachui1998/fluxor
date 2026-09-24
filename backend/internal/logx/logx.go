@@ -25,7 +25,7 @@ const (
 // 调用方一律使用这些常量，避免各处手写字符串导致 grep 失效。
 const (
 	ModuleMain    = "MAIN"    // 进程启动/退出/监听/信号
-	ModuleConfig  = "CONFIG"  // 配置持久化（fluxor.json）
+	ModuleConfig  = "CONFIG"  // 配置持久化（settings/rules/tunnels 等）
 	ModuleCore    = "CORE"    // 内核进程生命周期
 	ModuleSub     = "SUB"     // 订阅下载、更新、元数据、定时器
 	ModuleGen     = "GEN"     // config.yaml 生成

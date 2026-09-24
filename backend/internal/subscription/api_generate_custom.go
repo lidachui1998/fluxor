@@ -24,10 +24,8 @@ func generateCustomConfig(w http.ResponseWriter, cfg config.SubscribeConfig) {
 	}
 	cfg.CustomNodes = nodes
 
-	config.Mu.Lock()
-	config.Current = cfg
-	config.Mu.Unlock()
-	if err := config.SaveSubscribeConfig(); err != nil {
+	// 保存设置、订阅注册表与手工节点（SaveSettings 内部落盘并重组装 Current）
+	if err := config.SaveSettings(cfg); err != nil {
 		httpx.WriteJSONError(w, http.StatusInternalServerError, "保存配置失败: "+err.Error())
 		return
 	}

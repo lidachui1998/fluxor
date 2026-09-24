@@ -119,7 +119,7 @@ make V=1.2.3
 
 `SOCKET_PATH`、`BASE_URL`、`FLUXOR_ADDR`、`FLUXOR_DATA_DIR`、`FLUXOR_BIN_DIR`、`CORE_BIN`、`CORE_SOCKET`、`META_DIR`、`ZASH_DIR`、`CONFIG_TARGET`、`CORE_WORK_DIR`
 
-`FLUXOR_DATA_DIR` 是运行数据目录：`fluxor.json` 与 `fluxor.log`（后端全部运行日志）固定生成在该目录下；`fluxor.pid` 与 `core.pid` 默认同址，但 openwrt 模式固定在 `/var/run/`（PID 属运行时状态，不写 flash），不受该变量影响。默认值：fnos 取环境变量 `TRIM_PKGVAR`（未注入时回退 `/var/apps/Fluxor/var`），openwrt 为 `/etc/fluxor/`。这四个文件的路径不再支持单独指定。日志等级由 `FLUXOR_LOG_LEVEL` 控制（`debug` / `info` / `warn` / `error`，缺省 `info`）；日志由后端独占写入 `fluxor.log`，启动脚本不应再重定向面板的 stdout/stderr。
+`FLUXOR_DATA_DIR` 是运行数据目录：配置文件（`settings.json` / `rules.json` / `tunnels.json` / `subscription-meta.json` / `tproxy.json`）与 `fluxor.log`（后端全部运行日志）都生成在该目录下；`fluxor.pid` 与 `core.pid` 默认同址，但 openwrt 模式固定在 `/var/run/`（PID 属运行时状态，不写 flash），不受该变量影响。默认值：fnos 取环境变量 `TRIM_PKGVAR`（未注入时回退 `/var/apps/Fluxor/var`），openwrt 为 `/etc/fluxor/`。这四个文件的路径不再支持单独指定。日志等级由 `FLUXOR_LOG_LEVEL` 控制（`debug` / `info` / `warn` / `error`，缺省 `info`）；日志由后端独占写入 `fluxor.log`，启动脚本不应再重定向面板的 stdout/stderr。
 
 ### 默认端口
 
@@ -129,7 +129,7 @@ make V=1.2.3
 | `tproxy_port` | 7898 | TProxy 透明代理端口 |
 | `panel_port` | 9090 | 外部控制面板端口（external-controller） |
 
-配置文件为 `fluxor.json`（fnos 模式下位于 `/var/apps/Fluxor/var/fluxor.json`），字段说明见 [docs/config/fluxor-json.md](docs/config/fluxor-json.md)。
+配置按类别分为 5 个文件（fnos 模式下位于 `/var/apps/Fluxor/var/`），布局与字段说明见 [docs/config/fluxor-json.md](docs/config/fluxor-json.md)。
 
 ---
 

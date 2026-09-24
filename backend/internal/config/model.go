@@ -101,6 +101,19 @@ func (c SubscribeConfig) TemplateRulesFor(scope string) []CustomRule {
 	return c.MergeCustomRulesFor(scope)
 }
 
+// SubscriptionRulesFor 返回某订阅（切换模式）的自定义规则，无则返回 nil。
+//
+// 与 SubscriptionTunnelsFor 对称：两者都从视图里按订阅名取用，接口层与生成链路
+// 都只需面对视图，不必知道规则实际存在 rules.json 里。
+func (c SubscribeConfig) SubscriptionRulesFor(name string) []CustomRule {
+	for i := range c.Subscriptions {
+		if c.Subscriptions[i].Name == name {
+			return c.Subscriptions[i].CustomRules
+		}
+	}
+	return nil
+}
+
 // Subscription 描述单个订阅源及其最近一次的更新元数据。
 type Subscription struct {
 	Name           string       `json:"name"`
@@ -122,7 +135,7 @@ type Subscription struct {
 //
 // Config 只保存「与该协议默认值不同」的字段：每个协议的字段表与默认模板由
 // nodespec 包提供（后端可为协议单独增补默认值），读取时补齐、保存时剔除差异，
-// 因此默认值调整能自动作用到历史数据，也不会把一堆零值写进 fluxor.json。
+// 因此默认值调整能自动作用到历史数据，也不会把一堆零值写进 settings.json。
 type CustomNode struct {
 	// ID 由后端生成的稳定标识，供前端编辑/删除单个节点使用。
 	ID string `json:"id"`

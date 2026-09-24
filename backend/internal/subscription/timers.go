@@ -73,13 +73,11 @@ func startSubscriptionTimer(subs []config.Subscription, idx int) {
 				}
 
 				needsReload, err := updateSubscriptionInSwitchMode(name)
-				// 执行更新
+				// 执行更新（订阅元数据已由 updateSubscriptionInSwitchMode 写入
+				// subscription-meta.json，此处无需再落库）
 				if err != nil {
 					logx.Error(logx.ModuleSub, "scheduled update of subscription %q failed: %v", name, err)
 				} else {
-					if err := config.SaveSubscribeConfig(); err != nil {
-						logx.Error(logx.ModuleSub, "saving subscription config failed: %v", err)
-					}
 					if needsReload {
 						if err := core.ReloadCore(); err != nil {
 							logx.Error(logx.ModuleSub, "reloading core after scheduled update failed: %v", err)

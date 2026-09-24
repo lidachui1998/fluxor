@@ -91,7 +91,9 @@ func capturePaths() func() {
 	saved := []*string{
 		&SocketPath, &BaseURL, &TcpAddr, &FluxorBinDir, &CoreBin, &CoreSocket,
 		&MetaDir, &ZashDir, &ConfigTarget, &CoreWorkDir, &OriginalBaseURL,
-		&FluxorDataDir, &FluxorPidFile, &CorePidFile, &FluxorConfigFile, &FluxorLogFile,
+		&FluxorDataDir, &FluxorPidFile, &CorePidFile, &FluxorLogFile,
+		&FluxorConfigFile, &FluxorSettingsFile, &FluxorRulesFile, &FluxorTunnelsFile,
+		&FluxorMetaFile, &FluxorTproxyFile,
 		&pidDirPinned,
 	}
 	values := make([]string, len(saved))

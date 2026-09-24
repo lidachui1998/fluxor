@@ -5,8 +5,8 @@ var (
 	SocketPath string
 	// BaseURL 所有 HTTP 路由的统一前缀（例如 /app/Fluxor）；为 / 时归一化为空串。
 	BaseURL string
-	// FluxorDataDir 统一的运行数据目录：fluxor.json 与 fluxor.log 一律生成在该目录下
-	// （由 SetDataDir 派生，两者不再各自配置）。
+	// FluxorDataDir 统一的运行数据目录：fluxor.log 与全部配置文件都生成在该目录下
+	// （由 SetDataDir 派生，路径不再单独配置）。
 	FluxorDataDir string
 	// FluxorPidFile Fluxor 自身进程的 PID 文件路径（默认 FluxorDataDir/fluxor.pid；
 	// openwrt 模式固定在 /var/run/fluxor.pid，不随数据目录变化）。
@@ -24,8 +24,21 @@ var (
 	MetaDir string
 	// ZashDir Zashboard 外部面板静态文件目录。
 	ZashDir string
-	// FluxorConfigFile Fluxor 的 JSON 配置与持久化状态文件（FluxorDataDir/fluxor.json）。
+	// FluxorConfigFile 旧版单文件配置（FluxorDataDir/fluxor.json）。
+	//
+	// 新布局下**不再写入**：它只作为一次性迁移的输入，迁移完成后被改名为
+	// fluxor.json.migrated-<时间戳> 保留可回滚。见 LoadAll / MigrateLegacyFiles。
 	FluxorConfigFile string
+	// FluxorSettingsFile 全局设置 + 订阅注册表 + 手工节点（FluxorDataDir/settings.json）。
+	FluxorSettingsFile string
+	// FluxorRulesFile 三作用域自定义规则（FluxorDataDir/rules.json）。
+	FluxorRulesFile string
+	// FluxorTunnelsFile 三作用域流量隧道（FluxorDataDir/tunnels.json）。
+	FluxorTunnelsFile string
+	// FluxorMetaFile 各订阅的更新元数据（FluxorDataDir/subscription-meta.json）。
+	FluxorMetaFile string
+	// FluxorTproxyFile TProxy 开关与绕过列表（FluxorDataDir/tproxy.json）。
+	FluxorTproxyFile string
 	// ConfigTarget 生成给内核使用的 config.yaml 目标路径。
 	ConfigTarget string
 	// FluxorLogFile Fluxor 后端全部日志的落盘文件（FluxorDataDir/fluxor.log），

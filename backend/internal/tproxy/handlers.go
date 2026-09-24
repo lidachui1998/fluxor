@@ -99,7 +99,7 @@ func HandleTproxyExceptions(w http.ResponseWriter, r *http.Request) {
 		httpx.RespondJSON(w, http.StatusOK, map[string]interface{}{
 			"dst": dst,
 			"src": src,
-			// 预填内容随查询一并返回：老用户 fluxor.json 里已存在该字段，改默认值对他们
+			// 预填内容随查询一并返回：老配置里已存在该字段，改默认值对他们
 			// 不生效，前端「恢复默认」按钮靠这份数据把新预填灌回文本框。清单只在
 			// store.go 维护一份，避免前后端各写一份而漂移。
 			"defaults": map[string][]string{

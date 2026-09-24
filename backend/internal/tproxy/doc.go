@@ -16,7 +16,7 @@ package tproxy
 //
 // 文件划分：
 //   - state.go   启用状态、IPv6 接管开关、绕过列表缓存与各读写锁
-//   - store.go   开关状态 / 绕过列表 / 本机代理开关 / IPv6 接管开关在 fluxor.json
+//   - store.go   开关状态 / 绕过列表 / 本机代理开关 / IPv6 接管开关在 tproxy.json
 //                中的持久化，以及冷启动收敛 ResetOnStartup
 //   - rules.go   规则解析与 nftables 规则的启用、探测式清理（IPv4/IPv6 同构）
 //   - handlers.go /config/tproxy* HTTP 接口

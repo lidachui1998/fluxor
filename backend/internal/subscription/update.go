@@ -57,16 +57,14 @@ func takeSubscriptionSnapshot(subName string) (subscriptionSnapshot, bool) {
 	return snap, true
 }
 
-// applySubscriptionMetadata 在锁内写回下载得到的元数据（仅字段赋值，无 IO）。
+// applySubscriptionMetadata 落库下载得到的元数据。
+//
+// 只写 subscription-meta.json（config.SaveSubscriptionMeta 内部会重新组装 Current），
+// 因此不再需要 config.Mu，也不会碰订阅注册表——定时更新只重写这一份小文件。
+// 元数据写失败不影响本次更新的结果，如实记日志即可。
 func applySubscriptionMetadata(subName, updatedAt string, subInfo map[string]interface{}) {
-	config.Mu.Lock()
-	defer config.Mu.Unlock()
-	for i := range config.Current.Subscriptions {
-		if config.Current.Subscriptions[i].Name == subName {
-			config.Current.Subscriptions[i].UpdatedAt = updatedAt
-			config.Current.Subscriptions[i].SubscriptionInfo = subInfo
-			return
-		}
+	if err := config.SaveSubscriptionMeta(subName, updatedAt, subInfo); err != nil {
+		logx.Error(logx.ModuleSub, "saving metadata for subscription %q failed: %v", subName, err)
 	}
 }
 

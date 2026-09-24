@@ -71,20 +71,10 @@ func HandleSubscribeUpdate(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			// 更新内存配置数据
-			config.Mu.Lock()
-			for i := range config.Current.Subscriptions {
-				if config.Current.Subscriptions[i].Name == subName {
-					config.Current.Subscriptions[i].UpdatedAt = updatedAt
-					config.Current.Subscriptions[i].SubscriptionInfo = subInfo
-					break
-				}
-			}
-			config.Mu.Unlock()
-
-			// 持久化保存到 subscribe.json
-			if err := config.SaveSubscribeConfig(); err != nil {
-				logx.Error(logx.ModuleSub, "saving subscription config failed: subscription=%q err=%v", subName, err)
+			// 持久化该订阅的元数据（SaveSubscriptionMeta 只写 subscription-meta.json，
+			// 内部落盘并重组装 Current，故不得在持 config.Mu 时调用）
+			if err := config.SaveSubscriptionMeta(subName, updatedAt, subInfo); err != nil {
+				logx.Error(logx.ModuleSub, "saving metadata for subscription %q failed: %v", subName, err)
 			} else {
 				logx.Info(logx.ModuleSub, "subscription %q updated in background and metadata saved", subName)
 			}
@@ -136,12 +126,7 @@ func HandleSubscribeUpdate(w http.ResponseWriter, r *http.Request) {
 		StopAllTimers()
 		StartAllTimers()
 
-		// 立即持久化（避免统一保存被绕过或失败时前端未知）
-		if err := config.SaveSubscribeConfig(); err != nil {
-			logx.Error(logx.ModuleSub, "saving subscription config failed: %v", err)
-			httpx.WriteJSONError(w, http.StatusInternalServerError, "保存配置失败: "+err.Error())
-			return
-		}
+		// 元数据已由 updateSubscriptionInSwitchMode 写入 subscription-meta.json，此处无需再落库
 	}
 
 	var info interface{}

@@ -78,7 +78,8 @@ type moveRuleRequest struct {
 //	PATCH  /subscribe/custom-rules/{name}        调整顺序（body: {id, direction: up|down}）
 //	DELETE /subscribe/custom-rules/{name}?id=xx  删除一条规则
 //
-// 所有写操作都立即持久化到 fluxor.json；若该订阅正是切换模式下的激活订阅，
+// 所有写操作都立即持久化到 rules.json（config.UpdateSubscriptionRules 锁内读—改—写）；
+// 若该订阅正是切换模式下的激活订阅，
 // 则同时重写 config.yaml 并热重载内核。弹窗本身不需要「保存」动作。
 func HandleCustomRulesAPI(w http.ResponseWriter, r *http.Request) {
 	name, ok := customRulesSubscriptionName(r)
@@ -145,16 +146,17 @@ func handleAddCustomRule(w http.ResponseWriter, r *http.Request, name string) {
 		return
 	}
 
-	config.Mu.Lock()
-	for i := range config.Current.Subscriptions {
-		if config.Current.Subscriptions[i].Name == name {
-			rules := append(config.Current.Subscriptions[i].CustomRules, rule)
-			// 持久化顺序 = 展示顺序 = 生效顺序：before 组在前，after 组在后
-			config.Current.Subscriptions[i].CustomRules = config.SortCustomRulesForDisplay(rules)
-			break
-		}
+	// 「追加到列表」这一步在写锁内完成：闭包拿到的 cur 是**此刻**存储里的列表，
+	// 因此同一订阅的并发改动不会互相覆盖（此前用「请求快照 + 整份落盘」存在丢失更新的窗口）。
+	// 持久化顺序 = 展示顺序 = 生效顺序：before 组在前，after 组在后。
+	err = config.UpdateSubscriptionRules(name, func(cur []config.CustomRule) ([]config.CustomRule, error) {
+		return config.SortCustomRulesForDisplay(appendCopied(cur, rule)), nil
+	})
+	if err != nil {
+		logx.Error(logx.ModuleRule, "saving custom rules failed: subscription=%q: %v", name, err)
+		httpx.WriteJSONError(w, http.StatusInternalServerError, "保存规则失败: "+err.Error())
+		return
 	}
-	config.Mu.Unlock()
 
 	respondAfterRuleMutation(w, name, "ok", "")
 }
@@ -209,23 +211,35 @@ func handleUpdateCustomRule(w http.ResponseWriter, r *http.Request, name string)
 		return
 	}
 
-	config.Mu.Lock()
-	for i := range config.Current.Subscriptions {
-		if config.Current.Subscriptions[i].Name != name {
-			continue
-		}
-		rules := config.Current.Subscriptions[i].CustomRules
-		for j := range rules {
-			if rules[j].ID == rule.ID {
-				rules[j] = rule
+	// 就地替换在写锁内完成：cur 是此刻的列表，并发改动不会互相覆盖
+	var notFound bool
+	err = config.UpdateSubscriptionRules(name, func(cur []config.CustomRule) ([]config.CustomRule, error) {
+		out := copyRules(cur)
+		idx := -1
+		for i := range out {
+			if out[i].ID == rule.ID {
+				idx = i
 				break
 			}
 		}
+		if idx < 0 {
+			// 锁外的存在性校验到这里之间被并发删除：不落盘，按 404 如实告知
+			notFound = true
+			return out, nil
+		}
+		out[idx] = rule
 		// 位置可能被改动过（before <-> after），重排以保持「持久化顺序 = 展示顺序」
-		config.Current.Subscriptions[i].CustomRules = config.SortCustomRulesForDisplay(rules)
-		break
+		return config.SortCustomRulesForDisplay(out), nil
+	})
+	if err != nil {
+		logx.Error(logx.ModuleRule, "saving custom rules failed: subscription=%q: %v", name, err)
+		httpx.WriteJSONError(w, http.StatusInternalServerError, "保存规则失败: "+err.Error())
+		return
 	}
-	config.Mu.Unlock()
+	if notFound {
+		httpx.WriteJSONError(w, http.StatusNotFound, "规则不存在: "+input.ID)
+		return
+	}
 
 	respondAfterRuleMutation(w, name, "ok", "")
 }
@@ -257,21 +271,18 @@ func handleMoveCustomRule(w http.ResponseWriter, r *http.Request, name string) {
 		return
 	}
 
-	moved := false
-	config.Mu.Lock()
-	for i := range config.Current.Subscriptions {
-		if config.Current.Subscriptions[i].Name != name {
-			continue
-		}
-		rules, ok := config.MoveCustomRule(config.Current.Subscriptions[i].CustomRules, input.ID, direction)
-		if ok {
-			config.Current.Subscriptions[i].CustomRules = rules
-			moved = true
-		}
-		break
+	// 组内相邻交换在写锁内完成：moved 的语义由 config.MoveCustomRule 给出（边界返回 false）
+	var moved bool
+	err := config.UpdateSubscriptionRules(name, func(cur []config.CustomRule) ([]config.CustomRule, error) {
+		out, ok := config.MoveCustomRule(cur, input.ID, direction)
+		moved = ok
+		return out, nil
+	})
+	if err != nil {
+		logx.Error(logx.ModuleRule, "saving custom rules failed: subscription=%q: %v", name, err)
+		httpx.WriteJSONError(w, http.StatusInternalServerError, "保存规则失败: "+err.Error())
+		return
 	}
-	config.Mu.Unlock()
-
 	if !moved {
 		// 边界或 id 不存在：都不改变任何状态，如实告知而不是假装成功
 		httpx.WriteJSONError(w, http.StatusBadRequest, "规则已在该分组的最前/最后，无法继续移动")
@@ -288,30 +299,30 @@ func handleDeleteCustomRule(w http.ResponseWriter, r *http.Request, name string)
 		httpx.WriteJSONError(w, http.StatusBadRequest, "缺少规则 id")
 		return
 	}
-	if _, _, found := findSubscription(name); !found {
+	_, _, found := findSubscription(name)
+	if !found {
 		httpx.WriteJSONError(w, http.StatusNotFound, "订阅不存在: "+name)
 		return
 	}
 
-	removed := false
-	config.Mu.Lock()
-	for i := range config.Current.Subscriptions {
-		if config.Current.Subscriptions[i].Name != name {
-			continue
-		}
-		rules := config.Current.Subscriptions[i].CustomRules
-		for j := range rules {
-			if rules[j].ID == id {
-				config.Current.Subscriptions[i].CustomRules =
-					append(rules[:j:j], rules[j+1:]...)
+	// 过滤在写锁内完成：found 由闭包给出，删除不存在的 id 仍按 404 如实告知
+	var removed bool
+	err := config.UpdateSubscriptionRules(name, func(cur []config.CustomRule) ([]config.CustomRule, error) {
+		kept := make([]config.CustomRule, 0, len(cur))
+		for _, rule := range cur {
+			if rule.ID == id {
 				removed = true
-				break
+				continue
 			}
+			kept = append(kept, rule)
 		}
-		break
+		return kept, nil
+	})
+	if err != nil {
+		logx.Error(logx.ModuleRule, "saving custom rules failed: subscription=%q: %v", name, err)
+		httpx.WriteJSONError(w, http.StatusInternalServerError, "保存规则失败: "+err.Error())
+		return
 	}
-	config.Mu.Unlock()
-
 	if !removed {
 		httpx.WriteJSONError(w, http.StatusNotFound, "规则不存在: "+id)
 		return
@@ -359,13 +370,8 @@ func prepareCustomRule(input config.CustomRule, ctx *configgen.RuleContext, rule
 	return rule, nil
 }
 
-// respondAfterRuleMutation 持久化之后统一收尾：按需同步运行配置并返回最新列表。
+// respondAfterRuleMutation 落盘之后统一收尾：按需同步运行配置并返回最新列表。
 func respondAfterRuleMutation(w http.ResponseWriter, name, status, message string) {
-	if err := config.SaveSubscribeConfig(); err != nil {
-		httpx.WriteJSONError(w, http.StatusInternalServerError, "保存规则失败: "+err.Error())
-		return
-	}
-
 	syncStatus, syncMessage := applyCustomRulesToActiveSubscription(name)
 	if syncStatus == "warning" {
 		status = syncStatus

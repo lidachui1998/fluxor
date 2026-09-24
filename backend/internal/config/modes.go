@@ -10,7 +10,8 @@ import (
 var pidDirPinned string
 
 // SetDataDir 设置统一的运行数据目录：
-//   - fluxor.json 与 fluxor.log 一律生成在该目录下；
+//   - fluxor.log 与全部配置文件（settings.json / rules.json / tunnels.json /
+//     subscription-meta.json / tproxy.json）都生成在该目录下；
 //   - fluxor.pid 与 core.pid 默认也生成在该目录下，但若运行模式已把 PID 目录
 //     固定（见 pidDirPinned，openwrt 固定 /var/run），则 PID 文件不受本目录影响。
 //
@@ -20,8 +21,15 @@ var pidDirPinned string
 // 无法只凭 FLUXOR_DATA_DIR 推断。
 func SetDataDir(dir string) {
 	FluxorDataDir = dir
-	FluxorConfigFile = filepath.Join(dir, "fluxor.json")
 	FluxorLogFile = filepath.Join(dir, "fluxor.log")
+	// 新布局：每个类别一个文件（见 config/store.go）
+	FluxorSettingsFile = filepath.Join(dir, "settings.json")
+	FluxorRulesFile = filepath.Join(dir, "rules.json")
+	FluxorTunnelsFile = filepath.Join(dir, "tunnels.json")
+	FluxorMetaFile = filepath.Join(dir, "subscription-meta.json")
+	FluxorTproxyFile = filepath.Join(dir, "tproxy.json")
+	// 旧布局：只读迁移输入，迁移后不再写入
+	FluxorConfigFile = filepath.Join(dir, "fluxor.json")
 
 	pidDir := dir
 	if pidDirPinned != "" {

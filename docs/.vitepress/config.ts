@@ -51,7 +51,7 @@ export default defineConfig({
           collapsed: false,
           items: [
             { text: '目录与路径', link: '/config/file-structure' },
-            { text: '持久化配置 (fluxor.json)', link: '/config/fluxor-json' }
+            { text: '配置文件布局', link: '/config/fluxor-json' }
           ]
         },
         {

@@ -79,57 +79,6 @@ func SortCustomRulesForDisplay(rules []CustomRule) []CustomRule {
 	return out
 }
 
-// AdoptServerOwnedFields 让「整份配置覆盖写」以**服务端已存的规则与隧道**为准。
-//
-// 三者的自定义规则（`subscriptions[].custom_rules`、`merge_custom_rules`、
-// `custom_mode_rules`）与流量隧道（`subscriptions[].tunnels`、`merge_tunnels`、
-// `custom_mode_tunnels`）都只由各自的专用接口维护；而 /subscribe/config 与
-// /subscribe/generate 是整份覆盖写，请求体由调用方把「上次读到的配置」铺开拼成——
-// 这些字段一旦在弹窗里改过，这份快照就是**过期**的。若按「调用方带了就用调用方」
-// 处理，实测会出现：刚删掉的规则在「保存并应用」后复活，刚新增的规则被旧列表覆盖丢失。
-//
-// 因此这里一律取服务端状态：键存在与否、是否为空都不影响——**专用接口是唯一的修改入口**。
-// 唯一例外：服务端没有的**全新订阅**（按名字匹配不到）没有旧值可取，保留请求体里的规则
-// 与隧道，免得「带规则创建订阅」这类调用被静默丢数据（改名也走这条路，规则随之带过去）。
-//
-// 调用方必须传入写锁内的上一份状态；本函数只做深拷贝，不触碰 c 的其它字段。
-func (c *SubscribeConfig) AdoptServerOwnedFields(prev SubscribeConfig) {
-	// 自定义模式：不按档位分表，整份以服务端为准
-	c.CustomModeRules = copyRules(prev.CustomModeRules)
-	c.CustomModeTunnels = CopyTunnels(prev.CustomModeTunnels)
-
-	// 融合模式：两个档位都按服务端为准（另一档本就惰性，也不该被请求体改写）
-	if prev.MergeCustomRules == nil {
-		c.MergeCustomRules = nil
-	} else {
-		c.MergeCustomRules = make(map[string][]CustomRule, len(prev.MergeCustomRules))
-		for group, rules := range prev.MergeCustomRules {
-			c.MergeCustomRules[group] = copyRules(rules)
-		}
-	}
-	if prev.MergeTunnels == nil {
-		c.MergeTunnels = nil
-	} else {
-		c.MergeTunnels = make(map[string][]Tunnel, len(prev.MergeTunnels))
-		for group, tunnels := range prev.MergeTunnels {
-			c.MergeTunnels[group] = CopyTunnels(tunnels)
-		}
-	}
-
-	// 切换模式：按订阅名取服务端那一份；服务端不认识的名字（新建/改名）保留请求体
-	for i := range c.Subscriptions {
-		name := c.Subscriptions[i].Name
-		for j := range prev.Subscriptions {
-			if prev.Subscriptions[j].Name != name {
-				continue
-			}
-			c.Subscriptions[i].CustomRules = copyRules(prev.Subscriptions[j].CustomRules)
-			c.Subscriptions[i].Tunnels = CopyTunnels(prev.Subscriptions[j].Tunnels)
-			break
-		}
-	}
-}
-
 // copyRules 深拷贝规则切片：nil 保持 nil（避免把「没有规则」写成显式空切片），
 // 其余情况返回独立底层数组，防止与全局状态共享后被就地改写。
 func copyRules(rules []CustomRule) []CustomRule {

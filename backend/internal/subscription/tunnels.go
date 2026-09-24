@@ -62,8 +62,12 @@ type tunnelScope struct {
 	name string
 	// tunnels 取该作用域当前的隧道（快照与锁内读都走它）。
 	tunnels func(cfg config.SubscribeConfig) []config.Tunnel
-	// storeTunnels 在写锁内把隧道写回该作用域（含 map 初始化）。
-	storeTunnels func(tunnels []config.Tunnel)
+	// update 在本作用域的 tunnels.json 写锁内完成「读—改—写」：闭包拿到的 current 是
+	// **此刻**存储里的列表，返回的列表被原样落盘，因此同一作用域的并发改动不会互相覆盖。
+	//
+	// 三个作用域各绑定自己的写 API（模板作用域 UpdateTemplateTunnels、订阅作用域
+	// UpdateSubscriptionTunnels），四个写入口因此只需写一遍。
+	update func(mutate func(current []config.Tunnel) ([]config.Tunnel, error)) error
 	// editable 判定「当前模式下该作用域是否可编辑」。
 	editable func(cfg config.SubscribeConfig) bool
 	// disabledHint 不可编辑时的提示（各入口指向对方入口，用户才知道该去哪儿改）。
@@ -91,11 +95,8 @@ func mergeTunnelScope(ruleGroup string) (tunnelScope, bool) {
 	return tunnelScope{
 		name:    ruleGroup,
 		tunnels: rules.tunnels,
-		storeTunnels: func(tunnels []config.Tunnel) {
-			config.Mu.Lock()
-			ensureTunnelsMap()
-			config.Current.MergeTunnels[ruleGroup] = tunnels
-			config.Mu.Unlock()
+		update: func(mutate func([]config.Tunnel) ([]config.Tunnel, error)) error {
+			return config.UpdateTemplateTunnels(ruleGroup, mutate)
 		},
 		editable:     rules.editable,
 		disabledHint: "流量隧道仅在融合模式下可用（切换模式请用订阅卡片上的入口，自定义模式请切到自定义模式）",
@@ -117,10 +118,8 @@ func customModeTunnelScope() tunnelScope {
 	return tunnelScope{
 		name:    config.RuleScopeCustom,
 		tunnels: rules.tunnels,
-		storeTunnels: func(tunnels []config.Tunnel) {
-			config.Mu.Lock()
-			config.Current.CustomModeTunnels = tunnels
-			config.Mu.Unlock()
+		update: func(mutate func([]config.Tunnel) ([]config.Tunnel, error)) error {
+			return config.UpdateTemplateTunnels(config.RuleScopeCustom, mutate)
 		},
 		editable:     rules.editable,
 		disabledHint: "流量隧道仅在自定义模式下可用（融合模式请用标题行的入口，切换模式请用订阅卡片上的入口）",
@@ -144,15 +143,8 @@ func subscriptionTunnelScope(name string) tunnelScope {
 		tunnels: func(cfg config.SubscribeConfig) []config.Tunnel {
 			return cfg.SubscriptionTunnelsFor(name)
 		},
-		storeTunnels: func(tunnels []config.Tunnel) {
-			config.Mu.Lock()
-			for i := range config.Current.Subscriptions {
-				if config.Current.Subscriptions[i].Name == name {
-					config.Current.Subscriptions[i].Tunnels = tunnels
-					break
-				}
-			}
-			config.Mu.Unlock()
+		update: func(mutate func([]config.Tunnel) ([]config.Tunnel, error)) error {
+			return config.UpdateSubscriptionTunnels(name, mutate)
 		},
 		editable: func(cfg config.SubscribeConfig) bool {
 			return cfg.Mode == config.ModeSwitch
@@ -188,7 +180,7 @@ func subscriptionTunnelScope(name string) tunnelScope {
 //	PATCH  /subscribe/custom-tunnels/{name}        调整顺序（body: {id, direction: up|down}）
 //	DELETE /subscribe/custom-tunnels/{name}?id=xx  删除一条隧道
 //
-// 所有写操作都立即持久化到 fluxor.json；若该订阅正是切换模式下的激活订阅，
+// 所有写操作都立即持久化到 tunnels.json（锁内读—改—写）；若该订阅正是切换模式下的激活订阅，
 // 则同时重写 config.yaml 并热重载内核。
 func HandleSubscriptionTunnelsAPI(w http.ResponseWriter, r *http.Request) {
 	name, ok := tunnelScopeParam(r, subscriptionTunnelsRoutePath)
@@ -279,7 +271,16 @@ func handleAddTunnel(w http.ResponseWriter, r *http.Request, scope tunnelScope) 
 		return
 	}
 
-	scope.storeTunnels(appendTunnel(scope.tunnels(ruleConfigCurrent()), tunnel))
+	// 「追加到列表末尾」这一步在写锁内完成：cur 是此刻存储里的列表，
+	// 因此同一作用域的并发新增不会互相覆盖（此前用「请求快照 + 整份落盘」存在丢失更新的窗口）
+	err = scope.update(func(cur []config.Tunnel) ([]config.Tunnel, error) {
+		return appendTunnel(cur, tunnel), nil
+	})
+	if err != nil {
+		logx.Error(logx.ModuleTunnel, "saving tunnels failed: scope=%s: %v", scope.name, err)
+		httpx.WriteJSONError(w, http.StatusInternalServerError, "保存隧道失败: "+err.Error())
+		return
+	}
 	respondAfterTunnelMutation(w, scope)
 }
 
@@ -317,14 +318,34 @@ func handleUpdateTunnel(w http.ResponseWriter, r *http.Request, scope tunnelScop
 		return
 	}
 
-	tunnels := config.CopyTunnels(scope.tunnels(ruleConfigCurrent()))
-	for i := range tunnels {
-		if tunnels[i].ID == tunnel.ID {
-			tunnels[i] = tunnel
-			break
+	// 就地替换在写锁内完成：cur 是此刻的列表，并发改动不会互相覆盖
+	var notFound bool
+	err = scope.update(func(cur []config.Tunnel) ([]config.Tunnel, error) {
+		out := config.CopyTunnels(cur)
+		idx := -1
+		for i := range out {
+			if out[i].ID == tunnel.ID {
+				idx = i
+				break
+			}
 		}
+		if idx < 0 {
+			// 锁外的存在性校验到这里之间被并发删除：不落盘，按 404 如实告知
+			notFound = true
+			return out, nil
+		}
+		out[idx] = tunnel
+		return out, nil
+	})
+	if err != nil {
+		logx.Error(logx.ModuleTunnel, "saving tunnels failed: scope=%s: %v", scope.name, err)
+		httpx.WriteJSONError(w, http.StatusInternalServerError, "保存隧道失败: "+err.Error())
+		return
 	}
-	scope.storeTunnels(tunnels)
+	if notFound {
+		httpx.WriteJSONError(w, http.StatusNotFound, "隧道不存在: "+input.ID)
+		return
+	}
 	respondAfterTunnelMutation(w, scope)
 }
 
@@ -344,13 +365,23 @@ func handleMoveTunnel(w http.ResponseWriter, r *http.Request, scope tunnelScope)
 		return
 	}
 
-	tunnels, moved := config.MoveTunnel(scope.tunnels(ruleConfigCurrent()), strings.TrimSpace(input.ID), direction)
+	// 相邻交换在写锁内完成：moved 的语义由 config.MoveTunnel 给出（边界或 id 不存在返回 false）
+	var moved bool
+	err := scope.update(func(cur []config.Tunnel) ([]config.Tunnel, error) {
+		out, ok := config.MoveTunnel(cur, strings.TrimSpace(input.ID), direction)
+		moved = ok
+		return out, nil
+	})
+	if err != nil {
+		logx.Error(logx.ModuleTunnel, "saving tunnels failed: scope=%s: %v", scope.name, err)
+		httpx.WriteJSONError(w, http.StatusInternalServerError, "保存隧道失败: "+err.Error())
+		return
+	}
 	if !moved {
 		// 边界或 id 不存在：不改变任何状态，如实告知而不是假装成功
 		httpx.WriteJSONError(w, http.StatusBadRequest, "隧道已在列表的最前/最后，无法继续移动")
 		return
 	}
-	scope.storeTunnels(tunnels)
 	respondAfterTunnelMutation(w, scope)
 }
 
@@ -362,22 +393,28 @@ func handleDeleteTunnel(w http.ResponseWriter, r *http.Request, scope tunnelScop
 		return
 	}
 
-	tunnels := scope.tunnels(ruleConfigCurrent())
-	kept := make([]config.Tunnel, 0, len(tunnels))
-	found := false
-	for _, tunnel := range tunnels {
-		if tunnel.ID == id {
-			found = true
-			continue
+	// 过滤在写锁内完成：found 由闭包给出，删除不存在的 id 仍按 404 如实告知
+	var found bool
+	err := scope.update(func(cur []config.Tunnel) ([]config.Tunnel, error) {
+		kept := make([]config.Tunnel, 0, len(cur))
+		for _, tunnel := range cur {
+			if tunnel.ID == id {
+				found = true
+				continue
+			}
+			kept = append(kept, tunnel)
 		}
-		kept = append(kept, tunnel)
+		return kept, nil
+	})
+	if err != nil {
+		logx.Error(logx.ModuleTunnel, "saving tunnels failed: scope=%s: %v", scope.name, err)
+		httpx.WriteJSONError(w, http.StatusInternalServerError, "保存隧道失败: "+err.Error())
+		return
 	}
 	if !found {
 		httpx.WriteJSONError(w, http.StatusNotFound, "隧道不存在: "+id)
 		return
 	}
-
-	scope.storeTunnels(kept)
 	respondAfterTunnelMutation(w, scope)
 }
 
@@ -434,13 +471,8 @@ func prepareTunnel(input config.Tunnel, ctx *configgen.RuleContext, tunnels []co
 	return tunnel, nil
 }
 
-// respondAfterTunnelMutation 持久化之后统一收尾：按需重生成运行配置并返回最新列表。
+// respondAfterTunnelMutation 落盘之后统一收尾：按需重生成运行配置并返回最新列表。
 func respondAfterTunnelMutation(w http.ResponseWriter, scope tunnelScope) {
-	if err := config.SaveSubscribeConfig(); err != nil {
-		httpx.WriteJSONError(w, http.StatusInternalServerError, "保存隧道失败: "+err.Error())
-		return
-	}
-
 	status, message := applyTunnelsToActiveConfig(scope)
 
 	payload := scope.payload(ruleConfigSnapshot())
@@ -528,13 +560,6 @@ func containsTunnelID(tunnels []config.Tunnel, id string) bool {
 		}
 	}
 	return false
-}
-
-// ensureTunnelsMap 保证 MergeTunnels 非 nil；调用方必须持有写锁。
-func ensureTunnelsMap() {
-	if config.Current.MergeTunnels == nil {
-		config.Current.MergeTunnels = map[string][]config.Tunnel{}
-	}
 }
 
 // newCustomTunnelID 生成隧道标识（前端编辑/排序/删除/开关单条隧道使用）。

@@ -120,7 +120,7 @@ func buildTunnelNode(tunnel config.Tunnel) (*yaml.Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	// 地址与目标都按归一化后的形态落盘（去空白 + 校验）：手改过 fluxor.json 的条目也会
+	// 地址与目标都按归一化后的形态落盘（去空白 + 校验）：手改过配置文件的条目也会
 	// 在这里被拦住，而不是产出一条起不来监听却无人报错的隧道
 	address, err := config.NormalizeTunnelAddress(tunnel.Address)
 	if err != nil {

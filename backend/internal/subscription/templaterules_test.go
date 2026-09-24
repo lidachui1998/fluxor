@@ -5,18 +5,17 @@ import (
 	"testing"
 )
 
-// withCurrent 临时替换全局配置并保证测试结束后还原。
-func withCurrent(t *testing.T, cfg config.SubscribeConfig) {
+// withStores 把运行数据目录指到临时目录、载入空配置，并把 cfg 播种进 settings store。
+//
+// config.Current 现在由各 store 组装（不再能直接赋值），因此测试必须走真实写入路径：
+// SetDataDir → LoadAll → SaveSettings。
+func withStores(t *testing.T, cfg config.SubscribeConfig) {
 	t.Helper()
-	config.Mu.Lock()
-	prev := config.Current
-	config.Current = cfg
-	config.Mu.Unlock()
-	t.Cleanup(func() {
-		config.Mu.Lock()
-		config.Current = prev
-		config.Mu.Unlock()
-	})
+	config.SetDataDir(t.TempDir())
+	config.LoadAll()
+	if err := config.SaveSettings(cfg); err != nil {
+		t.Fatalf("播种 settings 失败: %v", err)
+	}
 }
 
 // TestRuleScopeResolution 三种模板级作用域的解析：档位只认 base/full，自定义模式单独一个作用域。
@@ -101,15 +100,28 @@ func TestRuleScopeActive(t *testing.T) {
 //
 // 这是本次拆分的核心回归点：融合档位与自定义模式各自持有规则，写一边绝不能出现在另一边。
 func TestRuleScopesAreIsolated(t *testing.T) {
-	withCurrent(t, config.SubscribeConfig{})
+	withStores(t, config.SubscribeConfig{})
 
 	baseScope, _ := mergeRuleScope(config.RuleGroupBase)
 	fullScope, _ := mergeRuleScope(config.RuleGroupFull)
 	customScope := customModeRuleScope()
 
-	baseScope.store([]config.CustomRule{{ID: "b1", Payload: "base.test"}})
-	fullScope.store([]config.CustomRule{{ID: "f1", Payload: "full.test"}})
-	customScope.store([]config.CustomRule{{ID: "c1", Payload: "custom.test"}})
+	// 三个作用域各写各的：写入走生产同款的「锁内读—改—写」，写完 Current 由 store 重组装
+	if err := config.UpdateTemplateRules(baseScope.name, func([]config.CustomRule) ([]config.CustomRule, error) {
+		return []config.CustomRule{{ID: "b1", Payload: "base.test"}}, nil
+	}); err != nil {
+		t.Fatalf("写入 base 档位规则失败: %v", err)
+	}
+	if err := config.UpdateTemplateRules(fullScope.name, func([]config.CustomRule) ([]config.CustomRule, error) {
+		return []config.CustomRule{{ID: "f1", Payload: "full.test"}}, nil
+	}); err != nil {
+		t.Fatalf("写入 full 档位规则失败: %v", err)
+	}
+	if err := config.UpdateTemplateRules(customScope.name, func([]config.CustomRule) ([]config.CustomRule, error) {
+		return []config.CustomRule{{ID: "c1", Payload: "custom.test"}}, nil
+	}); err != nil {
+		t.Fatalf("写入自定义作用域规则失败: %v", err)
+	}
 
 	cfg := ruleConfigSnapshot()
 	if got := len(baseScope.rules(cfg)); got != 1 || baseScope.rules(cfg)[0].ID != "b1" {

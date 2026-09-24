@@ -12,8 +12,14 @@ package config
 //   - model.go     SubscribeConfig / Subscription 数据结构定义
 //   - state.go     进程内共享的当前配置与读写锁
 //   - load.go      配置的加载、默认值补齐与持久化；
-//                  以及 FileMu / UpdateConfigFile —— fluxor.json 的共用文件锁
-//                  与「读—改—写」入口（tproxy 旁路字段与订阅配置共用该文件）
+//   - store.go     泛型 Store[T]：一个 JSON 文件 = 一把独立锁 + 一份内存态 + 一个
+//                  写入者；原子写盘与「损坏则拒写」
+//   - storemodels.go 各文件的磁盘结构（Settings / RulesFile / TunnelsFile /
+//                  MetaFile / TproxyFile）
+//   - stores.go    各文件唯一的读写入口、视图组装（Current）、孤儿回收与改名搬迁
+//   - migrate.go   旧单文件 fluxor.json → 多文件的一次性拆分（幂等、可回滚）
 //
 // 注：main.go 中的环境变量覆盖直接调用 os.Getenv，本包不再提供读取工具。
-// 运行期另有 FileMu 保护配置文件本身，与保护内存快照 Current 的 Mu 是两把独立的锁。
+// 锁分两层：每个 Store 一把文件锁（只保护该文件的「读—改—写」），config.Mu 保护
+// 内存视图 Current。二者不可嵌套：Store 的写入口内部会重组装 Current，因此不得在
+// 持有 config.Mu 时调用它们。

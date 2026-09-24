@@ -42,13 +42,9 @@ func HandleSubscribeConfigAPI(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		// 与 /subscribe/generate 同一道理：自定义规则与流量隧道由各自的专用接口维护，
-		// 这个整体覆盖写接口若在请求体缺少这些字段时把它们清空，
-		// 会导致运行配置与磁盘状态双双丢数据（详见 config.AdoptServerOwnedFields）。
-		config.Mu.RLock()
-		prev := config.Current
-		config.Mu.RUnlock()
-		newConfig.AdoptServerOwnedFields(prev)
+		// 请求体里的自定义规则与流量隧道一律忽略：它们存在 rules.json / tunnels.json 里，
+		// 由各自的专用接口维护；SaveSettings 只取设置与订阅注册表，因此请求体里的过期快照
+		// 无法覆盖服务端（这正是旧 AdoptServerOwnedFields 补丁要解决的问题）。
 
 		// 自定义节点列表与订阅列表一样由本接口整体覆盖：落库前先校验并归一化
 		// （节点名、字段类型与必填、与模板组名冲突），否则内核会拒绝加载整份配置。
@@ -59,12 +55,9 @@ func HandleSubscribeConfigAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		newConfig.CustomNodes = nodes
 
-		config.Mu.Lock()
-		config.Current = newConfig
-		config.Mu.Unlock()
-
-		if err := config.SaveSubscribeConfig(); err != nil {
-			logx.Error(logx.ModuleConfig, "saving subscription config failed: %v", err)
+		// 落库与重组装 Current 由 SaveSettings 一并完成（内部取 config.Mu，故此处不得持锁）
+		if err := config.SaveSettings(newConfig); err != nil {
+			logx.Error(logx.ModuleConfig, "saving settings failed: %v", err)
 			httpx.WriteJSONError(w, http.StatusInternalServerError, "保存配置失败: "+err.Error())
 			return
 		}

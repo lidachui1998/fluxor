@@ -41,22 +41,19 @@ func fetchSubscriptionMetadataFromCore(subName string) (updatedAt string, subInf
 
 // updateAllSubscriptionsMetadata 更新所有订阅的元数据（仅用于融合模式）。
 //
-// 采用「锁外抓取、锁内写回」：抓取阶段含重试与 500ms 退避，绝不能持
-// config.Mu 进行（会长时间阻塞 /subscribe/config 等读者）；但写回阶段必须
-// 持锁——cfg.Subscriptions 与 config.Current.Subscriptions 通常是同一份底层
-// 数组，无锁写入会与 RLock 下的读取构成数据竞争。
+// 采用「锁外抓取、逐个落库」：抓取阶段含重试与 500ms 退避，绝不能持 config.Mu
+// 进行（会长时间阻塞 /subscribe/config 等读者）；元数据落库交给
+// config.SaveSubscriptionMeta（只写 subscription-meta.json，并在内部重组装
+// Current，因此不得在持 config.Mu 时调用）。入参 cfg 是本次请求的本地视图，抓到的
+// 结果同时写回它的 Subscriptions 供本次生成/响应使用——不再就地改写 config.Current。
 func updateAllSubscriptionsMetadata(cfg *config.SubscribeConfig) {
-	// 1. 锁内备份旧元数据（用于抓取失败时保留）
-	config.Mu.RLock()
-	oldSubs := make(map[string]config.Subscription, len(config.Current.Subscriptions))
-	for _, s := range config.Current.Subscriptions {
-		oldSubs[s.Name] = s
-	}
-	config.Mu.RUnlock()
-
-	// 2. 锁外抓取
+	// 1. 锁外抓取
 	type metaResult struct {
-		name      string
+		name string
+		// ok 表示本次确实抓到了新元数据：只有它为 true 才落库
+		// （抓取失败的订阅保持 store 里的旧值，不做同值回写——那会在并发下
+		//  把别人刚写入的新值覆盖回去）。
+		ok        bool
 		updatedAt string
 		subInfo   map[string]interface{}
 	}
@@ -68,7 +65,7 @@ func updateAllSubscriptionsMetadata(cfg *config.SubscribeConfig) {
 		var subInfo map[string]interface{}
 		var err error
 
-		// 3. 重试机制：最多尝试 3 次，每次间隔 500ms
+		// 2. 重试机制：最多尝试 3 次，每次间隔 500ms
 		for attempt := 0; attempt < 3; attempt++ {
 			if attempt > 0 {
 				time.Sleep(500 * time.Millisecond)
@@ -80,39 +77,39 @@ func updateAllSubscriptionsMetadata(cfg *config.SubscribeConfig) {
 			logx.Warn(logx.ModuleSub, "fetching metadata for subscription %q failed (attempt %d/%d): %v", name, attempt+1, 3, err)
 		}
 
+		ok := err == nil
 		if err != nil {
-			// 获取失败：尝试保留旧数据
-			if old, ok := oldSubs[name]; ok {
-				updatedAt, subInfo = old.UpdatedAt, old.SubscriptionInfo
-				logx.Warn(logx.ModuleSub, "keeping previous metadata for subscription %q after fetch failure", name)
-			} else {
+			// 获取失败：旧元数据不再取自入参快照，而是从 store 读（store 里仍是旧值，
+			// 因此本次不写入新数据）。本地 cfg 沿用旧值，保证本次生成/响应与之一致；
+			// store 里也没有旧值时本地置空。
+			oldUpdatedAt, oldInfo := config.SubscriptionMetaOf(name)
+			if oldUpdatedAt == "" && oldInfo == nil {
 				updatedAt, subInfo = "", nil
 				logx.Warn(logx.ModuleSub, "subscription %q has no previous metadata, keeping it empty", name)
+			} else {
+				updatedAt, subInfo = oldUpdatedAt, oldInfo
+				logx.Warn(logx.ModuleSub, "keeping previous metadata for subscription %q after fetch failure", name)
 			}
 		} else {
 			logx.Info(logx.ModuleSub, "metadata for subscription %q updated", name)
 		}
 
-		results = append(results, metaResult{name: name, updatedAt: updatedAt, subInfo: subInfo})
+		results = append(results, metaResult{name: name, ok: ok, updatedAt: updatedAt, subInfo: subInfo})
 	}
 
-	// 4. 锁内一次性写回（临界区只做字段赋值）
-	config.Mu.Lock()
-	defer config.Mu.Unlock()
+	// 3. 逐个落库（每个订阅一次，各自只碰自己的条目），并写回入参 cfg 的本地视图。
+	// 不能再一次性写 config.Current.Subscriptions：Current 现在由各 store 组装，
+	// SaveSubscriptionMeta 已经把它更新了。
 	for _, r := range results {
+		if r.ok {
+			if err := config.SaveSubscriptionMeta(r.name, r.updatedAt, r.subInfo); err != nil {
+				logx.Error(logx.ModuleSub, "saving metadata for subscription %q failed: %v", r.name, err)
+			}
+		}
 		for i := range cfg.Subscriptions {
 			if cfg.Subscriptions[i].Name == r.name {
 				cfg.Subscriptions[i].UpdatedAt = r.updatedAt
 				cfg.Subscriptions[i].SubscriptionInfo = r.subInfo
-				break
-			}
-		}
-		// 同时写入当前生效配置：二者通常共享底层数组，但若期间 Current 已被
-		// 其它请求替换，则需保证全局状态也能拿到最新元数据。
-		for i := range config.Current.Subscriptions {
-			if config.Current.Subscriptions[i].Name == r.name {
-				config.Current.Subscriptions[i].UpdatedAt = r.updatedAt
-				config.Current.Subscriptions[i].SubscriptionInfo = r.subInfo
 				break
 			}
 		}

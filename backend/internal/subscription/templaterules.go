@@ -18,7 +18,7 @@ import (
 //
 // 三种作用域（另有切换模式的订阅级规则，见 customrules.go）在存放位置、可用模式、
 // 生效判定与目标集合上都不同，但事务顺序完全一致：
-//   锁内改 config.Current → 持久化 → 若作用域当前生效则重新生成 config.yaml → 热重载内核
+//   落盘该作用域的 store → 若作用域当前生效则重新生成 config.yaml → 热重载内核
 // 因此把差异收敛进 ruleScope，把流程只写一遍——两份拷贝迟早会在某次改动后不一致。
 
 // ruleScope 描述一个模板级自定义规则作用域。
@@ -32,8 +32,6 @@ type ruleScope struct {
 	// 规则接口的响应必须带上隧道：两个接口服务同一个作用域（同一个弹窗），响应体同构，
 	// 否则规则接口的返回值会把前端刚加载到的隧道列表覆盖成空。
 	tunnels func(cfg config.SubscribeConfig) []config.Tunnel
-	// store 在写锁内把规则写回该作用域（含 map 初始化）。
-	store func(rules []config.CustomRule)
 	// editable 判定「当前模式下该作用域是否可编辑」。
 	editable func(cfg config.SubscribeConfig) bool
 	// disabledHint 不可编辑时的提示（各入口指向对方入口，用户才知道该去哪儿改）。
@@ -58,12 +56,6 @@ func mergeRuleScope(ruleGroup string) (ruleScope, bool) {
 		},
 		tunnels: func(cfg config.SubscribeConfig) []config.Tunnel {
 			return cfg.MergeTunnelsFor(ruleGroup)
-		},
-		store: func(rules []config.CustomRule) {
-			config.Mu.Lock()
-			ensureRulesMap()
-			config.Current.MergeCustomRules[ruleGroup] = rules
-			config.Mu.Unlock()
 		},
 		editable: func(cfg config.SubscribeConfig) bool {
 			return cfg.Mode == config.ModeMerge
@@ -91,11 +83,6 @@ func customModeRuleScope() ruleScope {
 		},
 		tunnels: func(cfg config.SubscribeConfig) []config.Tunnel {
 			return cfg.CustomModeTunnels
-		},
-		store: func(rules []config.CustomRule) {
-			config.Mu.Lock()
-			config.Current.CustomModeRules = rules
-			config.Mu.Unlock()
 		},
 		editable: func(cfg config.SubscribeConfig) bool {
 			return cfg.Mode == config.ModeCustom
@@ -156,7 +143,17 @@ func handleAddRule(w http.ResponseWriter, r *http.Request, scope ruleScope) {
 		return
 	}
 
-	scope.store(config.SortCustomRulesForDisplay(appendCopied(scope.rules(ruleConfigCurrent()), rule)))
+	// 「追加到列表」这一步在写锁内完成：闭包拿到的 cur 是**此刻**存储里的列表，
+	// 因此同一作用域的并发新增不会互相覆盖（此前用「请求快照 + 整份落盘」存在丢失更新的窗口）。
+	// 判重仍在锁外用快照做：极端竞态下可能漏过一条重复规则，内核能容忍重复规则行，不做额外处理。
+	err = config.UpdateTemplateRules(scope.name, func(cur []config.CustomRule) ([]config.CustomRule, error) {
+		return config.SortCustomRulesForDisplay(appendCopied(cur, rule)), nil
+	})
+	if err != nil {
+		logx.Error(logx.ModuleRule, "saving custom rules failed: scope=%s: %v", scope.name, err)
+		httpx.WriteJSONError(w, http.StatusInternalServerError, "保存规则失败: "+err.Error())
+		return
+	}
 	respondAfterTemplateRuleMutation(w, scope)
 }
 
@@ -191,15 +188,35 @@ func handleUpdateRule(w http.ResponseWriter, r *http.Request, scope ruleScope) {
 		return
 	}
 
-	rules := copyRules(scope.rules(ruleConfigCurrent()))
-	for i := range rules {
-		if rules[i].ID == rule.ID {
-			rules[i] = rule
-			break
+	// 就地替换在写锁内完成：cur 是此刻的列表，并发改动不会互相覆盖
+	var notFound bool
+	err = config.UpdateTemplateRules(scope.name, func(cur []config.CustomRule) ([]config.CustomRule, error) {
+		out := copyRules(cur)
+		idx := -1
+		for i := range out {
+			if out[i].ID == rule.ID {
+				idx = i
+				break
+			}
 		}
+		if idx < 0 {
+			// 锁外的存在性校验到这里之间被并发删除：不落盘，按 404 如实告知
+			notFound = true
+			return out, nil
+		}
+		out[idx] = rule
+		// 插入位置可能被改动过（最前 <-> 末尾），重排以保持「持久化顺序 = 展示顺序」
+		return config.SortCustomRulesForDisplay(out), nil
+	})
+	if err != nil {
+		logx.Error(logx.ModuleRule, "saving custom rules failed: scope=%s: %v", scope.name, err)
+		httpx.WriteJSONError(w, http.StatusInternalServerError, "保存规则失败: "+err.Error())
+		return
 	}
-	// 插入位置可能被改动过（最前 <-> 末尾），重排以保持「持久化顺序 = 展示顺序」
-	scope.store(config.SortCustomRulesForDisplay(rules))
+	if notFound {
+		httpx.WriteJSONError(w, http.StatusNotFound, "规则不存在: "+input.ID)
+		return
+	}
 	respondAfterTemplateRuleMutation(w, scope)
 }
 
@@ -216,13 +233,23 @@ func handleMoveRule(w http.ResponseWriter, r *http.Request, scope ruleScope) {
 		return
 	}
 
-	rules, moved := config.MoveCustomRule(scope.rules(ruleConfigCurrent()), input.ID, direction)
+	// 组内相邻交换在写锁内完成：moved 的语义由 config.MoveCustomRule 给出（边界返回 false）
+	var moved bool
+	err := config.UpdateTemplateRules(scope.name, func(cur []config.CustomRule) ([]config.CustomRule, error) {
+		out, ok := config.MoveCustomRule(cur, input.ID, direction)
+		moved = ok
+		return out, nil
+	})
+	if err != nil {
+		logx.Error(logx.ModuleRule, "saving custom rules failed: scope=%s: %v", scope.name, err)
+		httpx.WriteJSONError(w, http.StatusInternalServerError, "保存规则失败: "+err.Error())
+		return
+	}
 	if !moved {
 		// 边界或 id 不存在：不改变任何状态，如实告知而不是假装成功
 		httpx.WriteJSONError(w, http.StatusBadRequest, "规则已在该分组的最前/最后，无法继续移动")
 		return
 	}
-	scope.store(rules)
 	respondAfterTemplateRuleMutation(w, scope)
 }
 
@@ -234,32 +261,33 @@ func handleDeleteRule(w http.ResponseWriter, r *http.Request, scope ruleScope) {
 		return
 	}
 
-	rules := scope.rules(ruleConfigCurrent())
-	kept := make([]config.CustomRule, 0, len(rules))
-	found := false
-	for _, rule := range rules {
-		if rule.ID == id {
-			found = true
-			continue
+	// 过滤在写锁内完成：found 由闭包给出，删除不存在的 id 仍按 404 如实告知
+	var found bool
+	err := config.UpdateTemplateRules(scope.name, func(cur []config.CustomRule) ([]config.CustomRule, error) {
+		kept := make([]config.CustomRule, 0, len(cur))
+		for _, rule := range cur {
+			if rule.ID == id {
+				found = true
+				continue
+			}
+			kept = append(kept, rule)
 		}
-		kept = append(kept, rule)
+		return kept, nil
+	})
+	if err != nil {
+		logx.Error(logx.ModuleRule, "saving custom rules failed: scope=%s: %v", scope.name, err)
+		httpx.WriteJSONError(w, http.StatusInternalServerError, "保存规则失败: "+err.Error())
+		return
 	}
 	if !found {
 		httpx.WriteJSONError(w, http.StatusNotFound, "规则不存在: "+id)
 		return
 	}
-
-	scope.store(kept)
 	respondAfterTemplateRuleMutation(w, scope)
 }
 
-// respondAfterTemplateRuleMutation 持久化之后统一收尾：按需重生成运行配置并返回最新列表。
+// respondAfterTemplateRuleMutation 落盘之后统一收尾：按需重生成运行配置并返回最新列表。
 func respondAfterTemplateRuleMutation(w http.ResponseWriter, scope ruleScope) {
-	if err := config.SaveSubscribeConfig(); err != nil {
-		httpx.WriteJSONError(w, http.StatusInternalServerError, "保存规则失败: "+err.Error())
-		return
-	}
-
 	status, message := applyRulesToActiveConfig(scope)
 
 	payload := buildRulesPayload(ruleConfigSnapshot(), scope)
@@ -359,16 +387,6 @@ func ruleConfigSnapshot() config.SubscribeConfig {
 	return config.Current
 }
 
-// ruleConfigCurrent 取当前配置（写锁由 scope.store 内部持有）。
-//
-// 只在紧接着 store 之前调用：读到的必须是「此刻」的列表，若用请求开始时的快照，
-// 中途到达的其它写操作会被整条覆盖掉。
-func ruleConfigCurrent() config.SubscribeConfig {
-	config.Mu.RLock()
-	defer config.Mu.RUnlock()
-	return config.Current
-}
-
 // appendCopied 复制一份规则切片再追加，避免与全局快照共享底层数组。
 func appendCopied(rules []config.CustomRule, rule config.CustomRule) []config.CustomRule {
 	out := make([]config.CustomRule, 0, len(rules)+1)
@@ -381,13 +399,6 @@ func copyRules(rules []config.CustomRule) []config.CustomRule {
 	out := make([]config.CustomRule, len(rules))
 	copy(out, rules)
 	return out
-}
-
-// ensureRulesMap 保证 MergeCustomRules 非 nil；调用方必须持有写锁。
-func ensureRulesMap() {
-	if config.Current.MergeCustomRules == nil {
-		config.Current.MergeCustomRules = map[string][]config.CustomRule{}
-	}
 }
 
 // containsRuleID 判定规则 id 是否存在于给定列表。

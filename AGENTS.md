@@ -106,16 +106,21 @@ backend/
     │   ├── state.go              #   Current（当前配置快照）+ Mu（读写锁）
     │   ├── paths.go              #   全部运行路径（FluxorDataDir 统一运行数据目录 / Socket / 内核 / 面板等）
     │   ├── modes.go              #   fnos / openwrt 两套默认路径；SetDataDir 由 FluxorDataDir 派生
-    │   │                         #     fluxor.json / fluxor.log（PID 文件默认同址，openwrt 经 pidDirPinned
-    │   │                         #     固定到 /var/run，不随数据目录变化）；这四个路径不再单独配置；
+    │   │                         #     fluxor.log 与 5 个配置文件（旧 fluxor.json 仅供迁移读取；
+    │   │                         #     PID 文件默认同址，openwrt 经 pidDirPinned 固定到 /var/run）；
     │   │                         #     fnos 默认取 TRIM_PKGVAR，未注入回退 /var/apps/Fluxor/var
     │   ├── name.go               #   订阅名校验与节点文件名清洗（防路径穿越）
     │   ├── nodes.go              #   CustomNode 名校验（非空/长度/无控制字符/重名）
     │   ├── rules.go              #   CustomRule 列表操作：同组内上/下移动、按生效顺序重排
-    │   │                         #     + AdoptServerOwnedFields：规则与隧道字段一律以服务端为准
     │   ├── tunnels.go            #   Tunnel 模型：网络类型归一化、同地址判重、列表内上/下移动、按作用域取列表
-    │   └── load.go               #   配置加载、默认值补齐、持久化
-    │                             #     + FileMu / UpdateConfigFile：fluxor.json 的共用文件锁与「读—改—写」
+    │   ├── store.go              #   泛型 Store[T]：一个 JSON 文件 = 一把独立锁 + 一份内存态 + 一个写入者
+    │   │                         #     （原子写盘 writeFileAtomic、损坏则备份并拒写）
+    │   ├── storemodels.go        #   各文件的磁盘结构：Settings / SubscriptionRef / RulesFile /
+    │   │                         #     TunnelsFile / MetaFile / SubscriptionMeta / TproxyFile
+    │   ├── stores.go             #   各文件唯一的读写入口（SaveSettings / UpdateSubscriptionRules /
+    │   │                         #     UpdateTemplateRules / SaveSubscriptionMeta …）、视图组装
+    │   │                         #     assembleCurrent、孤儿回收 GCResources、改名搬迁 renameResources
+    │   └── migrate.go            #   旧单文件 fluxor.json → 多文件的一次性拆分（幂等、可回滚、损坏先备份）
     ├── configgen/                # 【基础层】config.yaml 模板 + YAML 结构化改写
     │   ├── generator.go          #   GenerateConfig / GenerateBaseConfig（写盘前归一化顶层键序：标量键在前、块在后，块序 dns→proxy-providers→proxy-groups→proxies→tunnels→rule-providers→rules）
     │   ├── template_base.go      #   基础字段骨架
@@ -376,14 +381,33 @@ func (c *cancelableReadCloser) Close() error {
 6. **失败必须回滚且如实上报**：`EnableTProxyRules` 对每个已启用家族校验三件关键产物是否真实存在——nft 表、`fwmark` 策略路由、策略路由表里的 `local` 路由（缺策略路由会把被标记流量导入黑洞，因此不能只看 nft 表），任一缺失即返回 error；Handler 在失败时回滚开关状态并返回错误，绝不回报 `enabled: true`。同理，改 `tproxy-port` 时只有在开关处于启用态才能重建规则，否则会在开关为「关闭」时被静默装上系统级透明代理规则。
 7. **IPv4 / IPv6 是同构的两套规则，必须同生共死**：两套规则由 `tproxyFamily` 参数化（家族/表名/地址关键字/集合类型/`ip` 家族参数/默认路由/绕过网段），启用时按 `ipv6Enabled()` 裁剪，**清理时必须两个家族都探测**（不按开关裁剪，否则关掉开关后再也清不掉上一次遗留的 ip6 规则）。IPv6 绕过网段必须含 `ff00::/8`——DHCPv6 的 UDP 547 目的地址是 `ff02::1:2`，漏掉会把它劫持。绕过条目按家族分流下发（网段绕过进对应家族，端口绕过两个家族都下发），未开启 IPv6 时 IPv6 绕过条目必须逐条记日志说明「未下发」，不得静默丢弃。`ip6` 家族 nat 链（NAT66）在老内核/老 nft 上可能不可用，此时只跳过该家族的 DNS 重定向并记日志，不让整次启用失败。
 
-### 3.5 配置文件并发写入规约（`fluxor.json`）
+### 3.5 配置文件布局与写入规约（多文件，取代旧的单文件 `fluxor.json`）
 
-`fluxor.json` **同时承载订阅配置**（`config.SubscribeConfig`）**与 TProxy 旁路字段**（`tproxy_enabled` / `tproxy_dst_exceptions` / `tproxy_src_exceptions` / `tproxy_proxy_local` / `tproxy_ipv6`），由 `config` 与 `tproxy` 两个包分别写入。因此：
+历史上全部持久化状态挤在一个 `fluxor.json` 里，由 `config` 与 `tproxy` 两个包各自「读整文件—改—写整文件」，共用一把全局锁。由此产生四个问题：**写放大**（改一条规则要重写整份，含所有订阅的机场元数据与预填模板）、**全量阻塞**（一把锁串行化两个功能域）、**损坏半径 100%**（解析失败时以空 map 为基底继续写，会把别人的字段一并清空）、**非原子写盘**（裸 `os.WriteFile` 会留下半截文件）。
 
-1. **必须共用同一把文件锁**：所有对该文件的读写都要经 `config.FileMu`（经 `config.UpdateConfigFile` / `config.ReadConfigFile`）。
-2. **必须用「读—改—写」**：严禁任何一方整文件覆写。`SaveSubscribeConfig` 只合并 `SubscribeConfig` 自身的键，未触碰的键一律保留——否则保存一次订阅配置就会把 TProxy 绕过列表静默清空。
-3. **锁序**：`FileMu` 永远是最内层。持有 `config.Mu` 或 `exceptionsMu` 时可以再取 `FileMu`，反之不可。
-4. **不要在持锁期间做网络 IO**：`config.Mu` 只用于内存字段赋值；抓取订阅元数据等耗时操作必须在锁外完成，锁内仅做写回。
+现在按**写入者**拆成 5 个文件（都在 `FLUXOR_DATA_DIR` 下，路径由 `config.SetDataDir` 派生）：
+
+| 文件 | 内容 | 唯一写入者 | 写入 API |
+|------|------|-----------|----------|
+| `settings.json` | 全局设置 + 订阅注册表（name/url/interval/prefix）+ 手工节点 | 订阅配置接口（保存并应用、订阅增删改、手工节点编辑） | `config.SaveSettings(view)` |
+| `rules.json` | 三作用域自定义规则（融合档位 `merge` / 自定义模式 `custom_mode` / 切换模式按订阅 `subscriptions`） | 自定义规则接口 | `config.UpdateSubscriptionRules` / `config.UpdateTemplateRules` |
+| `tunnels.json` | 三作用域流量隧道（结构同 rules.json） | 流量隧道接口 | `config.UpdateSubscriptionTunnels` / `config.UpdateTemplateTunnels` |
+| `subscription-meta.json` | 每订阅 `updated_at` + `subscription_info`（机场元数据） | 更新与元数据流程（手动/定时更新、启动 ensure） | `config.SaveSubscriptionMeta` |
+| `tproxy.json` | TProxy 三个开关 + 两条绕过列表 | `tproxy` 包（用自己的 `config.Store`） | `tproxy.SaveTproxy*` |
+
+旧的 `fluxor.json` 只作为**一次性迁移的输入**：启动时 `config.MigrateLegacyFiles()` 把它拆成上述 5 个文件并改名为 `fluxor.json.migrated-<时间戳>`（幂等、可回滚；任一新文件写入失败则保留旧文件下次重试）。新布局已存在时旧文件被忽略（不会出现两套真相）。
+
+实现载体是 `config.Store[T]`（`internal/config/store.go`）。写代码时必须遵守：
+
+1. **一个文件一个写入者**：新增持久化数据前先问「谁会写它」。同一个字段有第二个写入者，就必须改走该字段所属 store 的 API，而不是「顺手也写一下」。
+2. **锁内「读—改—写」**：规则/隧道的修改一律用 `config.UpdateXxx(…, func(current []T) ([]T, error))`——闭包拿到的 `current` 是**此刻**存储里的列表，返回的列表被原样落盘，整段在同一把文件锁内完成。**禁止**「先 `config.SubscriptionRules(name)` 取快照 → 在闭包外算好 → 整份写回」：那是丢失更新的经典形态（同一作用域的并发请求会互相覆盖）。
+3. **`config.Current` 是派生视图**：由各 store 组装（`assembleCurrent`），写入口落盘后会自动重组装。**任何代码都不得给 `config.Current` 赋值或就地改它的切片**（`Current` 只在读路径使用）。需要跨数据类别的读，一律走视图或 getter（`TemplateRulesFor` / `SubscriptionTunnelsFor` / `SubscriptionMetaOf` …）。
+4. **不得嵌套两把锁**：写入口内部会取 `config.Mu` 重组装，因此**持有 `config.Mu` 时不得调用任何 `Save*/Update*`**；也不得在 `Store.View` 回调里调用该 store 的 `Update`（`sync.Mutex` 不可重入，会自死锁——本项目踩过一次）。
+5. **原子落盘与损坏保护**：写盘统一走 `writeFileAtomic`（临时文件 + `fsync` + `rename`，显式 0644）。文件内容无法解析时：备份为 `<file>.corrupt-<时间戳>`、内存态回落默认值、**拒绝后续写入**（返回「内容损坏」错误让接口如实回 500），而不是以空值继续——静默继续会覆盖掉用户手工编辑的内容。
+6. **默认值不落盘**：只在用户真正改过时才写文件。标量默认值靠 `Store.Init`（读盘前填充，键存在即被覆盖；端口 0 表示禁用，只有 `Init` 能区分「缺失」与「显式 0」）；容器类靠 `Store.Normalize`（读盘后修 `null`）。tproxy 的两条绕过列表用 `nil` 表示「用代码里的预填模板」，`LoadTproxyState` 会把与模板一致的列表从文件里移除——预填的上万字节注释不该进用户文件。
+7. **按订阅名存的数据要能自愈**：`rules.json` / `tunnels.json` / `subscription-meta.json` 里的条目以订阅名为键。订阅**改名**时由 `SaveSettings` 识别（判据是「旧表独有 × 新表独有且 URL 相同」）并搬运；订阅**删除**后的孤儿由 `GCResources()` 回收（启动时 + 每次 `SaveSettings` 后），且只在确有删除时才落盘。孤儿进不了生成链路（生成按订阅名查找），因此回收是清理而非正确性要求——正因如此，拆文件才不需要跨文件事务。
+8. **不变量留在同一文件内**：唯一需要原子的跨字段约束是「`active_subscription` 必须是 `subscriptions` 的成员」，两者同在 `settings.json`。新增字段时若发现需要跨文件原子性，先重新划分归属，而不是引入跨文件事务。
+9. **元数据是唯一允许「写失败即留空」的一类**：`subscription-meta.json` 的内容可从机场重抓，因此更新流程里抓取失败**不落库**（保持 store 里的旧值），只在本地视图沿用旧值以保证本次生成/响应一致。
 
 ### 3.6 定时器生命周期规约
 
@@ -425,9 +449,9 @@ func (c *cancelableReadCloser) Close() error {
 
 | 模式 | 作用域（存放位置） | 生效条件 | 注入点 |
 |------|--------------------|----------|--------|
-| 切换 | 订阅（`subscriptions[].custom_rules`） | 该订阅是 `active_subscription` | `writeRuntimeConfig`：订阅文件 → config.yaml 副本 → 叠加 |
-| 融合 | 规则集档位（`merge_custom_rules.{base,full}`） | 该档位是 `rule_group` | `GenerateConfig`：`appendRuleSet` 之后、写盘之前注入 |
-| 自定义 | 独立字段（`custom_mode_rules`，不按档位分表） | 恒生效（该模式固定用标准规则集） | `GenerateCustomConfig`：`appendRuleSet(base)` 之后、写盘之前注入 |
+| 切换 | `rules.json` → `subscriptions.<订阅名>` | 该订阅是 `active_subscription` | `writeRuntimeConfig`：订阅文件 → config.yaml 副本 → 叠加 |
+| 融合 | `rules.json` → `merge.<base\|full>` | 该档位是 `rule_group` | `GenerateConfig`：`appendRuleSet` 之后、写盘之前注入 |
+| 自定义 | `rules.json` → `custom_mode`（不按档位分表） | 恒生效（该模式固定用标准规则集） | `GenerateCustomConfig`：`appendRuleSet(base)` 之后、写盘之前注入 |
 
 接口入口同样按模式分开：切换=`/subscribe/custom-rules/{name}`、融合=`/subscribe/merge-custom-rules/{base\|full}`、自定义=`/subscribe/custom-mode-rules/custom`；每个入口只服务自己那一种模式，跨模式访问统一回 400 并指明去哪儿改。
 
@@ -449,14 +473,13 @@ func (c *cancelableReadCloser) Close() error {
 8. **排序只在同插入位置分组内进行**：`before` 与 `after` 在 `config.yaml` 中的落点相差甚远（最前 vs MATCH 之前），跨组交换会让「界面顺序」与「生效顺序」不一致，因此 `config.MoveCustomRule` 只在同组内与相邻规则交换，到边界时返回 `moved=false`（接口回 400，而不是假装成功）。
 9. **写盘顺序**：`writeRuntimeConfig` 是「复制 → 解析 → 注入 → 写回」，注入失败不落盘，避免留下内核加载不了的半成品 `config.yaml`；无自定义规则时完全跳过读写，保持副本的逐字节一致。
 
-10. **规则字段归规则接口所有，「保存并应用」既不能清空也不能覆盖它们**：`/subscribe/generate` 与 `/subscribe/config` 都是**整份配置覆盖写**，请求体由前端把上次读到的配置铺开拼成（`{...currentConfig}`），而三种作用域的规则只由专用规则接口维护。于是有两个方向的坑：
-    - 请求体**没带**规则字段（如精简的 API 调用）→ 配置生成读到空规则集，产出不含自定义规则的 `config.yaml`；
-    - 请求体**带了过期的规则字段**（前端在规则弹窗里改过之后就是过期的）→ 实测：刚删掉的规则在「保存并应用」后复活、刚新增的规则被旧列表覆盖丢失。
+10. **规则与隧道不在「整份配置覆盖写」的作用域内**：`/subscribe/generate` 与 `/subscribe/config` 的请求体由前端把上次读到的配置铺开拼成（`{...currentConfig}`），因此必然夹带（可能是过期的）规则与隧道字段。拆分之后这两个接口**根本看不到**它们——规则/隧道只存在 `rules.json` / `tunnels.json`，`config.SaveSettings` 只取全局标量、订阅身份与拉取参数、手工节点；视图里的 `custom_rules` / `tunnels` / `updated_at` / `subscription_info` 一律被忽略。
 
-    因此两个接口一律调用 `config.SubscribeConfig.AdoptServerOwnedFields(prev)`：**规则与隧道字段都以服务端状态为准，键存在与否、是否为空都不影响**——两种专用接口是唯一的修改入口。唯一例外是服务端不认识的**全新订阅名**（新建或改名）：没有旧值可取，保留请求体里的规则与隧道，免得「带规则创建订阅」被静默丢数据。取服务端状态时按值深拷贝（nil 保持 nil，隧道的 `network` 切片也逐项复制），避免与专用接口的就地改写竞争。
-    > 教训：同一个字段有两个写入者、其中一个还持有快照，就是「删了又回来」这类 bug 的温床。**不要再把判据退回「键是否出现」**——它只挡得住漏带，挡不住过期。前端 `loadConfig` 仍需把后端原始字段铺开带回（`...cfg`），但那只是「别丢字段」，不构成正确性保证。
+    这是旧 `config.AdoptServerOwnedFields`（「以服务端为准」的深拷贝合并）的**替代**，而不是它的简化版：以前的判据是「键是否出现」，挡得住漏带却挡不住过期（实测过「刚删掉的规则在保存并应用后复活」「刚新增的规则被旧列表覆盖」）；现在「过期快照」与「服务端状态」根本不在同一个存储里，覆盖路径不存在。
 
-> 规则写操作（增/改/排序/删）的事务顺序统一为：锁内改 `config.Current` → `SaveSubscribeConfig()` 持久化 → 若命中的作用域当前生效（切换：激活订阅；融合：当前档位；自定义：恒为标准档位）则同步运行配置（切换走 `writeRuntimeConfig`，融合走 `configgen.GenerateConfig`，自定义走 `configgen.GenerateCustomConfig`）+ `ReloadCore()`。内核未运行时只更新 `config.yaml`（下次启动生效），并把「已保存但未同步」的情况作为 warning 如实回给前端。
+    代价是契约收紧：**新建订阅时不能顺带提交规则/隧道**（以前靠「服务端不认识的新订阅名保留请求体内容」兜着）。规则与隧道只能在订阅/作用域存在之后，通过各自的专用接口添加——前端本来就是这么用的（规则弹窗只对已存在的订阅或模板作用域开放）。
+
+> 规则写操作（增/改/排序/删）的事务顺序统一为：`config.UpdateSubscriptionRules` / `config.UpdateTemplateRules`（**锁内读—改—写** rules.json + 自动重组装 `Current`）→ 若命中的作用域当前生效（切换：激活订阅；融合：当前档位；自定义：恒为标准档位）则同步运行配置（切换走 `writeRuntimeConfig`，融合走 `configgen.GenerateConfig`，自定义走 `configgen.GenerateCustomConfig`）+ `ReloadCore()`。内核未运行时只更新 `config.yaml`（下次启动生效），并把「已保存但未同步」的情况作为 warning 如实回给前端。
 > 「修改」是就地替换（保持列表位置），「排序」是同组内相邻交换（`config/rules.go` 的 `MoveCustomRule`），两者都不改变其他规则的相对顺序。
 
 ### 3.10 内核链路不携带认证头（Unix Socket 免密钥）
@@ -511,9 +534,9 @@ func (c *cancelableReadCloser) Close() error {
 
 | 模式 | 存放位置 | 生效条件 | 注入点 |
 |------|----------|----------|--------|
-| 切换 | 订阅（`subscriptions[].tunnels`） | 该订阅是 `active_subscription` | `writeRuntimeConfig`：订阅文件 → config.yaml 副本 → 与规则**一趟**叠加 |
-| 融合 | 规则集档位（`merge_tunnels.{base,full}`） | 该档位是 `rule_group` | `GenerateConfig`：`appendRuleSet` 之后、写盘之前注入 |
-| 自定义 | 独立字段（`custom_mode_tunnels`） | 恒生效 | `GenerateCustomConfig`：`proxies` 之后、写盘之前注入 |
+| 切换 | `tunnels.json` → `subscriptions.<订阅名>` | 该订阅是 `active_subscription` | `writeRuntimeConfig`：订阅文件 → config.yaml 副本 → 与规则**一趟**叠加 |
+| 融合 | `tunnels.json` → `merge.<base\|full>` | 该档位是 `rule_group` | `GenerateConfig`：`appendRuleSet` 之后、写盘之前注入 |
+| 自定义 | `tunnels.json` → `custom_mode` | 恒生效 | `GenerateCustomConfig`：`proxies` 之后、写盘之前注入 |
 
 接口入口同样按模式分开：切换=`/subscribe/custom-tunnels/{name}`、融合=`/subscribe/merge-custom-tunnels/{base\|full}`、自定义=`/subscribe/custom-mode-tunnels/custom`。要点：
 

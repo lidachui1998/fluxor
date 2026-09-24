@@ -1,26 +1,91 @@
 package tproxy
 
 import (
-	"encoding/json"
 	"fluxor/internal/config"
 	"fluxor/internal/logx"
+	"slices"
 )
 
-// fluxor.json 中由本包负责的字段。
+// tproxy.json 是本包独占的持久化文件（config.TproxyFile）。
 //
-// 这些字段与订阅配置共用同一个文件，因此写入一律通过 config.UpdateConfigFile
-// 走「读—改—写」，与 config.SaveSubscribeConfig 共用同一把文件锁（config.FileMu）。
-// 切勿在此直接 os.WriteFile 整个文件：那会把订阅配置字段抹掉。
-const (
-	keyTproxyEnabled       = "tproxy_enabled"
-	keyTproxyProxyLocal    = "tproxy_proxy_local"
-	keyTproxyIPv6          = "tproxy_ipv6"
-	keyTproxyDstExceptions = "tproxy_dst_exceptions"
-	keyTproxySrcExceptions = "tproxy_src_exceptions"
-	keyTproxyExceptionsOld = "tproxy_exceptions" // 旧字段，读取时迁移
-)
+// 拆分前这些字段与订阅配置共用 fluxor.json，写入必须借道 config.UpdateConfigFile 并
+// 共用那把全局文件锁（否则会把订阅字段抹掉）。现在本包自己持有一个 config.Store：
+// 只有本包写它，锁按文件隔离，读取也不再需要「读整份配置」。
+//
+// 默认值不落盘：两条绕过列表为 nil 表示「用代码里的预填模板」（defaultDstExceptions /
+// defaultSrcExceptions），因此预填的 20+ 行中文注释不会写进用户文件。旧单文件时代
+// 已经写进去的默认值，会在 LoadTproxyState 的归一化步骤中被移除。
+var tproxyStore = config.NewStore[config.TproxyFile]("tproxy.json", &config.FluxorTproxyFile, func(v *config.TproxyFile) {
+	// 本机流量接管默认为开：保持旧实现的语义（字段缺失即开启）
+	v.ProxyLocal = true
+	// Enabled / IPv6 默认 false（零值即可）
+})
 
-// 绕过列表的预填内容（fluxor.json 字段缺失时写入，也供前端「恢复默认」按钮取用）。
+// effectiveExceptions 把「nil = 未自定义」还原成生效列表。
+func effectiveExceptions(stored []string, fallback func() []string) []string {
+	if stored == nil {
+		return fallback()
+	}
+	return stored
+}
+
+// normalizeExceptions 把与预填模板完全一致的列表收敛为 nil（不落盘）。
+//
+// 刻意用「与默认值相等」而不是「用户是否点过恢复默认」作为判据：两者结果一致，
+// 但不依赖任何额外状态，迁移过来的历史文件也能自动瘦身。
+func normalizeExceptions(list []string, def func() []string) []string {
+	if slices.Equal(list, def()) {
+		return nil
+	}
+	return list
+}
+
+// LoadTproxyState 载入 tproxy.json：读盘 → 归一化（默认值不落盘）→ 填充内存缓存。
+//
+// 取代了此前四个各读一次整份配置的 LoadTproxyXxx 函数：那时每读一个字段都要解析
+// 整个 fluxor.json（含订阅元数据与全部规则），现在只读这一份小文件。
+func LoadTproxyState() {
+	if err := tproxyStore.Load(); err != nil {
+		logx.Error(logx.ModuleTproxy, "failed to load %s: %v", tproxyStore.Name, err)
+	}
+
+	// 归一化：先把判断所需的值取出，确有需要再另起一次 Update——不得在 store 的
+	// View 回调里再调 Update（同一把非可重入锁会自死锁）。
+	var needNormalize bool
+	tproxyStore.View(func(v *config.TproxyFile) {
+		needNormalize = slices.Equal(v.DstExceptions, defaultDstExceptions()) ||
+			slices.Equal(v.SrcExceptions, defaultSrcExceptions())
+	})
+	if needNormalize {
+		if err := tproxyStore.Update(func(v *config.TproxyFile) error {
+			v.DstExceptions = normalizeExceptions(v.DstExceptions, defaultDstExceptions)
+			v.SrcExceptions = normalizeExceptions(v.SrcExceptions, defaultSrcExceptions)
+			return nil
+		}); err != nil {
+			logx.Warn(logx.ModuleTproxy, "failed to drop default bypass template from %s: %v", tproxyStore.Name, err)
+		} else {
+			logx.Info(logx.ModuleTproxy, "default bypass template removed from %s (defaults now come from code)", tproxyStore.Name)
+		}
+	}
+
+	var proxyLocal, ipv6 bool
+	tproxyStore.View(func(v *config.TproxyFile) {
+		proxyLocal, ipv6 = v.ProxyLocal, v.IPv6
+		dst := effectiveExceptions(v.DstExceptions, defaultDstExceptions)
+		src := effectiveExceptions(v.SrcExceptions, defaultSrcExceptions)
+
+		exceptionsMu.Lock()
+		tproxyDstExceptionsCache = dst
+		tproxySrcExceptionsCache = src
+		tproxyProxyLocal = v.ProxyLocal
+		tproxyIPv6 = v.IPv6
+		exceptionsMu.Unlock()
+	})
+	logx.Debug(logx.ModuleTproxy, "tproxy state loaded: file=%s proxy_local=%v ipv6=%v",
+		tproxyStore.FilePath(), proxyLocal, ipv6)
+}
+
+// 绕过列表的预填内容（tproxy.json 里缺该字段时取用，也供前端「恢复默认」按钮取用）。
 //
 // 只预填可核实的条目：公共 DNS 的 IPv4/IPv6 地址取自厂商官方页面
 // （阿里 223.5.5.5 / 223.6.6.6 / 2400:3200::1 / 2400:3200:baba::1，
@@ -82,182 +147,62 @@ func defaultSrcExceptions() []string {
 	}
 }
 
-// readStringSliceField 从配置文件的顶层映射中读取一个字符串数组字段。
-func readStringSliceField(full map[string]any, key string) ([]string, bool) {
-	raw, ok := full[key]
-	if !ok {
-		return nil, false
-	}
-	data, err := json.Marshal(raw)
-	if err != nil {
-		return nil, false
-	}
-	var out []string
-	if err := json.Unmarshal(data, &out); err != nil {
-		return nil, false
-	}
-	return out, true
-}
-
-// LoadTproxyDstExceptions 加载目的绕过，字段不存在时写入默认值
-func LoadTproxyDstExceptions() []string {
-	exceptionsMu.Lock()
-	defer exceptionsMu.Unlock()
-
-	full, err := config.ReadConfigFile()
-	if err == nil {
-		// 新字段优先
-		if dst, ok := readStringSliceField(full, keyTproxyDstExceptions); ok {
-			tproxyDstExceptionsCache = dst
-			return dst
-		}
-		// 回退到旧字段并迁移
-		if dst, ok := readStringSliceField(full, keyTproxyExceptionsOld); ok {
-			tproxyDstExceptionsCache = dst
-			if err := saveDstExceptions(dst); err != nil {
-				logx.Error(logx.ModuleTproxy, "failed to migrate destination bypass list: %v", err)
-			}
-			return dst
-		}
-	}
-
-	// 文件缺失、损坏或字段不存在：落盘默认值，并同步缓存
-	// （此前该分支只 return 默认值而不设置缓存，会让面板读到空列表）
-	dst := defaultDstExceptions()
-	tproxyDstExceptionsCache = dst
-	if err := saveDstExceptions(dst); err != nil {
-		logx.Error(logx.ModuleTproxy, "failed to persist default destination bypass list: %v", err)
-	}
-	return dst
-}
-
-// saveDstExceptions 保存目的绕过并移除旧字段。
-func saveDstExceptions(dst []string) error {
-	return config.UpdateConfigFile(func(full map[string]any) {
-		full[keyTproxyDstExceptions] = dst
-		delete(full, keyTproxyExceptionsOld)
-	})
-}
-
-// SaveTproxyDstExceptions 供外部调用（加锁）
+// SaveTproxyDstExceptions 保存目的绕过列表（nil 表示恢复为代码里的预填模板）。
 func SaveTproxyDstExceptions(dst []string) error {
-	exceptionsMu.Lock()
-	defer exceptionsMu.Unlock()
-	tproxyDstExceptionsCache = dst
-	return saveDstExceptions(dst)
-}
-
-// LoadTproxySrcExceptions 加载源绕过，字段不存在时写入默认值
-func LoadTproxySrcExceptions() []string {
-	exceptionsMu.Lock()
-	defer exceptionsMu.Unlock()
-
-	full, err := config.ReadConfigFile()
-	if err == nil {
-		if src, ok := readStringSliceField(full, keyTproxySrcExceptions); ok {
-			tproxySrcExceptionsCache = src
-			return src
-		}
+	stored := normalizeExceptions(dst, defaultDstExceptions)
+	if err := tproxyStore.Update(func(v *config.TproxyFile) error {
+		v.DstExceptions = stored
+		return nil
+	}); err != nil {
+		return err
 	}
-
-	src := defaultSrcExceptions()
-	tproxySrcExceptionsCache = src
-	if err := saveSrcExceptions(src); err != nil {
-		logx.Error(logx.ModuleTproxy, "failed to persist default source bypass list: %v", err)
-	}
-	return src
+	exceptionsMu.Lock()
+	tproxyDstExceptionsCache = effectiveExceptions(stored, defaultDstExceptions)
+	exceptionsMu.Unlock()
+	return nil
 }
 
-func saveSrcExceptions(src []string) error {
-	return config.UpdateConfigFile(func(full map[string]any) {
-		full[keyTproxySrcExceptions] = src
-	})
-}
-
-// SaveTproxySrcExceptions 保存源绕过列表（加锁），由 HTTP 层调用。
+// SaveTproxySrcExceptions 保存源绕过列表（nil 表示恢复为代码里的预填模板）。
 func SaveTproxySrcExceptions(src []string) error {
-	exceptionsMu.Lock()
-	defer exceptionsMu.Unlock()
-	tproxySrcExceptionsCache = src
-	return saveSrcExceptions(src)
-}
-
-// LoadTproxyProxyLocal 读取 tproxy_proxy_local 字段，默认 true
-func LoadTproxyProxyLocal() bool {
-	exceptionsMu.Lock()
-	defer exceptionsMu.Unlock()
-
-	full, err := config.ReadConfigFile()
-	if err == nil {
-		if raw, ok := full[keyTproxyProxyLocal]; ok {
-			if enabled, ok := raw.(bool); ok {
-				tproxyProxyLocal = enabled
-				return enabled
-			}
-		}
+	stored := normalizeExceptions(src, defaultSrcExceptions)
+	if err := tproxyStore.Update(func(v *config.TproxyFile) error {
+		v.SrcExceptions = stored
+		return nil
+	}); err != nil {
+		return err
 	}
-
-	// 缺失或类型异常：默认开启并落盘
-	tproxyProxyLocal = true
-	if err := saveProxyLocal(true); err != nil {
-		logx.Error(logx.ModuleTproxy, "failed to persist default proxy-local switch: %v", err)
-	}
-	return true
+	exceptionsMu.Lock()
+	tproxySrcExceptionsCache = effectiveExceptions(stored, defaultSrcExceptions)
+	exceptionsMu.Unlock()
+	return nil
 }
 
-func saveProxyLocal(enabled bool) error {
-	return config.UpdateConfigFile(func(full map[string]any) {
-		full[keyTproxyProxyLocal] = enabled
-	})
-}
-
-// SaveTproxyProxyLocal 外部调用，加锁并保存
+// SaveTproxyProxyLocal 保存「接管本机流量」开关。
 func SaveTproxyProxyLocal(enabled bool) error {
+	if err := tproxyStore.Update(func(v *config.TproxyFile) error {
+		v.ProxyLocal = enabled
+		return nil
+	}); err != nil {
+		return err
+	}
 	exceptionsMu.Lock()
-	defer exceptionsMu.Unlock()
 	tproxyProxyLocal = enabled
-	return saveProxyLocal(enabled)
+	exceptionsMu.Unlock()
+	return nil
 }
 
-// LoadTproxyIPv6 读取接管 IPv6 开关，默认关闭。
-//
-// 默认关闭是刻意的：节点侧普遍没有 IPv6 出口，而 IPv6 一旦被接管，原本直连
-// 可达的 IPv6 目标会改为经代理出站并可能失败；同时「被劫持 DNS 返回空 AAAA」
-// 已让绝大多数域名不会走 IPv6，收益只在「客户端自带解析（DoH/DoT/ISP v6 DNS）」
-// 或写入字面量 IPv6 的场景出现。因此交由用户显式开启。
-func LoadTproxyIPv6() bool {
-	exceptionsMu.Lock()
-	defer exceptionsMu.Unlock()
-
-	full, err := config.ReadConfigFile()
-	if err == nil {
-		if raw, ok := full[keyTproxyIPv6]; ok {
-			if enabled, ok := raw.(bool); ok {
-				tproxyIPv6 = enabled
-				return enabled
-			}
-		}
-	}
-
-	tproxyIPv6 = false
-	if err := saveTproxyIPv6(false); err != nil {
-		logx.Error(logx.ModuleTproxy, "failed to persist default IPv6 takeover switch: %v", err)
-	}
-	return false
-}
-
-func saveTproxyIPv6(enabled bool) error {
-	return config.UpdateConfigFile(func(full map[string]any) {
-		full[keyTproxyIPv6] = enabled
-	})
-}
-
-// SaveTproxyIPv6 外部调用，加锁并保存
+// SaveTproxyIPv6 保存「接管 IPv6 流量」开关。
 func SaveTproxyIPv6(enabled bool) error {
+	if err := tproxyStore.Update(func(v *config.TproxyFile) error {
+		v.IPv6 = enabled
+		return nil
+	}); err != nil {
+		return err
+	}
 	exceptionsMu.Lock()
-	defer exceptionsMu.Unlock()
 	tproxyIPv6 = enabled
-	return saveTproxyIPv6(enabled)
+	exceptionsMu.Unlock()
+	return nil
 }
 
 // LoadTproxyEnabled 读取持久化的 TProxy 开关状态。
@@ -265,22 +210,16 @@ func SaveTproxyIPv6(enabled bool) error {
 // 仅供诊断/日志使用：实际生效状态由 ResetOnStartup 在冷启动时统一归零，
 // 因此本函数不会用于恢复运行状态。
 func LoadTproxyEnabled() bool {
-	full, err := config.ReadConfigFile()
-	if err != nil {
-		return false
-	}
-	raw, ok := full[keyTproxyEnabled]
-	if !ok {
-		return false
-	}
-	enabled, _ := raw.(bool)
+	enabled := false
+	tproxyStore.View(func(v *config.TproxyFile) { enabled = v.Enabled })
 	return enabled
 }
 
 // persistTproxyEnabled 持久化开关状态。
 func persistTproxyEnabled(enabled bool) error {
-	return config.UpdateConfigFile(func(full map[string]any) {
-		full[keyTproxyEnabled] = enabled
+	return tproxyStore.Update(func(v *config.TproxyFile) error {
+		v.Enabled = enabled
+		return nil
 	})
 }
 

@@ -25,7 +25,7 @@ const mergeCustomRulesRoutePath = "/subscribe/merge-custom-rules/"
 // 只服务融合模式：**自定义模式有自己独立的一份规则与入口**（见 custommoderules.go），
 // 两者互不影响；增/改/排序/删的公共流程在 templaterules.go。
 //
-// 所有写操作即时持久化到 fluxor.json；若该档位正是当前生效的 rule_group，
+// 所有写操作即时持久化到 rules.json（锁内读—改—写）；若该档位正是当前生效的 rule_group，
 // 则重新生成 config.yaml 并热重载内核。弹窗本身不需要「保存」动作。
 func HandleMergeCustomRulesAPI(w http.ResponseWriter, r *http.Request) {
 	ruleGroup, ok := mergeRuleGroupParam(r)

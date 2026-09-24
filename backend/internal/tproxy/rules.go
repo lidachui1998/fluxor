@@ -247,8 +247,8 @@ func EnableTProxyRules(port int) error {
 		return nil
 	}
 
-	dst := LoadTproxyDstExceptions()
-	src := LoadTproxySrcExceptions()
+	dst := dstExceptions()
+	src := srcExceptions()
 
 	families := []tproxyFamily{tproxyFamilyV4}
 	if ipv6Enabled() {

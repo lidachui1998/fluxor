@@ -1,6 +1,7 @@
 package tproxy
 
 import (
+	"slices"
 	"sync"
 )
 
@@ -31,6 +32,22 @@ func ipv6Enabled() bool {
 	exceptionsMu.RLock()
 	defer exceptionsMu.RUnlock()
 	return tproxyIPv6
+}
+
+// dstExceptions / srcExceptions 读取绕过列表（并发安全，返回副本）。
+//
+// 规则装配（rules.go）必须走这两个函数：列表的真相是内存缓存（由 LoadTproxyState
+// 载入、SaveTproxy* 更新），直接读文件会退化成「每次下发规则都解析一遍配置」。
+func dstExceptions() []string {
+	exceptionsMu.RLock()
+	defer exceptionsMu.RUnlock()
+	return slices.Clone(tproxyDstExceptionsCache)
+}
+
+func srcExceptions() []string {
+	exceptionsMu.RLock()
+	defer exceptionsMu.RUnlock()
+	return slices.Clone(tproxySrcExceptionsCache)
 }
 
 // GetTproxyState 读取 TProxy 开关状态（并发安全）。

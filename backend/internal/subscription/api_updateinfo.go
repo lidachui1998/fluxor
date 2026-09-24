@@ -39,31 +39,31 @@ func HandleUpdateSubscriptionInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	config.Mu.Lock()
+	// 只读判断订阅是否存在：元数据的写入交给 SaveSubscriptionMeta，不再就地改 Current
+	config.Mu.RLock()
 	found := false
 	for i := range config.Current.Subscriptions {
 		if config.Current.Subscriptions[i].Name == name {
-			subInfo := map[string]interface{}{
-				"upload":   payload.Upload,
-				"download": payload.Download,
-				"total":    payload.Total,
-				"expire":   payload.Expire,
-			}
-			config.Current.Subscriptions[i].UpdatedAt = payload.UpdatedAt
-			config.Current.Subscriptions[i].SubscriptionInfo = subInfo
 			found = true
 			break
 		}
 	}
-	config.Mu.Unlock()
+	config.Mu.RUnlock()
 
 	if !found {
 		httpx.WriteJSONError(w, http.StatusNotFound, "订阅不存在")
 		return
 	}
 
-	if err := config.SaveSubscribeConfig(); err != nil {
-		logx.Error(logx.ModuleConfig, "saving subscription config failed: %v", err)
+	subInfo := map[string]interface{}{
+		"upload":   payload.Upload,
+		"download": payload.Download,
+		"total":    payload.Total,
+		"expire":   payload.Expire,
+	}
+	// SaveSubscriptionMeta 只写 subscription-meta.json，内部落盘并重组装 Current
+	if err := config.SaveSubscriptionMeta(name, payload.UpdatedAt, subInfo); err != nil {
+		logx.Error(logx.ModuleConfig, "saving metadata for subscription %q failed: %v", name, err)
 		httpx.WriteJSONError(w, http.StatusInternalServerError, "保存失败")
 		return
 	}

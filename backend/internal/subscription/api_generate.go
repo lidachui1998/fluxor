@@ -56,14 +56,9 @@ func HandleGenerateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg.DeletePhysical = nil // 清空临时字段避免持久化
 
-	// 自定义规则与流量隧道归各自的专用接口维护（切换模式按订阅、融合模式按规则集档位、
-	// 自定义模式独立一份）：本接口只负责生成配置文件，不能在请求体缺少这些字段时把它们
-	// 清空——否则 GenerateConfig 会生成一份不含自定义规则/隧道的 config.yaml，且内存态被
-	// 清空后，下一次编辑会把「只剩本次编辑」的列表写回文件。详见 config.AdoptServerOwnedFields。
-	config.Mu.RLock()
-	prev := config.Current
-	config.Mu.RUnlock()
-	cfg.AdoptServerOwnedFields(prev)
+	// 请求体里的自定义规则与流量隧道不在本接口生效：它们存在 rules.json / tunnels.json 里，
+	// 由各自的专用接口维护（切换模式按订阅、融合模式按规则集档位、自定义模式独立一份）。
+	// SaveSettings 只取设置与订阅注册表，因此请求体里的过期快照无法覆盖服务端。
 
 	// 自定义模式：不使用订阅，配置由模板 + 手工节点 + 标准规则集生成
 	if cfg.Mode == config.ModeCustom {
@@ -82,12 +77,9 @@ func HandleGenerateConfig(w http.ResponseWriter, r *http.Request) {
 			}
 			// 清除选中的订阅
 			cfg.ActiveSubscription = ""
-			// 保存配置到全局并持久化
-			config.Mu.Lock()
-			config.Current = cfg
-			config.Mu.Unlock()
-			if err := config.SaveSubscribeConfig(); err != nil {
-				logx.Error(logx.ModuleSub, "saving subscription config failed: mode=switch subscription=none err=%v", err)
+			// 保存设置与订阅注册表（SaveSettings 内部落盘并重组装 Current）
+			if err := config.SaveSettings(cfg); err != nil {
+				logx.Error(logx.ModuleSub, "saving settings failed: mode=switch subscription=none err=%v", err)
 			}
 			// 重置定时器（无订阅时需停止所有定时器）
 			StopAllTimers()
@@ -138,12 +130,9 @@ func HandleGenerateConfig(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteJSONError(w, http.StatusInternalServerError, "生成运行配置失败: "+err.Error())
 			return
 		}
-		// 保存配置到 subscribe.json
-		config.Mu.Lock()
-		config.Current = cfg
-		config.Mu.Unlock()
-		if err := config.SaveSubscribeConfig(); err != nil {
-			logx.Error(logx.ModuleSub, "saving subscription config failed: mode=switch err=%v", err)
+		// 保存设置与订阅注册表（SaveSettings 内部落盘并重组装 Current）
+		if err := config.SaveSettings(cfg); err != nil {
+			logx.Error(logx.ModuleSub, "saving settings failed: mode=switch err=%v", err)
 		}
 		// 重置定时器
 		StopAllTimers()
@@ -169,10 +158,8 @@ func HandleGenerateConfig(w http.ResponseWriter, r *http.Request) {
 	// 预删除只会留出一个「文件不存在」的窗口：若随后生成失败，内核热重载或
 	// 重启就会因缺少配置而失败——此前的实现正是如此。
 
-	config.Mu.Lock()
-	config.Current = cfg
-	config.Mu.Unlock()
-	if err := config.SaveSubscribeConfig(); err != nil {
+	// 保存设置与订阅注册表（SaveSettings 内部落盘并重组装 Current）
+	if err := config.SaveSettings(cfg); err != nil {
 		httpx.WriteJSONError(w, http.StatusInternalServerError, "保存配置失败: "+err.Error())
 		return
 	}
@@ -200,12 +187,10 @@ func HandleGenerateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	updateAllSubscriptionsMetadata(&cfg)
-	// 将更新后的 cfg 保存到全局并持久化
-	config.Mu.Lock()
-	config.Current = cfg
-	config.Mu.Unlock()
-	if err := config.SaveSubscribeConfig(); err != nil {
-		logx.Error(logx.ModuleSub, "saving subscription config failed: mode=merge err=%v", err)
+	// 将更新后的 cfg 中的设置与订阅注册表落库（各订阅元数据已由
+	// updateAllSubscriptionsMetadata 写入 subscription-meta.json）
+	if err := config.SaveSettings(cfg); err != nil {
+		logx.Error(logx.ModuleSub, "saving settings failed: mode=merge err=%v", err)
 	}
 
 	httpx.RespondJSON(w, http.StatusOK, map[string]string{
