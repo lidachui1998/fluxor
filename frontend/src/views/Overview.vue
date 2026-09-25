@@ -1131,7 +1131,7 @@ onUnmounted(() => {
                   class="px-2.5 py-0.5 rounded-lg bg-slate-100 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800/50 flex-1 min-w-0 ml-4 max-w-max flex justify-end shadow-sm cursor-pointer hover:bg-slate-200 dark:hover:bg-slate-700/50 active:scale-95 transition-all"
                   :title="ipInfo.localIPv4 && ipInfo.localIPv4 !== '--' ? t('overview.click_copy_ipv4') : ''">
                   <span
-                    class="font-bold text-xs text-slate-800 dark:text-slate-100 select-all overflow-x-auto whitespace-nowrap text-right">
+                    class="font-bold text-xs text-slate-800 dark:text-slate-100 select-none overflow-x-auto whitespace-nowrap text-right">
                     {{ showLocalGroup ? (ipInfo.localIPv4 || '--') : (ipInfo.localIPv4 ? '••••••••' : '--') }}
                   </span>
                 </div>
@@ -1145,7 +1145,7 @@ onUnmounted(() => {
                   class="px-2.5 py-0.5 rounded-lg bg-slate-100 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800/50 flex-1 min-w-0 ml-4 max-w-max flex justify-end shadow-sm cursor-pointer hover:bg-slate-200 dark:hover:bg-slate-700/50 active:scale-95 transition-all"
                   :title="ipInfo.localIPv6 && ipInfo.localIPv6 !== '--' ? t('overview.click_copy_ipv6') : ''">
                   <span
-                    class="font-bold text-xs text-slate-800 dark:text-slate-100 select-all overflow-x-auto whitespace-nowrap text-right">
+                    class="font-bold text-xs text-slate-800 dark:text-slate-100 select-none overflow-x-auto whitespace-nowrap text-right">
                     {{ showLocalGroup ? (ipInfo.localIPv6 || '--') : (ipInfo.localIPv6 ? '••••••••' : '--') }}
                   </span>
                 </div>
@@ -1160,7 +1160,7 @@ onUnmounted(() => {
                   class="px-2.5 py-0.5 rounded-lg bg-slate-100 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800/50 flex-1 min-w-0 ml-4 max-w-max flex justify-end shadow-sm cursor-pointer hover:bg-slate-200 dark:hover:bg-slate-700/50 active:scale-95 transition-all"
                   :title="ipInfo.localCountry ? t('overview.click_copy_geo') : ''">
                   <span
-                    class="font-bold text-xs text-slate-800 dark:text-slate-100 select-all overflow-x-auto whitespace-nowrap text-right">
+                    class="font-bold text-xs text-slate-800 dark:text-slate-100 select-none overflow-x-auto whitespace-nowrap text-right">
                     {{ showLocalGroup ? ((ipInfo.localCountry || '---') + ' / ' + (ipInfo.localRegion || '---') + ' / '
                       + (ipInfo.localIsp || '---')) : '••••••••' }}
                   </span>
@@ -1204,7 +1204,7 @@ onUnmounted(() => {
                   class="px-2.5 py-0.5 rounded-lg bg-slate-100 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800/50 flex-1 min-w-0 ml-4 max-w-max flex justify-end shadow-sm cursor-pointer hover:bg-slate-200 dark:hover:bg-slate-700/50 active:scale-95 transition-all"
                   :title="ipInfo.proxyIPv4 && ipInfo.proxyIPv4 !== '--' ? t('overview.click_copy_ipv4') : ''">
                   <span
-                    class="font-bold text-xs text-slate-800 dark:text-slate-100 select-all overflow-x-auto whitespace-nowrap text-right">
+                    class="font-bold text-xs text-slate-800 dark:text-slate-100 select-none overflow-x-auto whitespace-nowrap text-right">
                     {{ showProxyGroup ? (ipInfo.proxyIPv4 || '--') : (ipInfo.proxyIPv4 ? '••••••••' : '--') }}
                   </span>
                 </div>
@@ -1218,7 +1218,7 @@ onUnmounted(() => {
                   class="px-2.5 py-0.5 rounded-lg bg-slate-100 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800/50 flex-1 min-w-0 ml-4 max-w-max flex justify-end shadow-sm cursor-pointer hover:bg-slate-200 dark:hover:bg-slate-700/50 active:scale-95 transition-all"
                   :title="ipInfo.proxyIPv6 && ipInfo.proxyIPv6 !== '--' ? t('overview.click_copy_ipv6') : ''">
                   <span
-                    class="font-bold text-xs text-slate-800 dark:text-slate-100 select-all overflow-x-auto whitespace-nowrap text-right">
+                    class="font-bold text-xs text-slate-800 dark:text-slate-100 select-none overflow-x-auto whitespace-nowrap text-right">
                     {{ showProxyGroup ? (ipInfo.proxyIPv6 || '--') : (ipInfo.proxyIPv6 ? '••••••••' : '--') }}
                   </span>
                 </div>
@@ -1233,7 +1233,7 @@ onUnmounted(() => {
                   class="px-2.5 py-0.5 rounded-lg bg-slate-100 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800/50 flex-1 min-w-0 ml-4 max-w-max flex justify-end shadow-sm cursor-pointer hover:bg-slate-200 dark:hover:bg-slate-700/50 active:scale-95 transition-all"
                   :title="ipInfo.proxyCountry ? t('overview.click_copy_proxy_geo') : ''">
                   <span
-                    class="font-bold text-xs text-slate-800 dark:text-slate-100 select-all overflow-x-auto whitespace-nowrap text-right">
+                    class="font-bold text-xs text-slate-800 dark:text-slate-100 select-none overflow-x-auto whitespace-nowrap text-right">
                     {{ showProxyGroup ? ((ipInfo.proxyCountry || '---') + ' / ' + (ipInfo.proxyRegion || '---') + ' / '
                       + (ipInfo.proxyIsp || '---')) : '••••••••' }}
                   </span>

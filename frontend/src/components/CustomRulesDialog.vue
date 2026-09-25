@@ -967,7 +967,7 @@ defineExpose({ takeMutatedScopes })
                 :class="editingRuleId === rule.id ? 'border-accent' : 'border-slate-200/60 dark:border-slate-800/60'"
               >
                 <div class="min-w-0 flex-1 flex flex-col gap-1.5">
-                  <code class="font-mono text-[11px] break-all text-slate-700 dark:text-slate-200">{{ rule.line }}</code>
+                  <code class="font-mono text-[11px] break-all text-slate-700 dark:text-slate-200 select-none">{{ rule.line }}</code>
                   <div class="flex flex-wrap items-center gap-1.5">
                     <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-slate-500/10 text-slate-500 dark:text-slate-400">
                       {{ rule.position === 'before' ? t('subscription.custom_rule_before_badge') : t('subscription.custom_rule_after_badge') }}
@@ -1043,7 +1043,7 @@ defineExpose({ takeMutatedScopes })
               >
                 <div class="min-w-0 flex-1 flex flex-col gap-1.5">
                   <!-- 第一行只放配置本身：开关与状态徽标一起下移到第二行，把整行宽度让给配置文本 -->
-                  <code class="font-mono text-[11px] break-all text-slate-700 dark:text-slate-200">{{ tunnel.line }}</code>
+                  <code class="font-mono text-[11px] break-all text-slate-700 dark:text-slate-200 select-none">{{ tunnel.line }}</code>
                   <div class="flex flex-wrap items-center gap-1.5">
                     <!-- 启停开关（整条隧道的 PUT，只翻转 enabled）：与状态徽标同排并降一级尺寸 -->
                     <FormSwitch

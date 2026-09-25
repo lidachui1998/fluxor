@@ -54,6 +54,16 @@ const filteredProviders = computed(() => {
   )
 })
 
+// 复制规则内容到剪贴板并提示（规则行已禁用选中，复制改由点击承担）
+const copyText = (text: string | null | undefined, label: string) => {
+  if (!text) return
+  navigator.clipboard.writeText(text).then(() => {
+    globalStore.showToast(`${label} ${t('common.copied')}`, 'success')
+  }).catch(() => {
+    globalStore.showToast(t('common.operation_failed'), 'error')
+  })
+}
+
 // 单个更新提供商
 const handleUpdateProvider = async (name: string) => {
   isUpdating.value[name] = true
@@ -271,7 +281,10 @@ onUnmounted(() => {
                   }">
                     {{ rule.type }}
                   </span>
-                  <span class="text-sm font-medium text-slate-700 dark:text-slate-200 break-all select-all">{{ rule.payload }}</span>
+                  <span
+                    class="text-sm font-medium text-slate-700 dark:text-slate-200 break-all select-none cursor-pointer hover:text-accent transition-colors"
+                    :title="t('rules.click_copy_payload')"
+                    @click="copyText(rule.payload, t('rules.copy_label_payload'))">{{ rule.payload }}</span>
                 </div>
                 <div class="text-xs text-slate-400 dark:text-slate-500 mt-1">
                   {{ t('rules.proxy') }}: <span class="font-semibold text-accent">{{ rule.proxy }}</span>

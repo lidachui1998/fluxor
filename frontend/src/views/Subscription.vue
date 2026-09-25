@@ -892,7 +892,7 @@ onUnmounted(() => {
           </div>
 
           <!-- 第二行：订阅链接独占整行（不再与按钮共享宽度），窄屏下也能拿到卡片满宽 -->
-          <div class="-mt-2 text-xs text-slate-400 dark:text-slate-500 select-all break-all flex items-start gap-1.5 min-w-0">
+          <div class="-mt-2 text-xs text-slate-400 dark:text-slate-500 select-none break-all flex items-start gap-1.5 min-w-0">
             <button @click.stop="showUrls[idx] = !showUrls[idx]" class="shrink-0 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 focus:outline-none" :title="showUrls[idx] ? t('subscription.hide_url') : t('subscription.show_url')">
               <EyeOffOutline v-if="showUrls[idx]" class="w-3.5 h-3.5" />
               <EyeOutline v-else class="w-3.5 h-3.5" />

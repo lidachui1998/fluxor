@@ -60,7 +60,7 @@ const summary = computed(() => {
         <EyeOutline v-if="addressVisible" class="w-3.5 h-3.5" />
         <EyeOffOutline v-else class="w-3.5 h-3.5" />
       </button>
-      <span class="text-xs text-slate-400 dark:text-slate-500 break-all min-w-0" :class="{ 'select-all': addressVisible }">{{ addressVisible ? summary : '••••••••' }}</span>
+      <span class="text-xs text-slate-400 dark:text-slate-500 break-all min-w-0 select-none">{{ addressVisible ? summary : '••••••••' }}</span>
     </div>
   </div>
 </template>

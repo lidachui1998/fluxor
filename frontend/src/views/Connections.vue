@@ -318,6 +318,25 @@ const detailFields = computed(() => {
   }
 })
 
+// 详情弹窗「目标地址」展示值：优先 IP:port，回退 IP，再回退 host（与弹窗内展示保持同源）
+const detailTarget = computed(() => {
+  const f = detailFields.value
+  if (!f) return '-'
+  return f.destinationIP && f.destinationPort
+    ? `${f.destinationIP}:${f.destinationPort}`
+    : (f.destinationIP || f.host || '-')
+})
+
+// 复制文本到剪贴板并提示（列表内已禁用选中，弹窗里的 host/目标靠它取走）
+const copyText = (text: string | null | undefined, label: string) => {
+  if (!text || text === '-') return
+  navigator.clipboard.writeText(text).then(() => {
+    globalStore.showToast(`${label} ${t('common.copied')}`, 'success')
+  }).catch(() => {
+    globalStore.showToast(t('common.operation_failed'), 'error')
+  })
+}
+
 // ========== 搜索与排序 ==========
 const filteredConnections = computed(() => {
   const query = searchText.value.trim().toLowerCase()
@@ -586,11 +605,11 @@ onUnmounted(() => {
                     <span v-if="c.metadata?.type" class="px-1 py-0.5 text-[9px] font-semibold bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 rounded tracking-wide uppercase">
                       {{ c.metadata.type }}
                     </span>
-                    <div class="font-medium text-slate-800 dark:text-slate-200 select-all max-w-[150px] sm:max-w-[250px] truncate break-all" :title="c.metadata?.host || c.metadata?.destinationIP">
+                    <div class="font-medium text-slate-800 dark:text-slate-200 select-none max-w-[150px] sm:max-w-[250px] truncate break-all" :title="c.metadata?.host || c.metadata?.destinationIP">
                       {{ c.metadata?.host || c.metadata?.destinationIP }}
                     </div>
                   </div>
-                  <div v-if="c.metadata?.destinationIP" class="text-[10px] text-slate-400 dark:text-slate-500 select-all">{{ c.metadata.destinationIP }}{{ c.metadata.destinationPort ? ':' + c.metadata.destinationPort : '' }}</div>
+                  <div v-if="c.metadata?.destinationIP" class="text-[10px] text-slate-400 dark:text-slate-500 select-none">{{ c.metadata.destinationIP }}{{ c.metadata.destinationPort ? ':' + c.metadata.destinationPort : '' }}</div>
                 </template>
 
                 <template v-else-if="col.specialRender === 'type'">
@@ -669,10 +688,10 @@ onUnmounted(() => {
             <!-- 第一行：主机 + 类型标签 -->
             <div class="flex items-start justify-between gap-3">
               <div class="min-w-0 flex-1">
-                <div class="font-bold text-slate-800 dark:text-slate-200 select-all break-all text-xs leading-snug">
+                <div class="font-bold text-slate-800 dark:text-slate-200 select-none break-all text-xs leading-snug">
                   {{ c.metadata?.host || c.metadata?.destinationIP }}
                 </div>
-                <div v-if="c.metadata?.destinationIP" class="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5 select-all">
+                <div v-if="c.metadata?.destinationIP" class="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5 select-none">
                   {{ c.metadata.destinationIP }}{{ c.metadata.destinationPort ? ':' + c.metadata.destinationPort : '' }}
                 </div>
               </div>
@@ -869,7 +888,10 @@ onUnmounted(() => {
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
               <div><span class="text-slate-400">{{ t('connections.detail.network') }}:</span> <span class="font-medium text-slate-700 dark:text-slate-300">{{ detailFields?.network || '-' }}</span></div>
               <div><span class="text-slate-400">{{ t('connections.detail.type') }}:</span> <span class="font-medium text-slate-700 dark:text-slate-300">{{ detailFields?.type || '-' }}</span></div>
-              <div><span class="text-slate-400">{{ t('connections.detail.host') }}:</span> <span class="font-mono text-slate-700 dark:text-slate-300">{{ detailFields?.host || '-' }}</span></div>
+              <div><span class="text-slate-400">{{ t('connections.detail.host') }}:</span> <span
+                  class="font-mono text-slate-700 dark:text-slate-300 cursor-pointer hover:text-accent transition-colors"
+                  :title="detailFields?.host ? t('connections.detail.click_copy_host') : ''"
+                  @click="copyText(detailFields?.host, t('connections.detail.copy_label_host'))">{{ detailFields?.host || '-' }}</span></div>
               <div><span class="text-slate-400">{{ t('connections.detail.sniffHost') }}:</span> <span class="font-mono text-slate-700 dark:text-slate-300">{{ detailFields?.sniffHost || '-' }}</span></div>
               <div><span class="text-slate-400">{{ t('connections.detail.dnsMode') }}:</span> <span class="font-medium text-slate-700 dark:text-slate-300">{{ detailFields?.dnsMode || '-' }}</span></div>
             </div>
@@ -883,7 +905,10 @@ onUnmounted(() => {
             </h4>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
               <div><span class="text-slate-400">{{ t('connections.detail.source') }}:</span> <span class="font-mono text-slate-700 dark:text-slate-300">{{ detailFields?.sourceIP && detailFields?.sourcePort ? detailFields.sourceIP + ':' + detailFields.sourcePort : detailFields?.sourceIP || '-' }}</span></div>
-              <div><span class="text-slate-400">{{ t('connections.detail.target') }}:</span> <span class="font-mono text-slate-700 dark:text-slate-300">{{ detailFields?.destinationIP && detailFields?.destinationPort ? detailFields.destinationIP + ':' + detailFields.destinationPort : detailFields?.destinationIP || detailFields?.host || '-' }}</span></div>
+              <div><span class="text-slate-400">{{ t('connections.detail.target') }}:</span> <span
+                  class="font-mono text-slate-700 dark:text-slate-300 cursor-pointer hover:text-accent transition-colors"
+                  :title="detailTarget !== '-' ? t('connections.detail.click_copy_target') : ''"
+                  @click="copyText(detailTarget, t('connections.detail.copy_label_target'))">{{ detailTarget }}</span></div>
               <div class="sm:col-span-2"><span class="text-slate-400">{{ t('connections.detail.remoteDestination') }}:</span> <span class="font-mono text-slate-700 dark:text-slate-300">{{ detailFields?.remoteDestination || '-' }}</span></div>
             </div>
           </div>

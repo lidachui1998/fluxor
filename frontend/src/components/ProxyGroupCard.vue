@@ -333,7 +333,7 @@ const getDelayText = (delay?: number) => {
                 <span class="px-2 py-0.5 text-[11px] font-extrabold bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 rounded uppercase shrink-0">{{ group.type }}</span>
               </div>
               <div class="text-xs text-slate-500 dark:text-slate-400 mt-0.5 truncate">
-                {{ t('proxies.current') }}: <span class="font-bold text-accent select-all">{{ group.now }}</span>
+                {{ t('proxies.current') }}: <span class="font-bold text-accent select-none">{{ group.now }}</span>
               </div>
             </div>
           </div>
